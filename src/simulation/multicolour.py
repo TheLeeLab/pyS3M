@@ -2452,6 +2452,31 @@ class MultiC_Sim_Funcs_Refactored:
                         )
                         avg_wl_for_gen = mean_wl
                         dpe_for_gen = colour_ratios
+
+                        # Save the true per-bootstrap realised colour fraction (normalised to
+                        # sum to 1, matching the fitted A_B/A_G/A_R convention) -- the actual
+                        # finite-photon-sampling colour draw for each bootstrap, distinct from
+                        # the single population-average fingerprint in
+                        # *_fittesting_input_parameters.csv. `colour_ratios` is an absolute
+                        # effective-QE value that scales with peak_qy, but the *normalised*
+                        # fraction is QY-scale-invariant (a uniform per-channel multiplier
+                        # cancels), so it is generated/saved once per (dye, n_photon) at
+                        # qy_max here and stays valid for every peak_qy in the sweep -- no
+                        # qy/rn in the filename.
+                        true_colour_path = (
+                            Path(save_folder)
+                            / f"{dyestr}_nphot_{n_photon:.0f}_true_colour_fractions.csv"
+                        )
+                        if overwrite or not true_colour_path.exists():
+                            totals = colour_ratios.sum(axis=1, keepdims=True)
+                            true_fractions = np.divide(
+                                colour_ratios, totals,
+                                out=np.full_like(colour_ratios, np.nan), where=totals > 0,
+                            )
+                            pl.DataFrame(
+                                true_fractions,
+                                schema=[f"true_A_{l}" for l in camera_params_base.pixel_order],
+                            ).write_csv(true_colour_path)
                     else:
                         avg_wl_for_gen = average_emission_wavelength
                         dpe_for_gen = dye_pixel_efficiency
