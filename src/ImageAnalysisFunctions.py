@@ -51,6 +51,7 @@ class FittingStrategy(Enum):
     STANDARD_IG = "standard_ig"  # Full fit on raw Bayer, seeded from demosaiced fit
     STANDARD_ITER = "standard_iter"  # STANDARD with 2 IRLS model-weight iterations
     STANDARD_DATA = "standard_data"  # smooth → model → raw-data weights (unbiased final pass)
+    CIRCULAR = "circular"  # STANDARD_DATA with a single shared PSF width (no sx/sy split)
     ELLIPTICAL = "elliptical"  # Rotated elliptical Gaussian (11 params; for tracking)
     NOCOLOUR = "nocolour"  # No colour information, intensity only
     JUSTCOLOUR = "justcolour"  # Colour channels only, no intensity
@@ -79,6 +80,7 @@ class FittingConstants:
         FittingStrategy.STANDARD_IG: {"fit": 12, "error": 10},
         FittingStrategy.STANDARD_ITER: {"fit": 12, "error": 10},
         FittingStrategy.STANDARD_DATA: {"fit": 12, "error": 10},
+        FittingStrategy.CIRCULAR: {"fit": 11, "error": 9},
         FittingStrategy.ELLIPTICAL: {"fit": 13, "error": 11},
         FittingStrategy.NOCOLOUR: {"fit": 8, "error": 6},
         FittingStrategy.JUSTCOLOUR: {"fit": 4, "error": 2},
@@ -142,6 +144,7 @@ class FittingParameters:
             FittingStrategy.STANDARD,
             FittingStrategy.STANDARD_ITER,
             FittingStrategy.STANDARD_DATA,
+            FittingStrategy.CIRCULAR,
             FittingStrategy.ELLIPTICAL,
             FittingStrategy.JUSTCOLOUR,
             FittingStrategy.RAWCOLOUR,
@@ -297,6 +300,23 @@ class FittingResultProcessor:
         return float(np.sum(np.abs(pfit[8:11])) / np.sqrt(np.sum(variances)))
 
     @staticmethod
+    def _compute_amplitude_snr_circular(pfit: np.ndarray, pcov: np.ndarray) -> float:
+        """Wald amplitude SNR for the circular model, n-channel adaptive.
+
+        pfit layout: [x, y, s, bg_0,...,bg_{n-1}, A_0,...,A_{n-1}]
+        Amplitude indices start at 3 + n_ch (one earlier than _compute_amplitude_snr's
+        4 + n_ch, since there is only one width parameter instead of sy/sx).
+        """
+        if not isinstance(pcov, np.ndarray):
+            return 0.0
+        n_ch = (len(pfit) - 3) // 2
+        amp_start = 3 + n_ch
+        variances = np.diag(pcov)[amp_start:amp_start + n_ch]
+        if np.any(variances <= 0):
+            return 0.0
+        return float(np.sum(np.abs(pfit[amp_start:amp_start + n_ch])) / np.sqrt(np.sum(variances)))
+
+    @staticmethod
     def process_fit_results(
         pfit: np.ndarray,
         pcov: np.ndarray,
@@ -357,6 +377,10 @@ class FittingResultProcessor:
                     pfit[10],  # A_B, A_G, A_R
                 ]
             )
+        elif strategy == FittingStrategy.CIRCULAR:
+            # pfit: [x, y, s, bg_0,...,bg_{n-1}, A_0,...,A_{n-1}] -- no sx/sy swap needed,
+            # there is only one width parameter, so this is used as-is.
+            pfit_processed = pfit.copy()
         else:
             # For other strategies, use as-is for now
             pfit_processed = pfit.copy()
@@ -375,6 +399,20 @@ class FittingResultProcessor:
                 )
 
             # Add relative coordinates to position parameters (first two elements)
+            if (
+                relative_coords is not None
+                and hasattr(relative_coords, "__len__")
+                and len(relative_coords) >= 2
+            ):
+                pfit_processed[:2] += relative_coords[:2]
+        elif strategy == FittingStrategy.CIRCULAR:
+            # Only x, y, s lead the vector (one fewer than the sx/sy strategies above),
+            # so this needs its own [:3] gate rather than reusing position_strategies' [:4].
+            if np.any(pfit_processed[:3] < 0) | np.any(pfit_processed[:3] > size):
+                return (
+                    np.full(len(pfit_processed), np.nan),
+                    np.full(len(pfit_processed), np.nan),
+                )
             if (
                 relative_coords is not None
                 and hasattr(relative_coords, "__len__")
@@ -400,6 +438,13 @@ class FittingResultProcessor:
                     np.full(len(pfit_processed), np.nan),
                     np.full(len(pfit_processed), np.nan),
                 )
+        elif strategy == FittingStrategy.CIRCULAR:
+            amplitude_snr = FittingResultProcessor._compute_amplitude_snr_circular(pfit, pcov)
+            if amplitude_snr < FittingConstants.AMPLITUDE_SNR_THRESHOLD:
+                return (
+                    np.full(len(pfit_processed), np.nan),
+                    np.full(len(pfit_processed), np.nan),
+                )
 
         # Square amplitude and background parameters for storage
         # leastsq returns optimised square-root values, but we store squared values as photon counts
@@ -408,6 +453,10 @@ class FittingResultProcessor:
         elif strategy == FittingStrategy.ELLIPTICAL:
             # theta is at index 4 — do NOT square it; bg/A are at indices 5:11
             pfit_processed[5:11] = np.square(pfit_processed[5:11])
+        elif strategy == FittingStrategy.CIRCULAR:
+            # x, y, s lead (index 0:3); bg/A start one index earlier than _standard_like
+            n_ch_circ = (len(pfit_processed) - 3) // 2
+            pfit_processed[3:3 + 2 * n_ch_circ] = np.square(pfit_processed[3:3 + 2 * n_ch_circ])
         elif strategy == FittingStrategy.NOCOLOUR:
             if len(pfit_processed) >= 6:
                 pfit_processed[4:6] = np.square(pfit_processed[4:6])
@@ -842,6 +891,131 @@ class StandardDataFittingProcessor(StandardIterFittingProcessor):
         except Exception as e:
             import traceback
             logging.warning(f"STANDARD_DATA fitting failed: {e}")
+            logging.warning(
+                f"Full traceback:\n{''.join(traceback.format_tb(e.__traceback__))}"
+            )
+            return nan_result
+
+
+class CircularFittingProcessor(StandardDataFittingProcessor):
+    """STANDARD_DATA fitting constrained to a single, shared PSF width.
+
+    Identical three-stage algorithm (smooth -> model -> raw-data weights) and the same
+    underlying coloured-Gaussian model as StandardDataFittingProcessor -- the only
+    difference is that the optimiser sees one width parameter ``s`` instead of
+    independent ``s_y``/``s_x``, which get duplicated from ``s`` before every model
+    evaluation (WLS_chi_circular_nobounds / gaussoptfuncs.WLS_model_nobounds). Useful for
+    testing whether letting sigma_x/sigma_y float independently is absorbing a small,
+    real optical anisotropy into the width fit rather than leaving it as position error --
+    if the PSF is genuinely close to circular, constraining it here removes two degrees of
+    freedom the optimiser doesn't need, at the cost of not being able to represent any real
+    ellipticity at all.
+
+    Args:
+        readnoise: Camera read noise in electrons (default 1.5 e-).
+    """
+
+    def _generate_initial_guess(
+        self, smoothed_punctum: np.ndarray, raw_punctum: np.ndarray, masks: np.ndarray
+    ) -> np.ndarray:
+        """[x, y, sy, sx, bg..., A...] from gaussoptfuncs.initial_guess, collapsed to
+        [x, y, s, bg..., A...] by averaging the sy/sx guess into one shared width.
+        """
+        ig = gaussoptfuncs.initial_guess(smoothed_punctum, raw_punctum, masks)
+        s_mean = 0.5 * (ig[2] + ig[3])
+        return np.concatenate([[ig[0], ig[1], s_mean], ig[4:]])
+
+    def _model_based_weights(
+        self, pfit: np.ndarray, masks: np.ndarray, size: int
+    ) -> np.ndarray:
+        """Same as StandardIterFittingProcessor._model_based_weights, but pfit carries
+        one shared width -- expand to [x, y, s, s, bg..., A...] before evaluating the
+        (unchanged) coloured-Gaussian model.
+        """
+        full_pfit = np.concatenate([pfit[:2], [pfit[2]], pfit[2:]]).astype(np.float32)
+        x_arr = np.arange(size, dtype=np.float32)
+        buf = np.zeros((size, size), dtype=np.float32)
+        model = gaussoptfuncs.WLS_model_nobounds(full_pfit, masks, x_arr, buf)
+        e = np.maximum(model, 0).astype(np.float32) + 1.0 + float(self.readnoise) ** 2
+        return (1.0 / e).astype(np.float32)
+
+    def _leastsq_step(
+        self,
+        x0: np.ndarray,
+        data: np.ndarray,
+        masks: np.ndarray,
+        weights: np.ndarray,
+        size: int,
+    ):
+        """Single Levenberg-Marquardt step against the circular chi function."""
+        pfit, pcov, _, _, ok = leastsq(
+            gaussoptfuncs.WLS_chi_circular_nobounds,
+            x0=x0,
+            args=(data, masks, weights, size, size * size),
+            full_output=True,
+            ftol=FittingConstants.DEFAULT_FTOL,
+            xtol=FittingConstants.DEFAULT_XTOL,
+        )
+        return pfit, pcov, ok
+
+    def fit_single_punctum(
+        self,
+        punctum: np.ndarray,
+        smoothed_punctum: np.ndarray,
+        weights: np.ndarray,
+        relative_coords,
+        masks: Optional[np.ndarray] = None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        if masks is None:
+            raise FittingValidationError("Circular fitting requires masks")
+
+        n_ch = masks.shape[-1]
+        nan_result = (np.full(3 + 2 * n_ch + 2, np.nan), np.full(3 + 2 * n_ch, np.nan))
+
+        if np.max(smoothed_punctum) <= 0:
+            return nan_result
+
+        size = int(punctum.shape[0])
+        ravelsize = size * size
+
+        try:
+            ig = self._generate_initial_guess(smoothed_punctum, punctum, masks)
+
+            # Stage 1: smoothing weights (passed in from SR_Functions / simulation)
+            pfit1, _, ok1 = self._leastsq_step(ig, punctum, masks, weights, size)
+            if ok1 not in (1, 2, 3, 4):
+                return nan_result
+
+            # Stage 2: model weights from Stage 1 fit
+            w2 = self._model_based_weights(pfit1, masks, size)
+            pfit2, _, ok2 = self._leastsq_step(pfit1, punctum, masks, w2, size)
+            if ok2 not in (1, 2, 3, 4):
+                return nan_result
+
+            # Stage 3: raw-data weights (unbiased final pass)
+            w3 = self._raw_data_weights(punctum)
+            pfit3, pcov3, ok3 = self._leastsq_step(pfit2, punctum, masks, w3, size)
+            if ok3 not in (1, 2, 3, 4):
+                return nan_result
+
+            # Chi² and covariance from Stage 3 weights
+            residuals = gaussoptfuncs.WLS_chi_circular_nobounds(
+                pfit3.astype(np.float32), punctum, masks, w3, size, ravelsize
+            )
+            chisqr = FittingResultProcessor.calculate_reduced_chisquared(
+                residuals, ravelsize, len(ig)
+            )
+            pcov3 = FittingResultProcessor.process_covariance(
+                pcov3, chisqr, ravelsize, len(ig)
+            )
+
+            return FittingResultProcessor.process_fit_results(
+                pfit3, pcov3, size, relative_coords, FittingStrategy.CIRCULAR, chisqr
+            )
+
+        except Exception as e:
+            import traceback
+            logging.warning(f"CIRCULAR fitting failed: {e}")
             logging.warning(
                 f"Full traceback:\n{''.join(traceback.format_tb(e.__traceback__))}"
             )
@@ -1433,6 +1607,7 @@ class Image_Analysis_Functions:
             FittingStrategy.STANDARD_IG: StandardIGFittingProcessor(),
             FittingStrategy.STANDARD_ITER: StandardIterFittingProcessor(readnoise=readnoise),
             FittingStrategy.STANDARD_DATA: StandardDataFittingProcessor(readnoise=readnoise),
+            FittingStrategy.CIRCULAR: CircularFittingProcessor(readnoise=readnoise),
             FittingStrategy.ELLIPTICAL: EllipticalFittingProcessor(),
             FittingStrategy.NOCOLOUR: NoColourFittingProcessor(),
             FittingStrategy.JUSTCOLOUR: JustColourFittingProcessor(),
@@ -1525,6 +1700,10 @@ class Image_Analysis_Functions:
             n_ch = masks[0].shape[-1]
             fit_dim = 4 + 2 * n_ch + 2   # [x,y,sx,sy, bg×n_ch, A×n_ch, chi, frame]
             err_dim = 4 + 2 * n_ch        # [xe,ye,sxe,sye, bg_err×n_ch, A_err×n_ch]
+        elif strategy == FittingStrategy.CIRCULAR and masks is not None and len(masks) > 0:
+            n_ch = masks[0].shape[-1]
+            fit_dim = 3 + 2 * n_ch + 2   # [x,y,s, bg×n_ch, A×n_ch, chi, frame]
+            err_dim = 3 + 2 * n_ch        # [xe,ye,se, bg_err×n_ch, A_err×n_ch]
         else:
             fit_dim = dims["fit"]
             err_dim = dims["error"]
@@ -1751,6 +1930,10 @@ def _fit_puncta_method_standalone(
             n_ch = masks[0].shape[-1]
             fit_dim = 4 + 2 * n_ch + 2
             err_dim = 4 + 2 * n_ch
+        elif strategy == FittingStrategy.CIRCULAR and masks is not None and len(masks) > 0:
+            n_ch = masks[0].shape[-1]
+            fit_dim = 3 + 2 * n_ch + 2
+            err_dim = 3 + 2 * n_ch
         else:
             fit_dim = dims["fit"]
             err_dim = dims["error"]
