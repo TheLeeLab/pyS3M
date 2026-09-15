@@ -236,6 +236,43 @@ def WLS_chi_nobounds(params, data, masks, weights, size, ravelsize):
 
 
 @jit(nopython=True, nogil=True, cache=True)
+def WLS_chi_circular_nobounds(params, data, masks, weights, size, ravelsize):
+    """
+    Calculate the chi vector for the weighted least squares model, constrained to a
+    single (circular) PSF width instead of independent sigma_x/sigma_y.
+
+    ``params`` carries one shared width: [x, y, s, bg_0,...,bg_{n_ch-1}, A_0,...,A_{n_ch-1}]
+    -- one element shorter than WLS_chi_nobounds's [x, y, sy, sx, bg..., A...]. That single
+    width is duplicated into both the sigma_y and sigma_x slots before delegating to the
+    existing (unchanged) WLS_model_nobounds, so the underlying coloured-Gaussian model and
+    its covariance/error propagation are identical to STANDARD_DATA -- only the number of
+    free width parameters the optimiser sees differs.
+
+    Args:
+        params (numpy.ndarray): Input parameters, one shared width (see above).
+        data (numpy.ndarray): Data to fit.
+        masks (np.3darray): 3d array of colour masks
+        weights (np.ndarray): weights for the chi
+
+    Returns:
+        chi (numpy.ndarray): Vector of chi.
+    """
+    full_params = np.empty(len(params) + 1, dtype=params.dtype)
+    full_params[0] = params[0]  # x
+    full_params[1] = params[1]  # y
+    full_params[2] = params[2]  # s -> sigma_y slot
+    full_params[3] = params[2]  # s -> sigma_x slot
+    full_params[4:] = params[3:]  # bg..., A...
+
+    x = np.arange(size, dtype=np.float32)
+    gauss_2d = np.zeros((size, size), dtype=np.float32)
+    chi = np.zeros((size, size), dtype=np.float32)
+    gauss_2d[:, :] = WLS_model_nobounds(full_params, masks, x, gauss_2d)
+    chi[:, :] = np.multiply(weights, np.square(np.subtract(data, gauss_2d)))
+    return np.sqrt(chi.ravel())
+
+
+@jit(nopython=True, nogil=True, cache=True)
 def WLS_chi_nocolour_nobounds(params, data, weights, size, ravelsize):
     """
     Calculate the chi vector for the weighted least squares model.

@@ -184,6 +184,34 @@ class ResultColumns:
         "A_R_err",
     ]
 
+    # Circular fit parameter columns (STANDARD layout with s_x/s_y collapsed to one s)
+    CIRCULAR_FIT_PARAMS = [
+        "xc",     # X center coordinate
+        "yc",     # Y center coordinate
+        "s",      # Shared PSF sigma (width), sx and sy constrained equal
+        "bg_B",   # Background (Blue channel)
+        "bg_G",   # Background (Green channel)
+        "bg_R",   # Background (Red channel)
+        "A_B",    # Amplitude (Blue channel)
+        "A_G",    # Amplitude (Green channel)
+        "A_R",    # Amplitude (Red channel)
+        "chi_sqr",  # Chi-squared goodness of fit
+        "frame",    # Frame number
+    ]
+
+    # Circular fit error columns
+    CIRCULAR_FIT_ERRORS = [
+        "xc_err",
+        "yc_err",
+        "s_err",
+        "bg_B_err",
+        "bg_G_err",
+        "bg_R_err",
+        "A_B_err",
+        "A_G_err",
+        "A_R_err",
+    ]
+
     @classmethod
     def get_all_columns(cls) -> list[str]:
         """Get all column names (parameters + errors).
@@ -201,6 +229,15 @@ class ResultColumns:
             list: Combined list of elliptical parameter and error column names
         """
         return cls.ELLIPTICAL_FIT_PARAMS + cls.ELLIPTICAL_FIT_ERRORS
+
+    @classmethod
+    def get_circular_columns(cls) -> list[str]:
+        """Get all column names for circular (single-sigma) fitting (parameters + errors).
+
+        Returns:
+            list: Combined list of circular parameter and error column names
+        """
+        return cls.CIRCULAR_FIT_PARAMS + cls.CIRCULAR_FIT_ERRORS
 
 
 @dataclass

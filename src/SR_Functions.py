@@ -163,7 +163,9 @@ class SuperRes_Functions:
         Applies multiple quality filters in a single pass for optimal performance:
         - Removes NaN values
         - Filters coordinates to be within image bounds
-        - Filters sigma values to reasonable PSF range (0-3 pixels)
+        - Filters sigma values to reasonable PSF range (0-3 pixels) -- independent
+          s_x/s_y for STANDARD/ELLIPTICAL-style results, or a single shared "s" for
+          CIRCULAR-style results, depending on which are present.
         - Ensures positive amplitudes and backgrounds -- per-channel (A_B/A_G/A_R,
           bg_B/bg_G/bg_R) for STANDARD/ELLIPTICAL-style results, or single-column
           (A, bg) for NOCOLOUR-style results, depending on which are present.
@@ -183,11 +185,15 @@ class SuperRes_Functions:
             & (fit_results["xc"] < width)
             & (fit_results["yc"] > 0)
             & (fit_results["yc"] < height)
-            & (fit_results["s_x"] > 0)
-            & (fit_results["s_x"] < 3)
-            & (fit_results["s_y"] > 0)
-            & (fit_results["s_y"] < 3)
         )
+
+        if all(c in fit_results.columns for c in ("s_x", "s_y")):
+            mask &= (
+                (fit_results["s_x"] > 0) & (fit_results["s_x"] < 3)
+                & (fit_results["s_y"] > 0) & (fit_results["s_y"] < 3)
+            )
+        elif "s" in fit_results.columns:
+            mask &= (fit_results["s"] > 0) & (fit_results["s"] < 3)
 
         if all(c in fit_results.columns for c in ("A_B", "A_G", "A_R")):
             mask &= (
@@ -1636,6 +1642,8 @@ class SuperRes_Functions:
         fraction_true: float = 0.0,
         image_type: str = ".tif",
         use_variance_aware_demosaic: bool = True,
+        use_elliptical: bool = False,
+        use_circular: bool = False,
     ) -> None:
         """Single-molecule data fitting function.
 
@@ -1657,6 +1665,13 @@ class SuperRes_Functions:
             use_variance_aware_demosaic (bool): Whether to use variance-aware demosaicing for spot detection.
                 If True (default), uses gain, offset, and variance maps to create robust photoelectron
                 images that suppress hot pixels. If False, uses standard grayscale demosaicing.
+            use_elliptical (bool): Use the 11-parameter rotated elliptical Gaussian model
+                (FittingStrategy.ELLIPTICAL, adds xc,yc,s_x,s_y,theta) instead of the default
+                axis-aligned STANDARD_DATA model. Default False (unchanged behaviour). See
+                fit_tracking_data for the same option on the tracking-data pipeline.
+            use_circular (bool): Use FittingStrategy.CIRCULAR (STANDARD_DATA with s_x/s_y
+                constrained to one shared width, "s") instead of STANDARD_DATA. Mutually
+                exclusive with use_elliptical.
 
 
         Returns:
@@ -1667,6 +1682,7 @@ class SuperRes_Functions:
             pfa=pfa, ROI_size=ROI_size, peak_wavelength=peak_wavelength, NA=NA,
             pixel_size=pixel_size, sigma=sigma, fraction_true=fraction_true,
             image_type=image_type, use_variance_aware_demosaic=use_variance_aware_demosaic,
+            use_elliptical=use_elliptical, use_circular=use_circular,
             accumulate_frame_numbers=False, combined_output=False,
         )
 
@@ -1688,6 +1704,8 @@ class SuperRes_Functions:
         fraction_true: float = 0.0,
         image_type: str = ".tif",
         use_variance_aware_demosaic: bool = True,
+        use_elliptical: bool = False,
+        use_circular: bool = False,
         accumulate_frame_numbers: bool = False,
         combined_output: bool = False,
     ) -> None:
@@ -1699,8 +1717,25 @@ class SuperRes_Functions:
             combined_output: If True, all files append to one shared HDF5
                 (Localisations.h5 in image_folder). If False, each file gets its
                 own HDF5 alongside the TIFF.
+            use_elliptical: Use FittingStrategy.ELLIPTICAL (rotated Gaussian, adds theta)
+                instead of STANDARD_DATA. See fit_tracking_data for the same option.
+            use_circular: Use FittingStrategy.CIRCULAR (STANDARD_DATA with s_x/s_y
+                constrained to one shared width) instead of STANDARD_DATA. Mutually
+                exclusive with use_elliptical.
             All other args: see fit_SM_data / fit_imaging_data.
         """
+        if use_elliptical and use_circular:
+            raise ValueError("use_elliptical and use_circular are mutually exclusive")
+
+        if use_elliptical:
+            strategy = FittingStrategy.ELLIPTICAL
+            result_params = ResultColumns.get_elliptical_columns()
+        elif use_circular:
+            strategy = FittingStrategy.CIRCULAR
+            result_params = ResultColumns.get_circular_columns()
+        else:
+            strategy = FittingStrategy.STANDARD_DATA
+            result_params = ResultColumns.get_all_columns()
         if pixel_size is None:
             pixel_size = self.pixel_size
 
@@ -1730,8 +1765,6 @@ class SuperRes_Functions:
         read_noise = cropped_maps["read_noise"]
         rqe = cropped_maps["rqe"]
         variance = cropped_maps["variance"]
-
-        result_params = ResultColumns.get_all_columns()
 
         if combined_output:
             fit_savename = Path(image_folder) / "Localisations.h5"
@@ -1847,7 +1880,7 @@ class SuperRes_Functions:
                 all_weights_tofit,
                 all_relative_coords,
                 all_planes,
-                FittingStrategy.STANDARD_DATA,
+                strategy,
                 masks=all_masks_tofit,
             )
 
@@ -2343,6 +2376,8 @@ class SuperRes_Functions:
         fraction_true: float = 0.0,
         image_type: str = ".tif",
         use_variance_aware_demosaic: bool = True,
+        use_elliptical: bool = False,
+        use_circular: bool = False,
     ) -> None:
         """Cross-file imaging data fitting function.
 
@@ -2368,6 +2403,12 @@ class SuperRes_Functions:
             use_variance_aware_demosaic (bool): Whether to use variance-aware demosaicing for spot detection.
                 If True (default), uses gain, offset, and variance maps to create robust photoelectron
                 images that suppress hot pixels. If False, uses standard grayscale demosaicing.
+            use_elliptical (bool): Use the 11-parameter rotated elliptical Gaussian model
+                (FittingStrategy.ELLIPTICAL, adds xc,yc,s_x,s_y,theta) instead of the default
+                axis-aligned STANDARD_DATA model. Default False (unchanged behaviour).
+            use_circular (bool): Use FittingStrategy.CIRCULAR (STANDARD_DATA with s_x/s_y
+                constrained to one shared width, "s") instead of STANDARD_DATA. Mutually
+                exclusive with use_elliptical.
         Returns:
             None: Writes results to HDF5 file:
                 - image_folder/Localisations.h5
@@ -2377,5 +2418,6 @@ class SuperRes_Functions:
             pfa=pfa, ROI_size=ROI_size, peak_wavelength=peak_wavelength, NA=NA,
             pixel_size=pixel_size, sigma=sigma, fraction_true=fraction_true,
             image_type=image_type, use_variance_aware_demosaic=use_variance_aware_demosaic,
+            use_elliptical=use_elliptical, use_circular=use_circular,
             accumulate_frame_numbers=True, combined_output=True,
         )
