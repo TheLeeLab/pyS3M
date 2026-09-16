@@ -26,6 +26,7 @@ from pyS3M.ImageAnalysisFunctions import (
     StandardIterFittingProcessor,
     StandardDataFittingProcessor,
     EllipticalFittingProcessor,
+    CircularFittingProcessor,
     NoColourFittingProcessor,
     JustColourFittingProcessor,
     RawColourFittingProcessor,
@@ -227,6 +228,25 @@ class TestComputeAmplitudeSnrElliptical:
         assert FittingResultProcessor._compute_amplitude_snr_elliptical(pfit, pcov) > 0
 
 
+class TestComputeAmplitudeSnrCircular:
+    # pfit layout: [x, y, s, bg_0, bg_1, bg_2, A_0, A_1, A_2] -- amplitudes start
+    # at index 3 + n_ch = 6 (one earlier than _compute_amplitude_snr's 4 + n_ch,
+    # since there's only one width parameter instead of sy/sx).
+    def test_pcov_not_ndarray_returns_zero(self):
+        pfit = np.zeros(9)
+        assert FittingResultProcessor._compute_amplitude_snr_circular(pfit, np.inf) == 0.0
+
+    def test_nonpositive_variance_returns_zero(self):
+        pfit = np.array([1, 1, 1, 1, 1, 1, 2, 2, 2], dtype=float)
+        pcov = np.diag(np.concatenate([np.ones(6), [-1, 1, 1]]))
+        assert FittingResultProcessor._compute_amplitude_snr_circular(pfit, pcov) == 0.0
+
+    def test_normal(self):
+        pfit = np.array([1, 1, 1, 1, 1, 1, 2, 2, 2], dtype=float)
+        pcov = np.diag(np.ones(9) * 0.01)
+        assert FittingResultProcessor._compute_amplitude_snr_circular(pfit, pcov) > 0
+
+
 # ======================================================================
 # FittingResultProcessor.process_fit_results
 # ======================================================================
@@ -303,6 +323,40 @@ class TestProcessFitResults:
         pcov = np.diag(np.ones(len(pfit)) * 1e6)
         out, err = FittingResultProcessor.process_fit_results(
             pfit, pcov, SIZE, [0.0, 0.0], FittingStrategy.ELLIPTICAL,
+        )
+        assert np.all(np.isnan(out))
+
+    def test_circular_normal_path(self):
+        # [x, y, s, bg_0, bg_1, bg_2, A_0, A_1, A_2] -- one fewer leading param
+        # than STANDARD (no separate sx/sy), so bg/A squaring starts one index
+        # earlier too (pfit_processed[3:3+2*n_ch] vs STANDARD's [4:4+2*n_ch]).
+        pfit = np.array([4.0, 4.0, 1.3, 4.5, 4.5, 4.5, 20.0, 20.0, 20.0])
+        pcov = np.diag(np.ones(len(pfit)) * 1e-4)
+        out, err = FittingResultProcessor.process_fit_results(
+            pfit, pcov, SIZE, [1.0, 2.0], FittingStrategy.CIRCULAR, chisqr=1.0,
+        )
+        assert not np.any(np.isnan(out))
+        assert out[0] == pytest.approx(5.0)  # x + relative_coords[0]
+        assert out[1] == pytest.approx(6.0)
+        assert out[-1] == pytest.approx(1.0)  # chisqr appended
+        assert out[3] == pytest.approx(4.5 ** 2)  # bg squared
+        assert out[6] == pytest.approx(20.0 ** 2)  # amplitude squared
+
+    def test_circular_position_out_of_bounds(self):
+        # CIRCULAR's own [:3] position gate (x, y, s) -- one narrower than
+        # position_strategies' shared [:4] (x, y, sx, sy) gate above.
+        pfit = np.array([-1.0, 4.0, 1.3, 4.5, 4.5, 4.5, 20.0, 20.0, 20.0])
+        pcov = np.diag(np.ones(len(pfit)) * 1e-4)
+        out, err = FittingResultProcessor.process_fit_results(
+            pfit, pcov, SIZE, [0.0, 0.0], FittingStrategy.CIRCULAR,
+        )
+        assert np.all(np.isnan(out))
+
+    def test_circular_low_amplitude_snr_rejected(self):
+        pfit = np.array([4.0, 4.0, 1.3, 4.5, 4.5, 4.5, 20.0, 20.0, 20.0])
+        pcov = np.diag(np.ones(len(pfit)) * 1e6)
+        out, err = FittingResultProcessor.process_fit_results(
+            pfit, pcov, SIZE, [0.0, 0.0], FittingStrategy.CIRCULAR,
         )
         assert np.all(np.isnan(out))
 
@@ -592,6 +646,86 @@ class TestEllipticalFittingProcessor:
 
 
 # ======================================================================
+# CircularFittingProcessor
+# ======================================================================
+
+class TestCircularFittingProcessor:
+    def test_masks_none_raises(self):
+        punctum, masks = _synthetic_punctum()
+        with pytest.raises(FittingValidationError, match="requires masks"):
+            CircularFittingProcessor().fit_single_punctum(punctum, punctum, _weights(), [0.0, 0.0], masks=None)
+
+    def test_all_nonpositive_smoothed_returns_nan(self):
+        punctum, masks = _synthetic_punctum()
+        smoothed = np.zeros((SIZE, SIZE), dtype=np.float32)
+        pfit, err = CircularFittingProcessor().fit_single_punctum(punctum, smoothed, _weights(), [0.0, 0.0], masks=masks)
+        assert np.all(np.isnan(pfit))
+
+    def test_normal_fit_all_three_stages(self):
+        # _synthetic_punctum builds sx == sy by construction (params[2]=params[3]=sigma),
+        # i.e. a genuinely circular PSF -- exactly what CircularFittingProcessor assumes.
+        punctum, masks = _synthetic_punctum(x0=4.0, y0=4.0)
+        pfit, err = CircularFittingProcessor().fit_single_punctum(punctum, punctum, _weights(), [0.0, 0.0], masks=masks)
+        # 9 model params ([x,y,s,bg x3,A x3]) + appended chisqr; PARAM_DIMENSIONS["fit"]=11
+        # includes the plane index appended later by Image_Analysis_Functions.fit_puncta_method
+        # (same +1-beyond-fit_single_punctum convention as EllipticalFittingProcessor above).
+        assert len(pfit) == 10
+        assert not np.any(np.isnan(pfit))
+        assert pfit[0] == pytest.approx(4.0, abs=1.0)
+        assert pfit[1] == pytest.approx(4.0, abs=1.0)
+
+    def test_stage1_failure_returns_nan(self, monkeypatch):
+        punctum, masks = _synthetic_punctum()
+        proc = CircularFittingProcessor()
+        monkeypatch.setattr(proc, "_leastsq_step", lambda *a, **kw: (a[0], None, 5))
+        pfit, err = proc.fit_single_punctum(punctum, punctum, _weights(), [0.0, 0.0], masks=masks)
+        assert np.all(np.isnan(pfit))
+
+    def test_stage2_failure_returns_nan(self, monkeypatch):
+        punctum, masks = _synthetic_punctum()
+        proc = CircularFittingProcessor()
+        real_step = proc._leastsq_step
+        calls = {"n": 0}
+
+        def _step(x0, data, masks_, weights_, size):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return real_step(x0, data, masks_, weights_, size)
+            return x0, None, 5
+
+        monkeypatch.setattr(proc, "_leastsq_step", _step)
+        pfit, err = proc.fit_single_punctum(punctum, punctum, _weights(), [0.0, 0.0], masks=masks)
+        assert np.all(np.isnan(pfit))
+
+    def test_stage3_failure_returns_nan(self, monkeypatch):
+        punctum, masks = _synthetic_punctum()
+        proc = CircularFittingProcessor()
+        real_step = proc._leastsq_step
+        calls = {"n": 0}
+
+        def _step(x0, data, masks_, weights_, size):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                return real_step(x0, data, masks_, weights_, size)
+            return x0, None, 5
+
+        monkeypatch.setattr(proc, "_leastsq_step", _step)
+        pfit, err = proc.fit_single_punctum(punctum, punctum, _weights(), [0.0, 0.0], masks=masks)
+        assert np.all(np.isnan(pfit))
+
+    def test_exception_path_returns_nan(self, monkeypatch):
+        punctum, masks = _synthetic_punctum()
+        proc = CircularFittingProcessor()
+
+        def _raise(*a, **kw):
+            raise RuntimeError("forced failure")
+
+        monkeypatch.setattr(proc, "_leastsq_step", _raise)
+        pfit, err = proc.fit_single_punctum(punctum, punctum, _weights(), [0.0, 0.0], masks=masks)
+        assert np.all(np.isnan(pfit))
+
+
+# ======================================================================
 # NoColourFittingProcessor
 # ======================================================================
 
@@ -767,6 +901,16 @@ class TestImageAnalysisFunctionsSerial:
         assert pfit.shape == (1, 4 + 2 * 3 + 2)
         assert perr.shape == (1, 4 + 2 * 3)
 
+    def test_fit_puncta_method_circular_with_masks_derives_dims(self):
+        punctum, masks = _synthetic_punctum(x0=4.0, y0=4.0)
+        iaf_obj = Image_Analysis_Functions()
+        pfit, perr = iaf_obj.fit_puncta_method(
+            [punctum], [punctum], [_weights()], [[0.0, 0.0]], [0],
+            FittingStrategy.CIRCULAR, masks=[masks],
+        )
+        assert pfit.shape == (1, 3 + 2 * 3 + 2)
+        assert perr.shape == (1, 3 + 2 * 3)
+
     def test_fit_puncta_method_high_photon_count_uses_float64(self):
         # amp is integrated intensity, not peak height (model normalises by 1/(2*pi*sigma^2)),
         # so amp must be well above the max_value>50000 threshold's raw peak requirement.
@@ -825,6 +969,20 @@ class TestFitPunctaMethodStandalone:
             FittingStrategy.STANDARD, masks=[masks],
         )
         assert pfit.shape == (1, 4 + 2 * 3 + 2)
+        assert np.all(np.isnan(pfit))
+
+    def test_standalone_exception_returns_nan_circular(self, monkeypatch):
+        punctum, masks = _synthetic_punctum(x0=4.0, y0=4.0)
+
+        def _raise_init(*a, **kw):
+            raise RuntimeError("forced instantiation failure")
+
+        monkeypatch.setattr(iaf, "Image_Analysis_Functions", _raise_init)
+        pfit, perr = _fit_puncta_method_standalone(
+            [punctum], [punctum], [_weights()], [[0.0, 0.0]], [0],
+            FittingStrategy.CIRCULAR, masks=[masks],
+        )
+        assert pfit.shape == (1, 3 + 2 * 3 + 2)
         assert np.all(np.isnan(pfit))
 
     def test_standalone_exception_returns_nan_noncolour(self, monkeypatch):
