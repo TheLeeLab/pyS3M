@@ -16,7 +16,7 @@ Public API
 bin_localisations(positions, nx, ny, zoom)   — bin x,y coords → SR image
 frc(im1, im2)                                — FRC curve from two images
 frc_to_resolution(frc_curve, sz)             — 1/7-threshold resolution
-fire(positions, nx, ...)                     — single-image FIRE value
+fire(positions, nx, ..., rng=None)           — single-image FIRE value
 
 :source: Nieuwenhuizen et al. MATLAB distribution
 :ported: jsb92, 2026-03-11
@@ -325,6 +325,7 @@ def _postofrc(
     sz: int,
     zoom: float,
     n_blocks: int,
+    rng: np.random.Generator,
 ) -> np.ndarray:
     """Single temporal-split FRC curve.  Internal use only."""
     n_blocks = max(2, n_blocks)
@@ -342,7 +343,7 @@ def _postofrc(
         N = len(positions)
         blocks = (np.arange(N) * n_blocks // N) + 1
 
-    perm = np.random.permutation(n_blocks) + 1      # shuffled 1..n_blocks
+    perm = rng.permutation(n_blocks) + 1             # shuffled 1..n_blocks
     half = perm[:int(np.ceil(n_blocks / 2))]
     mask = np.isin(blocks, half)
 
@@ -359,6 +360,7 @@ def fire(
     n_blocks: int = 50,
     reps: int = 20,
     pixel_size_nm: float = 1.0,
+    rng: Optional[Union[int, np.random.Generator]] = None,
 ) -> Tuple[float, np.ndarray, float, float]:
     """Compute FIRE from a single localisation dataset.
 
@@ -378,6 +380,10 @@ def fire(
     n_blocks     : number of temporal blocks for the half-split (default 50).
     reps         : independent repeats to average over (default 20).
     pixel_size_nm: camera pixel size in nm — used to convert output to nm.
+    rng          : seed or ``np.random.Generator`` for the temporal
+                   half-split.  Default (None) draws fresh entropy each
+                   call, matching prior behaviour; pass an int or
+                   Generator for reproducible splits.
 
     Returns
     -------
@@ -401,12 +407,13 @@ def fire(
 
     sz   = max(int(nx * zoom), int(ny * zoom))
     n_blocks = max(2, min(n_blocks, len(positions)))
+    rng = rng if isinstance(rng, np.random.Generator) else np.random.default_rng(rng)
 
     frc_accum: Optional[np.ndarray] = None
     res_list: list = []
 
     for _ in range(reps):
-        curve = _postofrc(positions, sz, zoom, n_blocks)
+        curve = _postofrc(positions, sz, zoom, n_blocks, rng)
         res, _, _ = frc_to_resolution(curve, sz)
         if np.isfinite(res):
             res_list.append(res)
