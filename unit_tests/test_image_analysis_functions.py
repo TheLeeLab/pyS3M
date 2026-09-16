@@ -171,6 +171,72 @@ class TestCalculateErrors:
         out = FittingResultProcessor.calculate_errors(pcov, FittingStrategy.NOCOLOUR)
         assert all(np.isnan(v) for v in out)
 
+    def test_pfit_none_preserves_sqrt_space_error(self):
+        # Backward-compat: omitting pfit returns sqrt(diag(pcov)) unchanged --
+        # the pre-delta-method-fix behaviour, still correct for callers (e.g.
+        # POSTHENCOLOUR) that don't square pfit before using it.
+        pcov = np.diag([4.0, 9.0])
+        out = FittingResultProcessor.calculate_errors(pcov, FittingStrategy.JUSTCOLOUR)
+        assert out == pytest.approx([2.0, 3.0])
+
+    def test_pfit_applies_jacobian_correction(self):
+        # JUSTCOLOUR: the whole 2-param vector is sqrt-space (A, bg). A parameter
+        # fitted as sqrt(A)=5.0 with sqrt-space sigma=2.0 has real-space sigma
+        # sigma_A = 2*|sqrt(A)|*sigma_sqrt(A) = 2*5*2 = 20 (delta method for x^2).
+        pcov = np.diag([4.0, 9.0])
+        pfit = np.array([5.0, 3.0])
+        out = FittingResultProcessor.calculate_errors(pcov, FittingStrategy.JUSTCOLOUR, pfit)
+        assert out == pytest.approx([2 * 5.0 * 2.0, 2 * 3.0 * 3.0])
+
+    def test_pfit_only_corrects_sqrt_space_range(self):
+        # STANDARD_DATA: pfit=[x,y,sy,sx,bg_0,bg_1,bg_2,A_0,A_1,A_2] (n_ch=3).
+        # Position/width errors (indices 0:4) are not squared for storage, so
+        # they must be left untouched; only indices 4:10 (bg/A) get corrected.
+        pfit = np.array([1.0, 2.0, 1.3, 1.3, 1.0, 1.0, 1.0, 5.0, 5.0, 5.0])
+        pcov = np.diag(np.full(10, 4.0))  # sqrt-space sigma = 2.0 everywhere
+        out = FittingResultProcessor.calculate_errors(pcov, FittingStrategy.STANDARD_DATA, pfit)
+        assert out[:4] == pytest.approx([2.0, 2.0, 2.0, 2.0])
+        assert out[4:7] == pytest.approx([2 * 1.0 * 2.0] * 3)
+        assert out[7:10] == pytest.approx([2 * 5.0 * 2.0] * 3)
+
+    def test_pfit_shorter_than_pcov_clips_safely(self):
+        # Degenerate-fit-style length mismatch between pfit and pcov: the
+        # correction must clip to the shared length rather than raise.
+        pcov = np.diag([4.0, 9.0, 16.0])
+        pfit = np.array([5.0])  # only covers index 0
+        out = FittingResultProcessor.calculate_errors(pcov, FittingStrategy.JUSTCOLOUR, pfit)
+        assert out[0] == pytest.approx(2 * 5.0 * 2.0)
+        assert out[1] == pytest.approx(3.0)   # beyond pfit -> uncorrected
+        assert out[2] == pytest.approx(4.0)   # beyond pfit -> uncorrected
+
+
+class TestSqrtSpaceSlice:
+    def test_standard_like(self):
+        assert FittingResultProcessor._sqrt_space_slice(FittingStrategy.STANDARD, 10) == slice(4, 10)
+        assert FittingResultProcessor._sqrt_space_slice(FittingStrategy.STANDARD_ITER, 10) == slice(4, 10)
+        assert FittingResultProcessor._sqrt_space_slice(FittingStrategy.STANDARD_DATA, 10) == slice(4, 10)
+
+    def test_elliptical(self):
+        assert FittingResultProcessor._sqrt_space_slice(FittingStrategy.ELLIPTICAL, 11) == slice(5, 11)
+
+    def test_circular(self):
+        assert FittingResultProcessor._sqrt_space_slice(FittingStrategy.CIRCULAR, 9) == slice(3, 9)
+
+    def test_nocolour_long_enough(self):
+        assert FittingResultProcessor._sqrt_space_slice(FittingStrategy.NOCOLOUR, 6) == slice(4, 6)
+
+    def test_nocolour_too_short(self):
+        assert FittingResultProcessor._sqrt_space_slice(FittingStrategy.NOCOLOUR, 4) == slice(0, 0)
+
+    def test_justcolour(self):
+        assert FittingResultProcessor._sqrt_space_slice(FittingStrategy.JUSTCOLOUR, 2) == slice(0, 2)
+
+    def test_rawcolour(self):
+        assert FittingResultProcessor._sqrt_space_slice(FittingStrategy.RAWCOLOUR, 6) == slice(0, 6)
+
+    def test_unhandled_strategy_returns_empty(self):
+        assert FittingResultProcessor._sqrt_space_slice(FittingStrategy.POSTHENCOLOUR, 10) == slice(0, 0)
+
 
 class TestCalculateReducedChisquared:
     def test_basic(self):
@@ -292,6 +358,21 @@ class TestProcessFitResults:
             pfit, pcov, SIZE, [0.0, 0.0], FittingStrategy.STANDARD,
         )
         assert np.all(np.isnan(out))
+
+    def test_standard_like_error_jacobian_corrected(self):
+        # End-to-end: process_fit_results must pass pfit through to
+        # calculate_errors so amplitude/background errors come back
+        # delta-method-corrected (real-space), not raw sqrt-space sigma.
+        pfit = np.array([4.0, 4.0, 1.3, 1.3, 4.5, 4.5, 4.5, 20.0, 20.0, 20.0])
+        pcov = np.diag(np.full(len(pfit), 0.01 ** 2))  # sqrt-space sigma = 0.01
+        out, err = FittingResultProcessor.process_fit_results(
+            pfit, pcov, SIZE, [0.0, 0.0], FittingStrategy.STANDARD, chisqr=1.0,
+        )
+        assert not np.any(np.isnan(out))
+        # bg errors: sigma_bg = 2*|sqrt(bg)|*sigma_sqrt(bg) = 2*4.5*0.01
+        assert err[4:7] == pytest.approx([2 * 4.5 * 0.01] * 3)
+        # A errors: sigma_A = 2*|sqrt(A)|*sigma_sqrt(A) = 2*20.0*0.01
+        assert err[7:10] == pytest.approx([2 * 20.0 * 0.01] * 3)
 
     def test_standard_like_relative_coords_none_skips_offset(self):
         pfit = np.array([4.0, 4.0, 1.3, 1.3, 4.5, 4.5, 4.5, 20.0, 20.0, 20.0])
