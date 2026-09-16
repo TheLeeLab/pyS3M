@@ -1644,6 +1644,7 @@ class SuperRes_Functions:
         use_variance_aware_demosaic: bool = True,
         use_elliptical: bool = False,
         use_circular: bool = False,
+        combined_output: bool = False,
     ) -> None:
         """Single-molecule data fitting function.
 
@@ -1672,7 +1673,14 @@ class SuperRes_Functions:
             use_circular (bool): Use FittingStrategy.CIRCULAR (STANDARD_DATA with s_x/s_y
                 constrained to one shared width, "s") instead of STANDARD_DATA. Mutually
                 exclusive with use_elliptical.
-
+            combined_output (bool): If True, treat every TIFF in image_folder as one
+                continuous field of view: frame numbers accumulate across files and all
+                results are appended to a single image_folder/Localisations.h5, matching
+                fit_imaging_data's behaviour. Use for a FOV split across multiple TIFFs
+                (e.g. Micro-Manager's automatic multi-part split once a recording exceeds
+                its per-file size limit). If False (default), each TIFF is its own FOV and
+                gets its own HDF5 file alongside it — use when image_folder genuinely holds
+                multiple separate FOVs.
 
         Returns:
             bayer_image (np.ndarray): colour images imaged through the bayer filter supplied
@@ -1683,7 +1691,7 @@ class SuperRes_Functions:
             pixel_size=pixel_size, sigma=sigma, fraction_true=fraction_true,
             image_type=image_type, use_variance_aware_demosaic=use_variance_aware_demosaic,
             use_elliptical=use_elliptical, use_circular=use_circular,
-            accumulate_frame_numbers=False, combined_output=False,
+            accumulate_frame_numbers=combined_output, combined_output=combined_output,
         )
 
     def _fit_files(
