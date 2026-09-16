@@ -256,6 +256,17 @@ def test_frc_to_resolution_invalid_variance_falls_back(monkeypatch):
     assert np.isfinite(res) or np.isnan(res)
 
 
+def test_frc_to_resolution_increasing_crossing_only_is_nan():
+    # A monotonically increasing curve crosses the 1/7 threshold going up,
+    # never down -- isects is non-empty but _first_decreasing_crossing finds
+    # no decreasing crossing, so q_cross (and therefore resolution) is NaN.
+    sz = 64
+    n = len(_radial_sum(np.ones((sz, sz))))
+    curve = np.linspace(0.0, 1.0, n)
+    res, hi, lo = frc_to_resolution(curve, sz)
+    assert np.isnan(res)
+
+
 def test_frc_to_resolution_length_mismatch_raises():
     curve = np.ones(50)   # wrong length for sz=128
     with pytest.raises(ValueError):
@@ -281,7 +292,7 @@ def test_fire_finite_result():
     ])
     res_nm, curve, hi, lo = fire(
         positions, nx=sz, ny=sz, zoom=1.0,
-        n_blocks=10, reps=3, pixel_size_nm=100.0,
+        n_blocks=10, reps=3, pixel_size_nm=100.0, rng=RNG,
     )
     assert np.isfinite(res_nm)
     assert res_nm > 0

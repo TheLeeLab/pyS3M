@@ -228,6 +228,27 @@ class TestWLSChiElliptical:
         np.testing.assert_allclose(jit_out, 0.0, atol=1e-6)
 
 
+class TestWLSChiCircular:
+    def test_basic_and_py_func(self):
+        # params: [x, y, s, bg_0, bg_1, bg_2, A_0, A_1, A_2] -- one shared width,
+        # duplicated into both the sigma_y and sigma_x slots before delegating to
+        # the same WLS_model_nobounds STANDARD_DATA uses (see WLS_chi_circular_nobounds's
+        # docstring). Build the generating model from that expanded [x,y,s,s,bg...,A...]
+        # vector so chi against its own generating model is ~0, matching every other
+        # WLS_chi_* test above.
+        x = _x()
+        masks = _bayer_masks()
+        params = np.array([3.0, 3.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0])
+        full_params = np.array([3.0, 3.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0])
+        data = gf.WLS_model_nobounds(full_params, masks, x, np.zeros((SIZE, SIZE)))
+        weights = np.ones((SIZE, SIZE))
+        ravelsize = SIZE * SIZE
+        jit_out = gf.WLS_chi_circular_nobounds(params, data, masks, weights, SIZE, ravelsize)
+        py_out = gf.WLS_chi_circular_nobounds.py_func(params, data, masks, weights, SIZE, ravelsize)
+        np.testing.assert_allclose(jit_out, py_out)
+        np.testing.assert_allclose(jit_out, 0.0, atol=1e-6)
+
+
 # ======================================================================
 # Initial-guess helpers (_sum_and_centre_of_mass / _initial_sigma / _initial_theta)
 # ======================================================================

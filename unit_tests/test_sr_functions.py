@@ -144,6 +144,18 @@ class TestFilterFitResults:
         out = sr._filter_fit_results(fit_results, width=100, height=100)
         assert len(out) == 1
 
+    def test_single_s_column_filtered(self, sr):
+        # CIRCULAR-style results: single shared 's' column instead of s_x/s_y.
+        fit_results = pd.DataFrame({
+            "xc": [10.0, 10.0], "yc": [10.0, 10.0],
+            "s": [1.0, 5.0],  # second row: s=5 > 3 -> filtered out
+            "A_B": [5.0, 5.0], "A_G": [5.0, 5.0], "A_R": [5.0, 5.0],
+            "bg_B": [2.0, 2.0], "bg_G": [2.0, 2.0], "bg_R": [2.0, 2.0],
+        })
+        out = sr._filter_fit_results(fit_results, width=100, height=100)
+        assert len(out) == 1
+        assert out["s"].iloc[0] == 1.0
+
 
 # ======================================================================
 # _process_roi / _process_detected_puncta_batch -- small branch gaps
@@ -200,6 +212,43 @@ class TestFitFilesPixelSizeDefault:
         sr.fit_SM_data(
             str(tmp_path), _smoothing_function(), maps["gain_map"], maps["offset_map"],
             maps["rqe"], maps["read_noise"], maps["variance"], pixel_size=None,
+        )  # must not raise
+
+
+# ======================================================================
+# _fit_files -- use_elliptical / use_circular strategy dispatch
+# ======================================================================
+
+class TestFitFilesStrategyDispatch:
+    def test_use_elliptical_and_use_circular_mutually_exclusive_raises(self, sr, tmp_path):
+        # Fires before any file I/O -- no need for file_search/load_metadata_roi setup.
+        maps = _calibration_maps(8, 8)
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            sr.fit_SM_data(
+                str(tmp_path), _smoothing_function(), maps["gain_map"], maps["offset_map"],
+                maps["rqe"], maps["read_noise"], maps["variance"],
+                use_elliptical=True, use_circular=True,
+            )
+
+    def test_use_elliptical_selects_elliptical_strategy(self, sr, tmp_path, monkeypatch):
+        # Same "file_search -> [] so the per-file loop body never executes" trick as
+        # TestFitFilesPixelSizeDefault above -- isolates the strategy-selection branch
+        # itself without paying for real detection.
+        monkeypatch.setattr(sr.helper, "file_search", lambda *a, **kw: [])
+        monkeypatch.setattr(sr.helper, "load_metadata_roi", lambda *a, **kw: (0, 0, 8, 8))
+        maps = _calibration_maps(8, 8)
+        sr.fit_SM_data(
+            str(tmp_path), _smoothing_function(), maps["gain_map"], maps["offset_map"],
+            maps["rqe"], maps["read_noise"], maps["variance"], use_elliptical=True,
+        )  # must not raise
+
+    def test_use_circular_selects_circular_strategy(self, sr, tmp_path, monkeypatch):
+        monkeypatch.setattr(sr.helper, "file_search", lambda *a, **kw: [])
+        monkeypatch.setattr(sr.helper, "load_metadata_roi", lambda *a, **kw: (0, 0, 8, 8))
+        maps = _calibration_maps(8, 8)
+        sr.fit_SM_data(
+            str(tmp_path), _smoothing_function(), maps["gain_map"], maps["offset_map"],
+            maps["rqe"], maps["read_noise"], maps["variance"], use_circular=True,
         )  # must not raise
 
 

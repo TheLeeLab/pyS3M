@@ -170,12 +170,53 @@ class FittingResultProcessor:
     """Handles processing and validation of fitting results."""
 
     @staticmethod
-    def calculate_errors(pcov: np.ndarray, strategy: FittingStrategy) -> List[float]:
+    def _sqrt_space_slice(strategy: FittingStrategy, length: int) -> slice:
+        """Index range of sqrt-space amplitude/background parameters for a strategy.
+
+        leastsq fits amplitude/background as sqrt(value) to enforce positivity;
+        process_fit_results squares this same range to recover the real-space
+        values it stores (e.g. A_R, bg_R). calculate_errors needs the identical
+        range to delta-method-propagate their errors into those same real-space
+        units — this is the single source of truth both use, so the two can't
+        drift out of sync.
+        """
+        standard_like = {
+            FittingStrategy.STANDARD, FittingStrategy.STANDARD_ITER, FittingStrategy.STANDARD_DATA,
+        }
+        if strategy in standard_like:
+            n_ch = (length - 4) // 2
+            return slice(4, 4 + 2 * n_ch)
+        if strategy == FittingStrategy.ELLIPTICAL:
+            return slice(5, 11)
+        if strategy == FittingStrategy.CIRCULAR:
+            n_ch_circ = (length - 3) // 2
+            return slice(3, 3 + 2 * n_ch_circ)
+        if strategy == FittingStrategy.NOCOLOUR:
+            return slice(4, 6) if length >= 6 else slice(0, 0)
+        if strategy == FittingStrategy.JUSTCOLOUR:
+            return slice(0, 2)
+        if strategy == FittingStrategy.RAWCOLOUR:
+            return slice(0, 6)
+        return slice(0, 0)
+
+    @staticmethod
+    def calculate_errors(
+        pcov: np.ndarray, strategy: FittingStrategy, pfit: Optional[np.ndarray] = None,
+    ) -> List[float]:
         """Calculate parameter errors from covariance matrix.
 
         Args:
             pcov: Parameter covariance matrix from fitting.
             strategy: Fitting strategy to determine expected error array size.
+            pfit: Raw (sqrt-space, pre-squaring) fitted parameters, same order
+                as pcov's rows/columns. When given, the sqrt-space amplitude/
+                background entries (see _sqrt_space_slice) are delta-method
+                propagated into real-space errors via sigma_A = 2*|sqrt(A)|*
+                sigma_sqrt(A) — matching process_fit_results squaring those
+                same parameters for storage. Omitting it returns errors in
+                whatever space pcov's diagonal is in (sqrt-space for those
+                entries) — only correct for callers that don't square pfit
+                before using it (e.g. FittingStrategy.POSTHENCOLOUR).
 
         Returns:
             List of parameter errors (standard deviations).
@@ -205,6 +246,14 @@ class FittingResultProcessor:
             # perfectly precise.  0.0 was the old value and caused eps=0 in DBSCAN
             # when chi_sqr is very small (bright spots → pcov*chisqr→0).
             errors = np.where(diagonal > 0, np.sqrt(diagonal), np.nan)
+
+            if pfit is not None:
+                sqrt_slice = FittingResultProcessor._sqrt_space_slice(strategy, len(pfit))
+                stop = min(sqrt_slice.stop, len(errors), len(pfit))
+                start = min(sqrt_slice.start, stop)
+                fixed = slice(start, stop)
+                errors[fixed] = errors[fixed] * (2.0 * np.abs(pfit[fixed]))
+
             error_list = errors.tolist()
 
             # Pad if pcov was undersized (degenerate fit)
@@ -470,8 +519,10 @@ class FittingResultProcessor:
         # Append chi-squared
         pfit_final = np.append(pfit_processed, chisqr)
 
-        # Calculate errors
-        errors = FittingResultProcessor.calculate_errors(pcov, strategy)
+        # Calculate errors — pfit (raw, sqrt-space, pre-squaring) is required so
+        # sqrt-space amplitude/background errors get delta-method propagated into
+        # the same real-space units as the squared values stored above.
+        errors = FittingResultProcessor.calculate_errors(pcov, strategy, pfit)
 
         return pfit_final, np.array(errors)
 
