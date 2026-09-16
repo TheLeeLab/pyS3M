@@ -2,7 +2,7 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
-    QComboBox, QDoubleSpinBox, QSpinBox, QPushButton, QLineEdit,
+    QComboBox, QDoubleSpinBox, QSpinBox, QPushButton, QLineEdit, QLabel,
 )
 from PyQt6.QtCore import pyqtSignal
 
@@ -14,6 +14,41 @@ _PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
 _TEST_TIFFS_DIR = _PROJECT_ROOT / "test_tiffs"
 
 _FRET_QD_MODES = ("fret", "qd")
+
+# GUI-only mode identifiers (combo box userData) -> the mode string AnalysisPipeline.fit
+# actually understands. "smlm_single"/"smlm_multi" both dispatch to "smlm" — they differ
+# only in the combined_output extra kwarg set below, not in which pipeline method runs.
+_PIPELINE_MODE = {
+    "smlm_single": "smlm",
+    "smlm_multi": "smlm",
+    "fret": "fret",
+    "qd": "qd",
+}
+
+# Short description shown beneath the mode dropdown so the single-vs-multi-FOV distinction
+# (and what each multi-file mode actually iterates over) doesn't have to be guessed from
+# the combo box label alone.
+_MODE_DESCRIPTIONS = {
+    "smlm_single": (
+        "Treats every TIFF in the data folder as one continuous field of view: frame "
+        "numbers carry over between files and all results are written to a single "
+        "Localisations.h5. Use this when a recording has been split into several TIFF "
+        "parts (e.g. Micro-Manager's automatic split once a file hits its size limit)."
+    ),
+    "smlm_multi": (
+        "Fits each TIFF in the data folder independently and writes one Localisations "
+        "HDF5 per TIFF, alongside it. Use this when the folder holds several separate "
+        "fields of view, not one FOV split across files."
+    ),
+    "fret": (
+        "Change-point detection across every TIFF in the folder, each treated as its own "
+        "FOV/trace source."
+    ),
+    "qd": (
+        "Full time-series quantum-dot fitting across every TIFF in the folder, each "
+        "treated as its own FOV."
+    ),
+}
 
 
 class FittingPanel(QWidget):
@@ -49,12 +84,17 @@ class FittingPanel(QWidget):
         form.addRow("Data folder:", self._data_dir)
 
         self._mode = QComboBox()
-        self._mode.addItem("Single-FOV (SMLM)", userData="smlm")
-        self._mode.addItem("Multi-FOV (SMLM, multiple files)", userData="smlm")
+        self._mode.addItem("Single-FOV (SMLM)", userData="smlm_single")
+        self._mode.addItem("Multi-FOV (SMLM, multiple files)", userData="smlm_multi")
         self._mode.addItem("Multi-FOV FRET (change-point detection, multi-file)", userData="fret")
         self._mode.addItem("Multi-FOV Quantum Dot (full time series, multi-file)", userData="qd")
         self._mode.currentIndexChanged.connect(self._on_mode_changed)
         form.addRow("Mode:", self._mode)
+
+        self._mode_hint = QLabel()
+        self._mode_hint.setWordWrap(True)
+        self._mode_hint.setStyleSheet("color: palette(mid); font-size: 11px;")
+        form.addRow("", self._mode_hint)
 
         self._pfa = QLineEdit("1e-3")
         self._pfa.setPlaceholderText("e.g. 1e-3")
@@ -158,6 +198,10 @@ class FittingPanel(QWidget):
 
         outer.addWidget(flt_grp)
 
+        # currentIndexChanged doesn't fire for the combo box's initial default item —
+        # populate the hint text (and adv-group visibility) for it explicitly.
+        self._on_mode_changed(self._mode.currentIndex())
+
     # ── helpers ──────────────────────────────────────────────────────
 
     def _make_fitting_config(self):
@@ -184,6 +228,8 @@ class FittingPanel(QWidget):
             extra["cp_penalty_factor"] = self._cp_penalty.value()
         if mode == "qd":
             extra["chunk_size"] = self._chunk_size.value()
+        if mode == "smlm_single":
+            extra["combined_output"] = True
         return extra
 
     def _on_mode_changed(self, _idx: int):
@@ -194,6 +240,7 @@ class FittingPanel(QWidget):
         self._adv_form.setRowVisible(self._chunk_row_idx, mode == "qd")
         # Preview only applies to single-frame SMLM modes
         self._preview_btn.setVisible(not is_fret_qd)
+        self._mode_hint.setText(_MODE_DESCRIPTIONS.get(mode, ""))
         self._update_btns()
 
     def _update_btns(self):
@@ -210,9 +257,10 @@ class FittingPanel(QWidget):
         self.stats_refresh_requested.emit(self.photon_range)
 
     def _on_run_clicked(self):
+        gui_mode = self._mode.currentData()
         self.fit_requested.emit(
             self._data_dir.path,
-            self._mode.currentData(),
+            _PIPELINE_MODE.get(gui_mode, gui_mode),
             self._make_fitting_config(),
             self._extra_kwargs(),
         )
