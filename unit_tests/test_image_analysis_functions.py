@@ -189,15 +189,39 @@ class TestCalculateErrors:
         assert out == pytest.approx([2 * 5.0 * 2.0, 2 * 3.0 * 3.0])
 
     def test_pfit_only_corrects_sqrt_space_range(self):
-        # STANDARD_DATA: pfit=[x,y,sy,sx,bg_0,bg_1,bg_2,A_0,A_1,A_2] (n_ch=3).
-        # Position/width errors (indices 0:4) are not squared for storage, so
-        # they must be left untouched; only indices 4:10 (bg/A) get corrected.
+        # ELLIPTICAL: not STANDARD-like, so only the plain Jacobian correction
+        # applies (no ratio-propagation branch) -- theta (index 4) and position
+        # (0:4) are untouched, bg/A (5:11) get 2*|sqrt(V)|*sigma_sqrt(V).
+        pfit = np.array([1.0, 2.0, 1.3, 1.3, 0.4, 1.0, 1.0, 1.0, 5.0, 5.0, 5.0])
+        pcov = np.diag(np.full(11, 4.0))  # sqrt-space sigma = 2.0 everywhere
+        out = FittingResultProcessor.calculate_errors(pcov, FittingStrategy.ELLIPTICAL, pfit)
+        assert out[:5] == pytest.approx([2.0, 2.0, 2.0, 2.0, 2.0])
+        assert out[5:8] == pytest.approx([2 * 1.0 * 2.0] * 3)
+        assert out[8:11] == pytest.approx([2 * 5.0 * 2.0] * 3)
+
+    def test_standard_data_bg_amp_ratio_propagated(self):
+        # STANDARD_DATA IS standard-like: bg/A (4:10) get the full ratio-
+        # propagation (ImageAnalysisFunctions._propagate_ratio_errors), not
+        # just the plain Jacobian correction -- position (0:4) still untouched.
+        # Equal raw values (bg=[1,1,1]^2=1 each, A=[5,5,5]^2=25 each) and a
+        # diagonal-only sqrt-space covariance (sigma=2 everywhere): hand
+        # cross-checked against _propagate_ratio_errors directly.
         pfit = np.array([1.0, 2.0, 1.3, 1.3, 1.0, 1.0, 1.0, 5.0, 5.0, 5.0])
-        pcov = np.diag(np.full(10, 4.0))  # sqrt-space sigma = 2.0 everywhere
+        pcov = np.diag(np.full(10, 4.0))
         out = FittingResultProcessor.calculate_errors(pcov, FittingStrategy.STANDARD_DATA, pfit)
         assert out[:4] == pytest.approx([2.0, 2.0, 2.0, 2.0])
-        assert out[4:7] == pytest.approx([2 * 1.0 * 2.0] * 3)
-        assert out[7:10] == pytest.approx([2 * 5.0 * 2.0] * 3)
+        assert out[4:7] == pytest.approx([1.08866211] * 3, rel=1e-6)
+        assert out[7:10] == pytest.approx([0.21773242] * 3, rel=1e-6)
+
+    def test_standard_data_undersized_pcov_skips_ratio_propagation(self):
+        # pcov smaller than the bg/A group ranges it needs (degenerate-fit-style
+        # mismatch, as already handled for the plain Jacobian correction) --
+        # both groups fall below the 2-element minimum for a ratio to even be
+        # defined, so the loop's `continue` guard is exercised without error.
+        pfit = np.array([1.0, 2.0, 1.3, 1.3, 1.0, 1.0, 1.0, 5.0, 5.0, 5.0])
+        pcov = np.diag(np.full(5, 4.0))
+        out = FittingResultProcessor.calculate_errors(pcov, FittingStrategy.STANDARD_DATA, pfit)
+        assert out[:4] == pytest.approx([2.0, 2.0, 2.0, 2.0])
 
     def test_pfit_shorter_than_pcov_clips_safely(self):
         # Degenerate-fit-style length mismatch between pfit and pcov: the
@@ -236,6 +260,80 @@ class TestSqrtSpaceSlice:
 
     def test_unhandled_strategy_returns_empty(self):
         assert FittingResultProcessor._sqrt_space_slice(FittingStrategy.POSTHENCOLOUR, 10) == slice(0, 0)
+
+
+class TestBgAmpSlices:
+    def test_standard_like_splits_at_midpoint(self):
+        bg, amp = FittingResultProcessor._bg_amp_slices(FittingStrategy.STANDARD_DATA, 10)
+        assert bg == slice(4, 7)
+        assert amp == slice(7, 10)
+
+    def test_elliptical_splits_at_midpoint(self):
+        bg, amp = FittingResultProcessor._bg_amp_slices(FittingStrategy.ELLIPTICAL, 11)
+        assert bg == slice(5, 8)
+        assert amp == slice(8, 11)
+
+    def test_circular_splits_at_midpoint(self):
+        bg, amp = FittingResultProcessor._bg_amp_slices(FittingStrategy.CIRCULAR, 9)
+        assert bg == slice(3, 6)
+        assert amp == slice(6, 9)
+
+    def test_rawcolour_splits_at_midpoint(self):
+        bg, amp = FittingResultProcessor._bg_amp_slices(FittingStrategy.RAWCOLOUR, 6)
+        assert bg == slice(0, 3)
+        assert amp == slice(3, 6)
+
+    def test_single_channel_pair_returns_empty(self):
+        # NOCOLOUR/JUSTCOLOUR: one bg + one A value, n=2 -- no ratio to
+        # propagate (a lone channel's fraction is always exactly 1).
+        bg, amp = FittingResultProcessor._bg_amp_slices(FittingStrategy.NOCOLOUR, 6)
+        assert bg == slice(0, 0)
+        assert amp == slice(0, 0)
+
+    def test_unhandled_strategy_returns_empty(self):
+        bg, amp = FittingResultProcessor._bg_amp_slices(FittingStrategy.POSTHENCOLOUR, 10)
+        assert bg == slice(0, 0)
+        assert amp == slice(0, 0)
+
+
+class TestPropagateRatioErrors:
+    def test_symmetric_zero_cross_covariance(self):
+        # Two equal channels, independent (no off-diagonal): hand-derived via
+        # the delta method, grad_0 = [(T-V0)/T^2, -V0/T^2] = [0.25, -0.25] for
+        # V=[1,1], T=2 -> Var(p0) = 0.25^2*4*1 + 0.25^2*4*1 = 0.5.
+        out = FittingResultProcessor._propagate_ratio_errors(
+            np.array([1.0, 1.0]), np.eye(2),
+        )
+        np.testing.assert_allclose(out, [np.sqrt(0.5), np.sqrt(0.5)])
+
+    def test_full_covariance_differs_from_diagonal_only(self):
+        # Regression guard: the off-diagonal terms must actually be used, not
+        # silently dropped back to an independent-channels approximation.
+        raw = np.array([4.0, 2.0, 2.0])
+        sqrtcov = np.array([
+            [0.01, -0.005, -0.004],
+            [-0.005, 0.02, -0.003],
+            [-0.004, -0.003, 0.015],
+        ])
+        full = FittingResultProcessor._propagate_ratio_errors(raw, sqrtcov)
+        diag_only = FittingResultProcessor._propagate_ratio_errors(raw, np.diag(np.diag(sqrtcov)))
+        np.testing.assert_allclose(full, [0.04823635, 0.04542445, 0.04077367], rtol=1e-6)
+        assert not np.allclose(full, diag_only)
+
+    def test_nonpositive_total_returns_nan(self):
+        out = FittingResultProcessor._propagate_ratio_errors(
+            np.array([0.0, 0.0]), np.eye(2),
+        )
+        assert np.all(np.isnan(out))
+
+    def test_non_finite_covariance_returns_nan(self):
+        cov = np.array([[1.0, np.inf], [np.inf, 1.0]])
+        out = FittingResultProcessor._propagate_ratio_errors(np.array([1.0, 1.0]), cov)
+        assert np.all(np.isnan(out))
+
+    def test_empty_input(self):
+        out = FittingResultProcessor._propagate_ratio_errors(np.array([]), np.zeros((0, 0)))
+        assert out.shape == (0,)
 
 
 class TestCalculateReducedChisquared:
@@ -332,6 +430,9 @@ class TestProcessFitResults:
         assert np.all(np.isnan(pfit))
 
     def test_standard_like_normal_path(self):
+        # bg=[4.5,4.5,4.5] -> squared [20.25]*3, sum=60.75=background_photons.
+        # A=[20,20,20] -> squared [400]*3, sum=1200=photons. bg/A values in
+        # `out` come back normalised to fractions (1/3 each, equal inputs).
         pfit = np.array([4.0, 4.0, 1.3, 1.3, 4.5, 4.5, 4.5, 20.0, 20.0, 20.0])
         n = len(pfit)
         pcov = np.diag(np.ones(n) * 1e-4)
@@ -341,7 +442,11 @@ class TestProcessFitResults:
         assert not np.any(np.isnan(out))
         assert out[0] == pytest.approx(5.0)  # x + relative_coords[0]
         assert out[1] == pytest.approx(6.0)
-        assert out[-1] == pytest.approx(1.0)  # chisqr appended
+        assert out[4:7] == pytest.approx([1 / 3] * 3)  # bg_B/G/R fractions
+        assert out[7:10] == pytest.approx([1 / 3] * 3)  # A_B/G/R fractions
+        assert out[-3] == pytest.approx(1.0)   # chisqr
+        assert out[-2] == pytest.approx(1200.0)  # photons (raw A total)
+        assert out[-1] == pytest.approx(60.75)   # background_photons (raw bg total)
 
     def test_standard_like_position_out_of_bounds(self):
         pfit = np.array([-1.0, 4.0, 1.3, 1.3, 4.5, 4.5, 4.5, 20.0, 20.0, 20.0])
@@ -359,20 +464,33 @@ class TestProcessFitResults:
         )
         assert np.all(np.isnan(out))
 
+    def test_standard_like_degenerate_zero_background_rejected(self):
+        # bg sqrt-space values all 0 -> squared bg all 0 -> background_photons
+        # total <= 0 -- degenerate, same treatment as the position/SNR gates.
+        pfit = np.array([4.0, 4.0, 1.3, 1.3, 0.0, 0.0, 0.0, 20.0, 20.0, 20.0])
+        pcov = np.diag(np.ones(len(pfit)) * 1e-4)
+        out, err = FittingResultProcessor.process_fit_results(
+            pfit, pcov, SIZE, [0.0, 0.0], FittingStrategy.STANDARD, chisqr=1.0,
+        )
+        assert np.all(np.isnan(out))
+
     def test_standard_like_error_jacobian_corrected(self):
-        # End-to-end: process_fit_results must pass pfit through to
-        # calculate_errors so amplitude/background errors come back
-        # delta-method-corrected (real-space), not raw sqrt-space sigma.
+        # End-to-end: process_fit_results must pass pfit/pcov through to
+        # calculate_errors so amplitude/background errors come back fully
+        # ratio-propagated (real-space, fractional units matching `out`'s
+        # now-normalised values), not raw sqrt-space sigma. Equal-valued
+        # groups + diagonal-only pcov: hand cross-checked against
+        # _propagate_ratio_errors directly (same numbers as
+        # TestCalculateErrors.test_standard_data_bg_amp_ratio_propagated,
+        # scaled for this test's sigma=0.01 vs that test's sigma=2.0).
         pfit = np.array([4.0, 4.0, 1.3, 1.3, 4.5, 4.5, 4.5, 20.0, 20.0, 20.0])
         pcov = np.diag(np.full(len(pfit), 0.01 ** 2))  # sqrt-space sigma = 0.01
         out, err = FittingResultProcessor.process_fit_results(
             pfit, pcov, SIZE, [0.0, 0.0], FittingStrategy.STANDARD, chisqr=1.0,
         )
         assert not np.any(np.isnan(out))
-        # bg errors: sigma_bg = 2*|sqrt(bg)|*sigma_sqrt(bg) = 2*4.5*0.01
-        assert err[4:7] == pytest.approx([2 * 4.5 * 0.01] * 3)
-        # A errors: sigma_A = 2*|sqrt(A)|*sigma_sqrt(A) = 2*20.0*0.01
-        assert err[7:10] == pytest.approx([2 * 20.0 * 0.01] * 3)
+        assert err[4:7] == pytest.approx([0.001209624564337372] * 3, rel=1e-9)
+        assert err[7:10] == pytest.approx([0.0002721655269759087] * 3, rel=1e-9)
 
     def test_standard_like_relative_coords_none_skips_offset(self):
         pfit = np.array([4.0, 4.0, 1.3, 1.3, 4.5, 4.5, 4.5, 20.0, 20.0, 20.0])
@@ -979,7 +1097,7 @@ class TestImageAnalysisFunctionsSerial:
             [punctum], [punctum], [_weights()], [[0.0, 0.0]], [0],
             FittingStrategy.STANDARD, masks=[masks],
         )
-        assert pfit.shape == (1, 4 + 2 * 3 + 2)
+        assert pfit.shape == (1, 4 + 2 * 3 + 4)
         assert perr.shape == (1, 4 + 2 * 3)
 
     def test_fit_puncta_method_circular_with_masks_derives_dims(self):
@@ -1049,7 +1167,7 @@ class TestFitPunctaMethodStandalone:
             [punctum], [punctum], [_weights()], [[0.0, 0.0]], [0],
             FittingStrategy.STANDARD, masks=[masks],
         )
-        assert pfit.shape == (1, 4 + 2 * 3 + 2)
+        assert pfit.shape == (1, 4 + 2 * 3 + 4)
         assert np.all(np.isnan(pfit))
 
     def test_standalone_exception_returns_nan_circular(self, monkeypatch):

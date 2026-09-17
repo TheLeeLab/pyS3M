@@ -75,11 +75,17 @@ class FittingConstants:
     TASKS_PER_WORKER = 100
 
     # Array dimensions for different strategies
+    # STANDARD/STANDARD_IG/STANDARD_ITER/STANDARD_DATA "fit" is 14, not the
+    # "naive" 4+2*n_ch+2=12: process_fit_results appends photons and
+    # background_photons (the raw per-group totals, needed downstream since
+    # A_*/bg_* are now returned already normalised into fractions -- see
+    # claude/update_error_propagataion_A_errs.md) after chi_sqr, before the
+    # plane index fit_puncta_method/_fit_puncta_method_standalone append last.
     PARAM_DIMENSIONS = {
-        FittingStrategy.STANDARD: {"fit": 12, "error": 10},
-        FittingStrategy.STANDARD_IG: {"fit": 12, "error": 10},
-        FittingStrategy.STANDARD_ITER: {"fit": 12, "error": 10},
-        FittingStrategy.STANDARD_DATA: {"fit": 12, "error": 10},
+        FittingStrategy.STANDARD: {"fit": 14, "error": 10},
+        FittingStrategy.STANDARD_IG: {"fit": 14, "error": 10},
+        FittingStrategy.STANDARD_ITER: {"fit": 14, "error": 10},
+        FittingStrategy.STANDARD_DATA: {"fit": 14, "error": 10},
         FittingStrategy.CIRCULAR: {"fit": 11, "error": 9},
         FittingStrategy.ELLIPTICAL: {"fit": 13, "error": 11},
         FittingStrategy.NOCOLOUR: {"fit": 8, "error": 6},
@@ -170,6 +176,71 @@ class FittingResultProcessor:
     """Handles processing and validation of fitting results."""
 
     @staticmethod
+    def _bg_amp_slices(strategy: FittingStrategy, length: int) -> Tuple[slice, slice]:
+        """Split _sqrt_space_slice's combined bg+A range into (bg_slice, amp_slice).
+
+        bg_* and A_* are each normalised into a fraction independently (by
+        background_photons and photons respectively) — this is the split point
+        between the two groups, for callers that need to treat them separately
+        (e.g. ratio-error propagation, which needs each group's own covariance
+        block, not the combined one). All strategies with a real multi-channel
+        bg/A grouping lay out bg block first, then A block, of equal length, so
+        the split is always the midpoint; strategies with no such grouping (a
+        single bg/A pair, or none) return two empty slices.
+        """
+        combined = FittingResultProcessor._sqrt_space_slice(strategy, length)
+        n = combined.stop - combined.start
+        # n is always even by construction (_sqrt_space_slice only ever returns
+        # 0, 2, or 2*n_ch-length ranges) — n < 4 covers "no group" (0) and
+        # "single bg/A pair, no ratio to propagate" (2) in one check.
+        if n < 4:
+            return slice(0, 0), slice(0, 0)
+        mid = combined.start + n // 2
+        return slice(combined.start, mid), slice(mid, combined.stop)
+
+    @staticmethod
+    def _propagate_ratio_errors(
+        raw_values: np.ndarray, sqrtspace_cov_block: np.ndarray,
+    ) -> np.ndarray:
+        """Delta-method propagate a channel group's raw values into fraction errors.
+
+        Computes the standard deviation of p_i = raw_values[i] / sum(raw_values)
+        for each channel i, using the *full* covariance matrix of the group (not
+        just its diagonal) — A_R/A_G/A_B (or bg_R/bg_G/bg_B) are strongly
+        anti-correlated by construction (same shared photon budget), so treating
+        them as independent, as a naive err/total division does, is a real,
+        non-negligible approximation error. See
+        claude/update_error_propagataion_A_errs.md for the full derivation.
+
+        Args:
+            raw_values: real-space (already-squared) amplitude or background
+                values for one channel group, shape (n_ch,).
+            sqrtspace_cov_block: the SQRT-SPACE covariance block for the same
+                group's indices (i.e. Cov(sqrt(V_i), sqrt(V_j)), chi-sq-scaled,
+                as returned by process_covariance) — pcov[group, group] before
+                any Jacobian correction, shape (n_ch, n_ch).
+
+        Returns:
+            Array of shape (n_ch,): std dev of each channel's fraction. NaN
+            (all entries) if the group total is non-positive or the covariance
+            block contains non-finite values.
+        """
+        n = len(raw_values)
+        total = float(np.sum(raw_values))
+        if n == 0 or total <= 0 or not np.all(np.isfinite(sqrtspace_cov_block)):
+            return np.full(n, np.nan)
+
+        sqrt_v = np.sqrt(np.maximum(raw_values, 0.0))
+        real_cov = 4.0 * np.outer(sqrt_v, sqrt_v) * sqrtspace_cov_block
+
+        variances = np.empty(n)
+        for i in range(n):
+            grad = np.full(n, -raw_values[i] / total ** 2)
+            grad[i] += 1.0 / total
+            variances[i] = grad @ real_cov @ grad
+        return np.sqrt(np.maximum(variances, 0.0))
+
+    @staticmethod
     def _sqrt_space_slice(strategy: FittingStrategy, length: int) -> slice:
         """Index range of sqrt-space amplitude/background parameters for a strategy.
 
@@ -253,6 +324,26 @@ class FittingResultProcessor:
                 start = min(sqrt_slice.start, stop)
                 fixed = slice(start, stop)
                 errors[fixed] = errors[fixed] * (2.0 * np.abs(pfit[fixed]))
+
+                # STANDARD-like strategies: process_fit_results normalises bg_*/A_*
+                # into fractions, so their errors must be too — ratio-propagate
+                # using the full covariance block (not just the diagonal Jacobian
+                # correction above), replacing those entries. See
+                # claude/update_error_propagataion_A_errs.md and
+                # _propagate_ratio_errors's own docstring for the derivation.
+                _standard_like = {
+                    FittingStrategy.STANDARD, FittingStrategy.STANDARD_ITER, FittingStrategy.STANDARD_DATA,
+                }
+                if strategy in _standard_like:
+                    bg_slice, amp_slice = FittingResultProcessor._bg_amp_slices(strategy, len(pfit))
+                    for group_slice in (bg_slice, amp_slice):
+                        gstop = min(group_slice.stop, len(pfit), pcov.shape[0])
+                        gstart = min(group_slice.start, gstop)
+                        if gstop - gstart < 2:
+                            continue
+                        g = slice(gstart, gstop)
+                        raw_values = np.square(pfit[g])
+                        errors[g] = FittingResultProcessor._propagate_ratio_errors(raw_values, pcov[g, g])
 
             error_list = errors.tolist()
 
@@ -516,12 +607,40 @@ class FittingResultProcessor:
             # params[0:3]=sqrt(bg_B/G/R), params[3:6]=sqrt(A_B/G/R) — square all
             pfit_processed[0:6] = np.square(pfit_processed[0:6])
 
-        # Append chi-squared
-        pfit_final = np.append(pfit_processed, chisqr)
+        # For STANDARD-like strategies, normalise bg_*/A_* into fractions here
+        # (rather than downstream in IOFunctions, which no longer has the
+        # covariance needed to propagate their errors correctly) and carry the
+        # raw per-group totals through as two extra appended values, so
+        # IOFunctions can still recover "photons"/"background_photons" without
+        # re-deriving them from now-fractional values — see
+        # claude/update_error_propagataion_A_errs.md. A non-positive group
+        # total (all-zero amplitudes/background — degenerate) is treated the
+        # same as the position/amplitude-SNR gates above: reject the fit.
+        if strategy in _standard_like:
+            bg_slice, amp_slice = FittingResultProcessor._bg_amp_slices(strategy, len(pfit))
+            background_photons_total = float(pfit_processed[bg_slice].sum())
+            photons_total = float(pfit_processed[amp_slice].sum())
+            if background_photons_total <= 0 or photons_total <= 0:
+                return (
+                    np.full(len(pfit_processed) + 3, np.nan),
+                    np.full(len(pfit_processed), np.nan),
+                )
+            pfit_processed[bg_slice] = pfit_processed[bg_slice] / background_photons_total
+            pfit_processed[amp_slice] = pfit_processed[amp_slice] / photons_total
+            pfit_final = np.concatenate(
+                [pfit_processed, [chisqr, photons_total, background_photons_total]]
+            )
+        else:
+            # Append chi-squared
+            pfit_final = np.append(pfit_processed, chisqr)
 
         # Calculate errors — pfit (raw, sqrt-space, pre-squaring) is required so
         # sqrt-space amplitude/background errors get delta-method propagated into
-        # the same real-space units as the squared values stored above.
+        # the same real-space units as the squared values stored above. For
+        # STANDARD-like strategies this also ratio-propagates bg_*/A_* errors
+        # into the same fractional units as the now-normalised values above,
+        # using the full covariance (not just the diagonal) — see
+        # calculate_errors's own docstring.
         errors = FittingResultProcessor.calculate_errors(pcov, strategy, pfit)
 
         return pfit_final, np.array(errors)
@@ -588,7 +707,7 @@ class StandardFittingProcessor(FittingProcessor):
         # Stage 1: fast pre-filter — skip leastsq on entirely non-positive ROIs
         if np.max(smoothed_punctum) <= 0:
             n_ch = masks.shape[-1] if masks is not None else 3
-            return (np.full(4 + 2 * n_ch + 2, np.nan), np.full(4 + 2 * n_ch, np.nan))
+            return (np.full(4 + 2 * n_ch + 3, np.nan), np.full(4 + 2 * n_ch, np.nan))
 
         # Get initial guess from smoothed and raw data
         initial_guess = self._generate_initial_guess(smoothed_punctum, punctum, masks)
@@ -650,7 +769,7 @@ class StandardFittingProcessor(FittingProcessor):
 
             if success not in np.array([1, 2, 3, 4]):
                 n_ch = (len(initial_guess) - 4) // 2
-                return (np.full(4 + 2 * n_ch + 2, np.nan), np.full(4 + 2 * n_ch, np.nan))
+                return (np.full(4 + 2 * n_ch + 3, np.nan), np.full(4 + 2 * n_ch, np.nan))
 
             # Calculate chi-squared
             residuals = gaussoptfuncs.WLS_chi_nobounds(
@@ -684,7 +803,7 @@ class StandardFittingProcessor(FittingProcessor):
                 f"Data dtype: {data.dtype}, min: {data.min():.2f}, max: {data.max():.2f}"
             )
             n_ch = (len(initial_guess) - 4) // 2
-            return (np.full(4 + 2 * n_ch + 2, np.nan), np.full(4 + 2 * n_ch, np.nan))
+            return (np.full(4 + 2 * n_ch + 3, np.nan), np.full(4 + 2 * n_ch, np.nan))
 
 
 class StandardIGFittingProcessor(StandardFittingProcessor):
@@ -718,7 +837,7 @@ class StandardIGFittingProcessor(StandardFittingProcessor):
         n_ch = masks.shape[-1]
 
         if np.max(smoothed_punctum) <= 0:
-            return (np.full(4 + 2 * n_ch + 2, np.nan), np.full(4 + 2 * n_ch, np.nan))
+            return (np.full(4 + 2 * n_ch + 3, np.nan), np.full(4 + 2 * n_ch, np.nan))
 
         xc, yc, s_x, s_y, b, A = (float(v) for v in relative_coords)
         b_ch = max(b / n_ch, 1e-6)
@@ -801,7 +920,7 @@ class StandardIterFittingProcessor(StandardFittingProcessor):
             raise FittingValidationError("Standard-ITER fitting requires masks")
 
         n_ch = masks.shape[-1]
-        nan_result = (np.full(4 + 2 * n_ch + 2, np.nan), np.full(4 + 2 * n_ch, np.nan))
+        nan_result = (np.full(4 + 2 * n_ch + 3, np.nan), np.full(4 + 2 * n_ch, np.nan))
 
         if np.max(smoothed_punctum) <= 0:
             return nan_result
@@ -896,7 +1015,7 @@ class StandardDataFittingProcessor(StandardIterFittingProcessor):
             raise FittingValidationError("Standard-DATA fitting requires masks")
 
         n_ch = masks.shape[-1]
-        nan_result = (np.full(4 + 2 * n_ch + 2, np.nan), np.full(4 + 2 * n_ch, np.nan))
+        nan_result = (np.full(4 + 2 * n_ch + 3, np.nan), np.full(4 + 2 * n_ch, np.nan))
 
         if np.max(smoothed_punctum) <= 0:
             return nan_result
@@ -1749,7 +1868,10 @@ class Image_Analysis_Functions:
         }
         if strategy in _colour_strategies and masks is not None and len(masks) > 0:
             n_ch = masks[0].shape[-1]
-            fit_dim = 4 + 2 * n_ch + 2   # [x,y,sx,sy, bg×n_ch, A×n_ch, chi, frame]
+            # [x,y,sx,sy, bg×n_ch, A×n_ch, chi, photons, background_photons, frame] --
+            # process_fit_results appends chi/photons/background_photons (+3), this
+            # loop appends the plane index last (+1) -- see PARAM_DIMENSIONS's comment.
+            fit_dim = 4 + 2 * n_ch + 4
             err_dim = 4 + 2 * n_ch        # [xe,ye,sxe,sye, bg_err×n_ch, A_err×n_ch]
         elif strategy == FittingStrategy.CIRCULAR and masks is not None and len(masks) > 0:
             n_ch = masks[0].shape[-1]
@@ -1979,7 +2101,7 @@ def _fit_puncta_method_standalone(
         }
         if strategy in _colour_strategies and masks is not None and len(masks) > 0:
             n_ch = masks[0].shape[-1]
-            fit_dim = 4 + 2 * n_ch + 2
+            fit_dim = 4 + 2 * n_ch + 4  # see fit_puncta_method's matching comment
             err_dim = 4 + 2 * n_ch
         elif strategy == FittingStrategy.CIRCULAR and masks is not None and len(masks) > 0:
             n_ch = masks[0].shape[-1]
