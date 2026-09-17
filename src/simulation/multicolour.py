@@ -851,17 +851,11 @@ class MultiC_Sim_Funcs_Refactored:
         )
 
         _lbls = camera_params.pixel_order
-        # bg_*/A_* arrive already normalised into fractions with correctly
-        # ratio-propagated errors, and photons/background_photons already
-        # computed -- ImageAnalysisFunctions.process_fit_results/calculate_errors
-        # do this now (see claude/update_error_propagataion_A_errs.md), so this
-        # function no longer needs its own (duplicate, and now-wrong-if-applied-
-        # twice) sqrt-space Jacobian correction or naive re-normalisation.
         columns = (
             ["xc", "yc", "s_x", "s_y"]
             + [f"bg_{l}" for l in _lbls]
             + [f"A_{l}" for l in _lbls]
-            + ["chi_sqr", "photons", "background_photons", "frame"]
+            + ["chi_sqr", "frame"]
         )
         error_columns = (
             ["xc_err", "yc_err", "s_x_err", "s_y_err"]
@@ -877,6 +871,23 @@ class MultiC_Sim_Funcs_Refactored:
         fit_results = pd.concat(
             [fit_results.reset_index(drop=True), fit_errors_df], axis=1
         )
+
+        # Sqrt transformation error correction (fitter returns A after squaring; errors are for sqrt(A))
+        for l in _lbls:
+            for col, err in [(f"A_{l}", f"A_{l}_err"), (f"bg_{l}", f"bg_{l}_err")]:
+                mask = fit_results[col] > 0
+                fit_results.loc[mask, err] = (
+                    fit_results.loc[mask, err] * 2.0 * np.sqrt(fit_results.loc[mask, col])
+                )
+
+        fit_results["photons"] = sum(fit_results[f"A_{l}"] for l in _lbls)
+        fit_results["background_photons"] = sum(fit_results[f"bg_{l}"] for l in _lbls)
+
+        for l in _lbls:
+            fit_results[f"A_{l}"] /= fit_results["photons"]
+            fit_results[f"A_{l}_err"] /= fit_results["photons"]
+            fit_results[f"bg_{l}"] /= fit_results["background_photons"]
+            fit_results[f"bg_{l}_err"] /= fit_results["background_photons"]
 
         return fit_results
 
@@ -1002,13 +1013,11 @@ class MultiC_Sim_Funcs_Refactored:
         )
 
         _lbls = camera_params.pixel_order
-        # See _fit_standard's matching comment: bg_*/A_* and photons/
-        # background_photons already arrive correctly normalised/propagated.
         columns = (
             ["xc", "yc", "s_x", "s_y"]
             + [f"bg_{l}" for l in _lbls]
             + [f"A_{l}" for l in _lbls]
-            + ["chi_sqr", "photons", "background_photons", "frame"]
+            + ["chi_sqr", "frame"]
         )
         error_columns = (
             ["xc_err", "yc_err", "s_x_err", "s_y_err"]
@@ -1019,6 +1028,22 @@ class MultiC_Sim_Funcs_Refactored:
         fit_results = pd.DataFrame(fit_results, columns=columns).sort_values(by=["frame"])
         fit_errors_df = pd.DataFrame(fit_errors, columns=error_columns)
         fit_results = pd.concat([fit_results.reset_index(drop=True), fit_errors_df], axis=1)
+
+        for l in _lbls:
+            for col, err in [(f"A_{l}", f"A_{l}_err"), (f"bg_{l}", f"bg_{l}_err")]:
+                mask = fit_results[col] > 0
+                fit_results.loc[mask, err] = (
+                    fit_results.loc[mask, err] * 2.0 * np.sqrt(fit_results.loc[mask, col])
+                )
+
+        fit_results["photons"] = sum(fit_results[f"A_{l}"] for l in _lbls)
+        fit_results["background_photons"] = sum(fit_results[f"bg_{l}"] for l in _lbls)
+
+        for l in _lbls:
+            fit_results[f"A_{l}"] /= fit_results["photons"]
+            fit_results[f"A_{l}_err"] /= fit_results["photons"]
+            fit_results[f"bg_{l}"] /= fit_results["background_photons"]
+            fit_results[f"bg_{l}_err"] /= fit_results["background_photons"]
 
         return fit_results
 
@@ -1067,13 +1092,11 @@ class MultiC_Sim_Funcs_Refactored:
         )
 
         _lbls = camera_params.pixel_order
-        # See _fit_standard's matching comment: bg_*/A_* and photons/
-        # background_photons already arrive correctly normalised/propagated.
         columns = (
             ["xc", "yc", "s_x", "s_y"]
             + [f"bg_{l}" for l in _lbls]
             + [f"A_{l}" for l in _lbls]
-            + ["chi_sqr", "photons", "background_photons", "frame"]
+            + ["chi_sqr", "frame"]
         )
         error_columns = (
             ["xc_err", "yc_err", "s_x_err", "s_y_err"]
@@ -1084,6 +1107,22 @@ class MultiC_Sim_Funcs_Refactored:
         fit_results = pd.DataFrame(fit_results, columns=columns).sort_values(by=["frame"])
         fit_errors_df = pd.DataFrame(fit_errors, columns=error_columns)
         fit_results = pd.concat([fit_results.reset_index(drop=True), fit_errors_df], axis=1)
+
+        for l in _lbls:
+            for col, err in [(f"A_{l}", f"A_{l}_err"), (f"bg_{l}", f"bg_{l}_err")]:
+                mask = fit_results[col] > 0
+                fit_results.loc[mask, err] = (
+                    fit_results.loc[mask, err] * 2.0 * np.sqrt(fit_results.loc[mask, col])
+                )
+
+        fit_results["photons"] = sum(fit_results[f"A_{l}"] for l in _lbls)
+        fit_results["background_photons"] = sum(fit_results[f"bg_{l}"] for l in _lbls)
+
+        for l in _lbls:
+            fit_results[f"A_{l}"] /= fit_results["photons"]
+            fit_results[f"A_{l}_err"] /= fit_results["photons"]
+            fit_results[f"bg_{l}"] /= fit_results["background_photons"]
+            fit_results[f"bg_{l}_err"] /= fit_results["background_photons"]
 
         return fit_results
 
@@ -1333,17 +1372,22 @@ class MultiC_Sim_Funcs_Refactored:
         )
 
         _lbls = camera_params.pixel_order
-        # See _fit_standard's matching comment: bg_*/A_* and photons/
-        # background_photons already arrive correctly normalised/propagated.
         colour_columns = (
             ["xc", "yc", "s_x", "s_y"]
             + [f"bg_{l}" for l in _lbls]
             + [f"A_{l}" for l in _lbls]
-            + ["chi_sqr", "photons", "background_photons", "frame"]
+            + ["chi_sqr", "frame"]
         )
         fit_results_colour = pd.DataFrame(
             fit_results_colour, columns=colour_columns
         ).sort_values(by=["frame"])
+
+        fit_results_colour["photons"] = sum(fit_results_colour[f"A_{l}"] for l in _lbls)
+        fit_results_colour["background_photons"] = sum(fit_results_colour[f"bg_{l}"] for l in _lbls)
+
+        for l in _lbls:
+            fit_results_colour[f"A_{l}"] /= fit_results_colour["photons"]
+            fit_results_colour[f"bg_{l}"] /= fit_results_colour["background_photons"]
 
         return fit_results_colour
 

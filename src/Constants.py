@@ -135,8 +135,6 @@ class ResultColumns:
         "A_G",  # Amplitude (Green channel)
         "A_R",  # Amplitude (Red channel)
         "chi_sqr",  # Chi-squared goodness of fit
-        "photons",  # Raw total amplitude (A_B+A_G+A_R before normalisation)
-        "background_photons",  # Raw total background (bg_B+bg_G+bg_R before normalisation)
         "frame",  # Frame number
     ]
 

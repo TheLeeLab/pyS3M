@@ -702,8 +702,6 @@ class SuperRes_Functions:
             "A_G",
             "A_R",
             "chi_sqr",
-            "photons",
-            "background_photons",
             "frame",
         ]
         fit_results = pd.DataFrame(fit_results, columns=columns)
@@ -1256,9 +1254,9 @@ class SuperRes_Functions:
                 "xc", "yc", "s_x", "s_y",
                 "bg_B", "bg_G", "bg_R",
                 "A_B", "A_G", "A_R",
-                "chi_sqr", "photons", "background_photons",
+                "chi_sqr",
             ]
-            error_columns = [f"{col}_err" for col in result_columns[:-3]]
+            error_columns = [f"{col}_err" for col in result_columns[:-1]]
 
             fit_df = pd.DataFrame(fit_results, columns=result_columns + ["_dummy"])
             fit_df = fit_df.drop(columns=["_dummy"])
@@ -1401,9 +1399,9 @@ class SuperRes_Functions:
             "xc", "yc", "s_x", "s_y",
             "bg_B", "bg_G", "bg_R",
             "A_B", "A_G", "A_R",
-            "chi_sqr", "photons", "background_photons",
+            "chi_sqr",
         ]
-        error_columns = [f"{col}_err" for col in result_columns[:-3]]
+        error_columns = [f"{col}_err" for col in result_columns[:-1]]
 
         # Process each file independently
         for FOVn, file in enumerate(image_files):
