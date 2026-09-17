@@ -743,31 +743,6 @@ class MainWindow(QMainWindow):
         self._update_state(AppState.CALIBRATED if self.pipeline is not None else AppState.IDLE)
         self.log_widget.append("Cleared fitting results — ready to fit again.")
 
-    def _on_clear_fitting(self):
-        """Discard fitting results (and everything downstream that depended
-        on them) so the user can re-fit with different parameters without
-        re-selecting the data folder."""
-        self._fitted_data_dir = None
-        self._fov_data = []
-        self._undrifted_locs = None
-        self._sm_db = None
-        self._sf_db = None
-        self.fitting_panel.set_clear_enabled(False)
-        self.drift_panel.set_clear_enabled(False)
-        self.postproc_panel.set_clear_enabled(False)
-        self.postproc_panel.clear_result()
-        self.channel_unmixing_panel.set_available_channels([])
-        self._invalidate_nile_red()
-        self.results_panel.set_fov_count(1)
-        self.results_panel.clear_localisations_figure()
-        self.results_panel.clear_stats_figure()
-        self.results_panel.clear_drift_figure()
-        self.results_panel.clear_unmixing_figure()
-        self.results_panel.clear_frc_figure()
-        self.progress_widget.reset()
-        self._update_state(AppState.CALIBRATED if self.pipeline is not None else AppState.IDLE)
-        self.log_widget.append("Cleared fitting results — ready to fit again.")
-
     # ------------------------------------------------------------------
     # FOV navigation
     # ------------------------------------------------------------------
