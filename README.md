@@ -30,9 +30,9 @@ source .venv/bin/activate   # .venv\Scripts\activate on Windows
 ```
 
 This repo uses [Git LFS](https://git-lfs.com) to store a large (~246 MB) spectral database
-file (`Spectra/spectral_data.duckdb`). **Install Git LFS before cloning**, or `pip install .`
-will silently package a small text pointer instead of the real database, and pyS3M will fail
-at runtime with `duckdb.IOException: ... exists, but is not a valid DuckDB database file!`.
+file (`Spectra/spectral_data.duckdb`). **Install Git LFS before cloning** — without it, the
+checkout gets a small Git LFS pointer file instead of the real database, and `pip install .`
+will refuse to proceed, aborting with a clear error pointing back here.
 
 <details>
 <summary>Install Git LFS (macOS / Windows / Linux)</summary>
