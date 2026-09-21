@@ -29,6 +29,35 @@ python -m venv .venv
 source .venv/bin/activate   # .venv\Scripts\activate on Windows
 ```
 
+This repo uses [Git LFS](https://git-lfs.com) to store a large (~246 MB) spectral database
+file (`Spectra/spectral_data.duckdb`). **Install Git LFS before cloning**, or `pip install .`
+will silently package a small text pointer instead of the real database, and pyS3M will fail
+at runtime with `duckdb.IOException: ... exists, but is not a valid DuckDB database file!`.
+
+<details>
+<summary>Install Git LFS (macOS / Windows / Linux)</summary>
+
+- **macOS**: `brew install git-lfs`, or download the installer from
+  [git-lfs.com](https://git-lfs.com).
+- **Windows**: Git LFS ships with recent [Git for Windows](https://gitforwindows.org)
+  installers by default — check with `git lfs version`. If it's missing, install via
+  `winget install GitHub.GitLFS`, `choco install git-lfs`, or the installer from
+  [git-lfs.com](https://git-lfs.com).
+- **Linux**: `sudo apt install git-lfs` (Debian/Ubuntu), `sudo dnf install git-lfs` (Fedora),
+  `sudo pacman -S git-lfs` (Arch), or download from [git-lfs.com](https://git-lfs.com).
+
+Then, once per machine:
+
+```bash
+git lfs install
+```
+
+**Already cloned without Git LFS set up?** Don't re-clone — install Git LFS as above, then
+from the repository root run `git lfs pull` to fetch the real content for any LFS pointer
+stubs already checked out.
+
+</details>
+
 Clone the repository, then from its root:
 
 ```bash
