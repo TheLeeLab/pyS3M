@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Standalone worker for one (pattern, dye) simulation task from
-``Figure1_DifferentMaskPattern.ipynb``'s pattern sweep.
+``FigureSI_DifferentMaskPatterns.ipynb``'s pattern sweep.
 
 The sweep cell that used to call this in-process, once per (pattern, dye)
 combination (6 patterns x 3 dyes = 18 iterations, each n_bootstrap=100_000 x
@@ -18,7 +18,7 @@ Run directly for one task::
         --save-folder /path/to/output
 
 Mosaic/pattern definitions here are a deliberate duplicate of
-``Figure1_DifferentMaskPattern.ipynb`` cells 6/9 (not an import from the
+``FigureSI_DifferentMaskPatterns.ipynb`` cells 6/9 (not an import from the
 notebook) so this file stays a plain, independently-runnable script -- the
 notebook's own visualisation cells (6-9) are unaffected by this refactor.
 """
