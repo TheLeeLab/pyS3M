@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Standalone worker for one (spectral pattern, dye) simulation task from
-``Figure1_DifferentPixelSpectra.ipynb``'s pattern sweep.
+``FigureSI_DifferentPixelSpectra.ipynb``'s pattern sweep.
 
 Same rationale and pattern as ``_mask_pattern_sweep_task.py`` (read its
 docstring for the full explanation): the sweep cell shells out to this
@@ -16,7 +16,7 @@ Run directly for one task::
         --save-folder /path/to/output
 
 Spectral pattern definitions here are a deliberate duplicate of
-``Figure1_DifferentPixelSpectra.ipynb`` cells 5/10 (not an import from the
+``FigureSI_DifferentPixelSpectra.ipynb`` cells 5/10 (not an import from the
 notebook), so this file stays a plain, independently-runnable script -- the
 notebook's own visualisation cells are unaffected by this refactor.
 """
