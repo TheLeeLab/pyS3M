@@ -12,7 +12,7 @@ Here are few guidelines to take into account.
 `src/` (excluding the GUI) is at 100% line coverage — patches touching `src/` are expected to keep it there.
 
 ```bash
-pip install -e .[dev]
+pip install -e ".[dev]"
 pytest unit_tests/ --ignore=unit_tests/claude
 ```
 
