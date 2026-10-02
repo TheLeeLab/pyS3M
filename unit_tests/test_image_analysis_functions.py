@@ -635,6 +635,38 @@ class TestStandardDataFittingProcessor:
         )
         assert pfit[0] == pytest.approx(4.0, abs=1.0)
 
+    @pytest.mark.parametrize("seed", range(5))
+    def test_zero_background_channels_do_not_stall_colour_fit(self, seed):
+        # Regression: at ~1 background photon/pixel every channel's minimum pixel is 0, which
+        # used to give a background initial guess of exactly 0. The model squares it, so the fit
+        # stalled with the colour amplitudes stuck at their equal starting guess (A_B = A_G =
+        # A_R, i.e. a (1/3, 1/3, 1/3) colour) -- every one of these seeds failed that way before
+        # gaussoptfuncs._BG_GUESS_FLOOR. Real 2x2 Bayer tiling, Poisson noise, strongly green.
+        size = 14
+        masks = np.zeros((size, size, 3), dtype=np.bool_)
+        masks[0::2, 0::2, 0] = True                              # B
+        masks[0::2, 1::2, 1] = masks[1::2, 0::2, 1] = True       # G
+        masks[1::2, 1::2, 2] = True                              # R
+        amps = np.array([1500.0, 9000.0, 1200.0])
+        params = np.concatenate([[7.3, 6.8, 1.2, 1.2], np.ones(3), np.sqrt(amps)])
+        expected = gaussoptfuncs.WLS_model_nobounds(
+            params, masks, _x(size), np.zeros((size, size), dtype=np.float32))
+        punctum = np.random.default_rng(seed).poisson(expected).astype(np.float32)
+        assert all(punctum[masks[:, :, c]].min() == 0 for c in range(3))  # the failing regime
+
+        from scipy.ndimage import gaussian_filter
+        smoothed = gaussian_filter(punctum, 1.5).astype(np.float32)
+        weights = (1.0 / (np.clip(smoothed, 0, None) + 2.0)).astype(np.float32)
+        pfit, _ = StandardDataFittingProcessor(readnoise=1.0).fit_single_punctum(
+            punctum, smoothed, weights, [0.0, 0.0], masks=masks,
+        )
+
+        fitted = pfit[7:10]
+        assert not np.allclose(fitted, fitted[0])  # not stuck at equal amplitudes
+        np.testing.assert_allclose(fitted / fitted.sum(), amps / amps.sum(), atol=0.03)
+        assert pfit[0] == pytest.approx(7.3, abs=0.2)
+        assert pfit[1] == pytest.approx(6.8, abs=0.2)
+
     def test_stage1_failure_returns_nan(self, monkeypatch):
         punctum, masks = _synthetic_punctum()
         proc = StandardDataFittingProcessor()

@@ -317,6 +317,28 @@ class TestInitialGuess:
         out = gf.initial_guess(smoothed, raw, masks)
         assert out.shape == (6,)  # 4 + 2*1
 
+    @pytest.mark.parametrize("fn", [gf.initial_guess, gf.initial_guess.py_func])
+    def test_zero_minimum_background_guess_is_floored(self, fn):
+        # A channel whose minimum pixel is 0 (common at a few background photons per pixel)
+        # must not get a background guess of exactly 0: the model squares it, so 0 has a zero
+        # gradient and stalls the fit (equal colour amplitudes). See gf._BG_GUESS_FLOOR.
+        smoothed = _positive_blob()
+        raw = _positive_blob(background=3.0)
+        raw[0, 0:3] = 0.0  # one zero in each of the 3 channels (_bayer_masks cycles mod 3)
+        out = fn(smoothed, raw, _bayer_masks())
+        np.testing.assert_allclose(out[4:7], np.sqrt(gf._BG_GUESS_FLOOR))
+
+    @pytest.mark.parametrize("fn", [gf.initial_guess, gf.initial_guess.py_func])
+    def test_background_guess_above_floor_is_channel_minimum(self, fn):
+        # The floor only acts below it: a channel minimum >= _BG_GUESS_FLOOR is used as is.
+        smoothed = _positive_blob()
+        raw = _positive_blob(background=3.0)
+        masks = _bayer_masks()
+        out = fn(smoothed, raw, masks)
+        expected = [np.sqrt(raw[masks[:, :, c]].min()) for c in range(3)]
+        assert min(expected) ** 2 >= gf._BG_GUESS_FLOOR
+        np.testing.assert_allclose(out[4:7], expected)
+
 
 class TestInitialGuessElliptical:
     def test_basic_and_py_func(self):
@@ -328,6 +350,15 @@ class TestInitialGuessElliptical:
         np.testing.assert_allclose(jit_out, py_out)
         assert len(jit_out) == 11
         assert all(np.isfinite(v) for v in jit_out)
+
+    @pytest.mark.parametrize("fn", [gf.initial_guess_elliptical, gf.initial_guess_elliptical.py_func])
+    def test_zero_minimum_background_guess_is_floored(self, fn):
+        # Same floor as initial_guess: a zero channel minimum must not give a 0 background guess.
+        smoothed = _positive_blob()
+        raw = _positive_blob(background=3.0)
+        raw[0, 0:3] = 0.0  # one zero in each of the 3 channels
+        out = fn(smoothed, raw, _bayer_masks())
+        np.testing.assert_allclose(out[5:8], np.sqrt(gf._BG_GUESS_FLOOR))
 
 
 # ======================================================================
