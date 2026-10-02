@@ -1,23 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Standalone worker for one (noise model, dye) simulation task from
-``Bayesian_Comparison.ipynb``.
+"""Standalone worker for one dye's simulation task from ``Bayesian_Comparison.ipynb``.
 
-Bayer (RGGB) only. Two camera-noise models are compared:
-
-- ``median``: every pixel of every bootstrap frame gets the sensor-wide median
-  gain/offset/variance/rqe (what every other SI sweep does).
-- ``chip``: every bootstrap frame gets its own randomly-located crop of the real
-  full-chip Ximea calibration maps (``full_chip_calibration``), so hot/defective
-  pixels appear at their true frequency. The same crop is used to generate the
-  frame and to convert/weight it for fitting.
+Bayer (RGGB) only. Every bootstrap frame gets its own randomly-located crop of the
+real full-chip Ximea calibration maps (``full_chip_calibration``), so hot/defective
+pixels appear at their true frequency. The same crop is used to generate the frame
+and to convert/weight it for fitting.
 
 As with ``_mask_pattern_sweep_task.py``, the notebook runs each task in its own
 subprocess so RSS is fully reclaimed between tasks.
 
 Run directly for one task::
 
-    python _bayer_noise_sweep_task.py --noise-model chip --dye "ATTO 647N" \\
+    python _bayer_noise_sweep_task.py --dye "ATTO 647N" \\
         --save-folder /path/to/output
 """
 from __future__ import annotations
@@ -49,7 +44,7 @@ PIXEL_ORDER = ["B", "G", "R"]
 # Mean background photons sensed per pixel per frame (any colour, any dye)
 DEFAULT_BACKGROUND_PHOTONS = 5.0
 
-NOISE_MODELS = {"median": "bayer_median_noise_", "chip": "bayer_chip_noise_"}
+STARTING_FLAG = "bayer_chip_noise_"
 
 DEFAULT_CALIB_DIR = str(
     Path(__file__).resolve().parents[3] / "Camera_Calibrations" / "Ximea_Camera"
@@ -72,10 +67,11 @@ def load_calibration(calib_dir: str) -> dict[str, np.ndarray]:
 
 
 def build_camera_parameters(
-    noise_model: str, calib: dict[str, np.ndarray], image_size: int, pixel_QYs: np.ndarray
+    calib: dict[str, np.ndarray], image_size: int, pixel_QYs: np.ndarray
 ) -> dict:
+    # Flat tiles only set the image size; full_chip_calibration replaces them per bootstrap
     flat = lambda k: np.full((image_size, image_size), np.median(calib[k]))  # noqa: E731
-    cam = {
+    return {
         "gain": flat("gain"),
         "offset": flat("offset"),
         "variance": flat("variance"),
@@ -88,12 +84,8 @@ def build_camera_parameters(
         "pixel_order": PIXEL_ORDER,
         "pixel_order_indices": {"B": 0, "G": 1, "R": 2},
         "mosaic_unit": MOSAIC_BAYER,
+        "full_chip_calibration": {k: calib[k] for k in ("gain", "offset", "variance", "rqe")},
     }
-    if noise_model == "chip":
-        cam["full_chip_calibration"] = {
-            k: calib[k] for k in ("gain", "offset", "variance", "rqe")
-        }
-    return cam
 
 
 def make_smoothing_function(sigma: float = 1.5):
@@ -106,7 +98,6 @@ def make_smoothing_function(sigma: float = 1.5):
 
 
 def run_one(
-    noise_model: str,
     dye: str,
     calib_dir: str,
     save_folder: str,
@@ -117,9 +108,6 @@ def run_one(
     background_photons: float = DEFAULT_BACKGROUND_PHOTONS,
     n_unit_cells: int = 7,
 ) -> None:
-    if noise_model not in NOISE_MODELS:
-        raise ValueError(f"Unknown noise model {noise_model!r}; choices: {list(NOISE_MODELS)}")
-
     calib = load_calibration(calib_dir)
     R_sim, G_sim, B_sim, wavelength_sim = SpectralFunctions.Spectral_Funcs().getpixelefficiency()
     pixel_QYs_sim = np.vstack([B_sim, G_sim, R_sim])
@@ -139,7 +127,7 @@ def run_one(
     )
 
     image_size = n_unit_cells * MOSAIC_BAYER.shape[0]
-    cam_sim = build_camera_parameters(noise_model, calib, image_size, pixel_QYs_sim)
+    cam_sim = build_camera_parameters(calib, image_size, pixel_QYs_sim)
 
     MultiC_Sim_Funcs().test_simulation_method(
         dye=dye,
@@ -150,7 +138,7 @@ def run_one(
         n_photon_space=photon_space(n_photon_levels),
         smoothing_function=make_smoothing_function(),
         strategy=FittingStrategy.STANDARD,
-        starting_flag=NOISE_MODELS[noise_model],
+        starting_flag=STARTING_FLAG,
         config=config,
         overwrite=True,
     )
@@ -158,7 +146,6 @@ def run_one(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--noise-model", required=True, choices=list(NOISE_MODELS))
     parser.add_argument("--dye", required=True)
     parser.add_argument("--calib-dir", default=DEFAULT_CALIB_DIR)
     parser.add_argument("--save-folder", required=True)
@@ -171,7 +158,6 @@ def main() -> None:
     args = parser.parse_args()
 
     run_one(
-        args.noise_model,
         args.dye,
         args.calib_dir,
         args.save_folder,
