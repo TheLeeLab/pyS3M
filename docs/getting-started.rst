@@ -38,16 +38,17 @@ Clone the repository, then from its root:
 
 This installs ``pyS3M`` as a real package (``import pyS3M.SR_Functions``, etc. works
 from anywhere — no ``sys.path`` hacks needed) along with its core analysis
-dependencies. Optional extras layer on top as needed:
+dependencies and the Jupyter stack needed to run the example and paper-figure notebooks
+(``jupyter lab`` or ``jupyter notebook``). Optional extras layer on top as needed:
 
 .. code-block:: bash
 
-   pip install .[notebooks]  # jupyterlab, seaborn, xarray, plotly, ...
-   pip install .[docs]       # Sphinx + the Read the Docs theme, for building docs locally
-   pip install .[dev]        # pytest, coverage, black, build
+   pip install ".[docs]"     # Sphinx + the Read the Docs theme, for building docs locally
+   pip install ".[dev]"      # pytest, coverage, black, build
 
-Extras can be combined, e.g. ``pip install .[notebooks,dev]``. For an editable install
-while developing ``pyS3M`` itself, add ``-e``: ``pip install -e .[dev]``.
+Extras can be combined, e.g. ``pip install ".[docs,dev]"`` (the quotes stop shells like
+zsh treating the brackets as a glob). For an editable install while developing ``pyS3M``
+itself, add ``-e``: ``pip install -e ".[dev]"``.
 
 Running the GUI
 ================
