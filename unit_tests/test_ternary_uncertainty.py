@@ -111,6 +111,26 @@ class TestErrorbars:
         )
         assert len(artists) == 2 * 3 * 2 + 1  # (bar + caps) x 3 channels x 2 points + scatter
 
+    def test_none_channel_skipped(self, plotter, ax):
+        artists = plotter.plot_ternary_errorbars(
+            ax, [0.2], [0.5], [0.3], B_err=[0.05], capsize=0, show_points=False
+        )
+        assert len(artists) == 1
+        ends = _tlr(artists[0])
+        np.testing.assert_allclose(sorted(ends[:, 2]), [0.25, 0.35], atol=1e-9)
+
+    @pytest.mark.parametrize("channel", ["R_err", "G_err", "B_err"])
+    def test_caps_perpendicular_to_bar(self, plotter, ax, channel):
+        bar, caps = plotter.plot_ternary_errorbars(
+            ax, [0.2], [0.5], [0.3], **{channel: [0.05]}, show_points=False
+        )
+        bar_xy = np.column_stack(bar.get_data())
+        bar_dir = (bar_xy[1] - bar_xy[0]) / np.linalg.norm(bar_xy[1] - bar_xy[0])
+        # '|' marker is vertical; its rotation (no public getter) maps (0, 1) to the cap direction
+        cap_dir = caps._marker.get_transform().transform([[0.0, 1.0]])[0]
+        cap_dir -= caps._marker.get_transform().transform([[0.0, 0.0]])[0]
+        assert abs(np.dot(bar_dir, cap_dir / np.linalg.norm(cap_dir))) < 1e-9
+
 
 def _tlr(line):
     """(t, l, r) coordinates of an mpltern Line2D (whose data are stored as x, y)."""
