@@ -2617,6 +2617,205 @@ class TernaryPlotMixin:
 
         return scatter
 
+    @staticmethod
+    def _ilr(comp: np.ndarray) -> np.ndarray:
+        """Isometric log-ratio transform of 3-part compositions, (n, 3) -> (n, 2)."""
+        logc = np.log(comp)
+        return np.column_stack([
+            (logc[:, 0] - logc[:, 1]) / np.sqrt(2),
+            (logc[:, 0] + logc[:, 1] - 2 * logc[:, 2]) / np.sqrt(6),
+        ])
+
+    @staticmethod
+    def _ilr_inv(z: np.ndarray) -> np.ndarray:
+        """Inverse of :meth:`_ilr`, (n, 2) -> (n, 3) compositions summing to 1."""
+        logc = np.column_stack([
+            z[:, 0] / np.sqrt(2) + z[:, 1] / np.sqrt(6),
+            -z[:, 0] / np.sqrt(2) + z[:, 1] / np.sqrt(6),
+            -2 * z[:, 1] / np.sqrt(6),
+        ])
+        c = np.exp(logc - logc.max(axis=1, keepdims=True))
+        return c / c.sum(axis=1, keepdims=True)
+
+    def plot_ternary_credible_regions(
+        self,
+        ax,
+        samples: Union[np.ndarray, List[np.ndarray]],
+        levels: Union[float, Tuple[float, ...]] = (0.68, 0.95),
+        colors: Union[str, List[Any], None] = None,
+        alpha: float = 0.25,
+        edgecolor: Optional[str] = None,
+        linewidth: float = 0.8,
+        grid_size: int = 120,
+        max_samples: int = 2000,
+        eps: float = 1e-6,
+        seed: int = 0,
+        **kwargs,
+    ) -> List[Any]:
+        """Shade highest-posterior-density credible regions on an existing ternary axis.
+
+        For each point, the posterior samples are mapped to isometric log-ratio (ILR)
+        coordinates, a Gaussian KDE is fitted there, and the region enclosing ``level``
+        of the posterior mass (density above the ``1 - level`` quantile of the density
+        at the samples) is contoured and mapped back to the simplex. Working in ILR
+        space keeps regions inside the triangle and lets them curve and skew near the
+        edges, as real posteriors do.
+
+        Args:
+            ax: Existing ternary axis (projection='ternary').
+            samples: Posterior samples in (R, G, B) order -- i.e. (t, l, r), as in the
+                other ternary methods. One point: array (n_samples, 3). Several points:
+                array (n_points, n_samples, 3) or a list of (n_samples_i, 3) arrays.
+                Rows are normalised to sum to 1, so fractions or percentages both work.
+            levels: Credible level(s) in (0, 1), e.g. 0.95 or (0.68, 0.95). Each level
+                is filled with ``alpha``, so nested levels shade darker towards the mode.
+            colors: One colour for all points, or one per point (default: matplotlib
+                colour cycle).
+            alpha: Fill opacity per level (default: 0.25).
+            edgecolor: Outline colour; None (default) uses the fill colour.
+            linewidth: Outline width (default: 0.8); 0 for no outline.
+            grid_size: KDE evaluation grid per side, in ILR space (default: 120).
+            max_samples: Randomly subsample to at most this many samples per point,
+                for speed (default: 2000).
+            eps: Floor applied to fractions before the log-ratio (default: 1e-6).
+            seed: Seed for the subsampling (default: 0).
+            **kwargs: Passed to ``ax.fill`` (e.g. ``zorder``, ``label``).
+
+        Returns:
+            List of the filled polygons added to ``ax``.
+
+        Example:
+            >>> fig, ax = plotter.create_ternary_plot(R, G, B, black_background=False)
+            >>> plotter.plot_ternary_credible_regions(ax, posterior_samples, levels=0.95)
+        """
+        import contourpy
+        from scipy.stats import gaussian_kde
+
+        if isinstance(samples, np.ndarray) and samples.ndim == 2:
+            samples = [samples]
+        levels = np.atleast_1d(levels)
+        if np.any((levels <= 0) | (levels >= 1)):
+            raise ValueError(f"levels must be in (0, 1); got {levels}")
+        if colors is None or matplotlib.colors.is_color_like(colors):
+            colors = [colors] * len(samples)
+        if len(colors) != len(samples):
+            raise ValueError("colors must be one colour or one per point")
+
+        rng = np.random.default_rng(seed)
+        patches = []
+        for point_samples, color in zip(samples, colors):
+            comp = np.asarray(point_samples, dtype=float)
+            if comp.ndim != 2 or comp.shape[1] != 3:
+                raise ValueError(f"each point's samples must be (n_samples, 3); got {comp.shape}")
+            if len(comp) > max_samples:
+                comp = comp[rng.choice(len(comp), max_samples, replace=False)]
+            comp = np.clip(comp / comp.sum(axis=1, keepdims=True), eps, None)
+            z = self._ilr(comp)
+
+            kde = gaussian_kde(z.T)
+            density_at_samples = kde(z.T)
+            pad = 3 * np.sqrt(np.diag(kde.covariance))
+            gx = np.linspace(z[:, 0].min() - pad[0], z[:, 0].max() + pad[0], grid_size)
+            gy = np.linspace(z[:, 1].min() - pad[1], z[:, 1].max() + pad[1], grid_size)
+            GX, GY = np.meshgrid(gx, gy)
+            density = kde(np.vstack([GX.ravel(), GY.ravel()])).reshape(GX.shape)
+            contours = contourpy.contour_generator(GX, GY, density)
+
+            if color is None:
+                color = ax._get_lines.get_next_color()
+            for level in levels:
+                threshold = np.quantile(density_at_samples, 1 - level)
+                polygons, offsets = contours.filled(threshold, np.inf)
+                for poly, off in zip(polygons, offsets):
+                    outer = self._ilr_inv(poly[off[0]:off[1]])  # outer ring; holes ignored
+                    patches += ax.fill(
+                        outer[:, 0], outer[:, 1], outer[:, 2],
+                        facecolor=color, alpha=alpha,
+                        edgecolor=edgecolor if edgecolor is not None else color,
+                        linewidth=linewidth, **kwargs,
+                    )
+        return patches
+
+    def plot_ternary_errorbars(
+        self,
+        ax,
+        R: np.ndarray,
+        G: np.ndarray,
+        B: np.ndarray,
+        R_err: Optional[np.ndarray] = None,
+        G_err: Optional[np.ndarray] = None,
+        B_err: Optional[np.ndarray] = None,
+        color: Union[str, Any] = "black",
+        linewidth: float = 0.8,
+        capsize: float = 3.0,
+        alpha: float = 1.0,
+        show_points: bool = True,
+        marker_size: float = 12,
+        **kwargs,
+    ) -> List[Any]:
+        """Draw per-channel error bars on an existing ternary axis.
+
+        The error bar for a channel runs along the line from the point towards that
+        channel's vertex: the channel changes by its error while the other two keep
+        their ratio (and the composition still sums to 1). Bars are clipped at the
+        triangle edges. Errors are in the same units as R, G, B (fractions or %).
+
+        Args:
+            ax: Existing ternary axis (projection='ternary').
+            R, G, B: Point coordinates in (t, l, r) order, shape (n,).
+            R_err, G_err, B_err: Errors per channel: (n,) symmetric, or (2, n) as
+                (lower, upper). None skips that channel.
+            color: Bar and point colour (default: 'black').
+            linewidth: Bar line width (default: 0.8).
+            capsize: Cap length in points; 0 for no caps (default: 3).
+            alpha: Opacity (default: 1.0).
+            show_points: Also draw the points (default: True).
+            marker_size: Point size in points^2 (default: 12).
+            **kwargs: Passed to ``ax.plot`` for the bars.
+
+        Returns:
+            List of the artists added to ``ax``.
+
+        Example:
+            >>> plotter.plot_ternary_errorbars(
+            ...     ax, df.A_R, df.A_G, df.A_B, df.A_R_err, df.A_G_err, df.A_B_err)
+        """
+        from matplotlib.markers import MarkerStyle
+        from matplotlib.transforms import Affine2D
+
+        comp = np.column_stack([np.asarray(R, float), np.asarray(G, float), np.asarray(B, float)])
+        totals = comp.sum(axis=1, keepdims=True)
+        comp = comp / totals
+        to_xy = ax.transProjection.transform
+
+        artists = []
+        for c, err in enumerate((R_err, G_err, B_err)):
+            if err is None:
+                continue
+            err = np.asarray(err, float)
+            lower, upper = (err[0], err[1]) if err.ndim == 2 else (err, err)
+            a = comp[:, c]
+            span = np.where(a < 1, 1 - a, np.nan)
+            vertex = np.eye(3)[c]
+            # Moving t along p -> vertex changes channel c by t * (1 - a)
+            t_lo = np.maximum(-lower / totals[:, 0] / span, -a / span)
+            t_hi = np.minimum(upper / totals[:, 0] / span, 1.0)
+            for i in np.flatnonzero(np.isfinite(span)):
+                ends = comp[i] + np.outer([t_lo[i], t_hi[i]], vertex - comp[i])
+                artists += ax.plot(ends[:, 0], ends[:, 1], ends[:, 2], color=color,
+                                   linewidth=linewidth, alpha=alpha, **kwargs)
+                if capsize > 0:
+                    # '|' is vertical, so rotating by the bar angle makes it perpendicular
+                    dx, dy = to_xy(vertex[None])[0] - to_xy(comp[i][None])[0]
+                    cap = MarkerStyle("|", transform=Affine2D().rotate(np.arctan2(dy, dx)))
+                    artists += ax.plot(ends[:, 0], ends[:, 1], ends[:, 2], linestyle="none",
+                                       marker=cap, markersize=capsize, color=color,
+                                       markeredgewidth=linewidth, alpha=alpha)
+        if show_points:
+            artists.append(ax.scatter(comp[:, 0], comp[:, 1], comp[:, 2], s=marker_size,
+                                      color=color, alpha=alpha, zorder=3))
+        return artists
+
 
 class DatashaderMixin:
     """Mixin for handling large datasets with datashader when available.
