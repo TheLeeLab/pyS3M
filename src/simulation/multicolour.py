@@ -145,8 +145,10 @@ class SimulationConfig:
 
     Attributes:
         n_bootstrap (int): Number of bootstrap simulations to run (default: 100000)
-        background_photons (float): Background photons per pixel (default: 40.0)
-        background_colour (list[float]): RGB background colour weights (default: [1,1,1])
+        background_photons (float): Mean background photons sensed per pixel per frame
+            (QE = 1, dye-independent), for the brightest colour (default: 40.0)
+        background_colour (list[float]): Relative background per pixel colour, scaled
+            by its max (default: [1,1,1]; [1,2,1] -> G pixels background_photons, B/R half)
         NA (float): Numerical aperture of objective lens (default: 1.49)
         pixel_size (float): Camera pixel size in nanometers (default: 69)
         cpu_fraction (float): Fraction of CPU cores to use for parallel processing (default: 0.9)
@@ -674,11 +676,12 @@ class MultiC_Sim_Funcs_Refactored:
                 sigma_PSF / config.pixel_size,  # s_y in pixels
             ]
         )
-        n_ch = len(camera_params.pixel_order)
+        # Fit reports bg_* as fractions of the total background
+        bg_colour = np.asarray(config.background_colour, dtype=float)
         expected_parameters = np.hstack(
             [
                 expected_parameters,
-                np.array([config.background_photons / n_ch] * n_ch).ravel(),
+                (bg_colour / bg_colour.sum()).ravel(),
                 dye_fit_expectation.ravel(),
             ]
         )
@@ -1725,6 +1728,10 @@ class MultiC_Sim_Funcs_Refactored:
         """Generate camera image stack with optional vectorized photoelectron generation.
 
         Args:
+            background_photons: Mean background photons sensed per pixel per frame
+                (Poisson, QE = 1, independent of the dye), for the brightest colour.
+            background_colour: Relative background per pixel colour (pixel_order),
+                scaled by its max: [1, 2, 1] -> G pixels background_photons, B/R half.
             x0y0: Dict mapping each dye key to an (n_bootstrap, 2, n_molecules) position
                 array in nm, ordered (y, x): index 0 is the row/y coordinate, index 1 is
                 the column/x coordinate.
@@ -1812,9 +1819,7 @@ class MultiC_Sim_Funcs_Refactored:
                 dye_pixel_efficiency, axis=len(dye_pixel_efficiency.shape) - 1
             )
 
-        # Per-frame calibration support: gain/offset/variance/rqe may each be 3D
-        # (n_bootstrap, H, W) -- one sampled crop of the real chip per frame (see
-        # sample_chip_patches_batch) -- instead of one static (H, W) map.
+        # gain/offset/variance/rqe may be per-frame (n_bootstrap, H, W) chip crops
         def _cal_frame(arr, frame):
             return arr[frame] if np.ndim(arr) == 3 else arr
 
@@ -1875,33 +1880,24 @@ class MultiC_Sim_Funcs_Refactored:
                         dpe = dye_pixel_efficiency
                     abs_QE[:, :, j] += masks[colour] * dpe
 
-        # Calculate background photons matrix
-        background_photons_perdye = background_photons / len(dye_names)
+        # Background: mean photons sensed per pixel (QE = 1, dye-independent), with
+        # background_colour scaled by its max. Scaled by rqe like the signal.
+        background_colour = np.asarray(background_colour, dtype=float)
+        if background_colour.shape != (len(pixel_colours),) or background_colour.max() <= 0:
+            raise SimulationValidationError(
+                f"background_colour needs {len(pixel_colours)} non-negative weights "
+                f"(one per {pixel_colours}) with a positive max; got {background_colour}"
+            )
+        background_weight = np.tensordot(
+            mask_stack.astype(float), background_colour / background_colour.max(), axes=([-1], [0])
+        )  # (w, h), or (s, w, h) if masks vary per frame
+        background_mean = background_photons * background_weight * relative_QE
+        if return_normal_image:
+            # Unfiltered reference camera: every pixel senses background_photons
+            background_mean_normal = background_photons * np.asarray(relative_QE, dtype=float)
 
-        # Normalize background_colour to ensure total background = background_photons
-        background_colour_normalized = np.array(background_colour) / np.sum(
-            background_colour
-        )
-
-        if not masks_vary_per_frame:
-            background_photons_matrix = np.zeros([w, h, len(dye_names)])
-            for j, dye in enumerate(dye_names):
-                for i, colour in enumerate(pixel_colours):
-                    try:
-                        dpe = (
-                            dye_pixel_efficiency[j, i]
-                            if len(dye_pixel_efficiency.shape) > 1
-                            else dye_pixel_efficiency[i]
-                        )
-                    except (IndexError, TypeError):
-                        dpe = dye_pixel_efficiency
-
-                    if dpe != 0:
-                        background_photons_matrix[:, :, j] += (
-                            masks[colour]
-                            * (background_colour_normalized[i] / dpe)
-                            * background_photons_perdye
-                        )
+        def _background_frame(frame):
+            return np.random.poisson(_cal_frame(background_mean, frame))
 
         bayer_image = np.zeros([s, w, h])
         if return_normal_image:
@@ -1923,16 +1919,13 @@ class MultiC_Sim_Funcs_Refactored:
                     sigma_x = sigma_per_frame[frame]
                     sigma_y = sigma_x
 
-                # Update abs_QE and background if per-frame colour ratios (stochastic
-                # mode) OR if the pixel-colour mask itself varies per frame -- either
-                # condition requires rebuilding background_photons_matrix_frame (and,
-                # for stochastic QE, QE_per_channel_frame) using this frame's own mask.
+                # Rebuild QE_per_channel_frame if per-frame colour ratios (stochastic
+                # mode) OR if the pixel-colour mask itself varies per frame.
                 dye_pixel_efficiency_per_frame = (
                     dye_pixel_efficiency.ndim == 2 and dye_pixel_efficiency.shape[0] == s
                 )
                 if masks_vary_per_frame or dye_pixel_efficiency_per_frame:
                     QE_per_channel_frame = np.zeros([len(dye_names), len(pixel_colours)])
-                    background_photons_matrix_frame = np.zeros([w, h, len(dye_names)])
 
                     for j, dye in enumerate(dye_names):
                         for i, colour in enumerate(pixel_colours):
@@ -1946,16 +1939,6 @@ class MultiC_Sim_Funcs_Refactored:
                                 )
                             )
                             QE_per_channel_frame[j, i] = dpe
-
-                            mask_this_frame = (
-                                masks[colour][frame] if masks_vary_per_frame else masks[colour]
-                            )
-                            if dpe != 0:
-                                background_photons_matrix_frame[:, :, j] += (
-                                    mask_this_frame
-                                    * (background_colour_normalized[i] / dpe)
-                                    * background_photons_perdye
-                                )
                 else:
                     # Deterministic mode
                     QE_per_channel_frame = np.zeros([len(dye_names), len(pixel_colours)])
@@ -1964,7 +1947,6 @@ class MultiC_Sim_Funcs_Refactored:
                             mask_indices = np.where(masks[colour])
                             if len(mask_indices[0]) > 0:
                                 QE_per_channel_frame[j, i] = abs_QE[mask_indices[0][0], mask_indices[1][0], j]
-                    background_photons_matrix_frame = background_photons_matrix
 
                 # Store QE for this frame
                 QE_per_channel_all[frame, :, :] = QE_per_channel_frame
@@ -2044,7 +2026,7 @@ class MultiC_Sim_Funcs_Refactored:
                             )
 
                         n_photons_total = self.psf.gen_photons_hitting_detector(
-                            photon_spatial_pdf, background_photons_matrix_frame[:, :, j]
+                            photon_spatial_pdf
                         )
                         n_photons_hitting_detector[:, :, j] = n_photons_total
 
@@ -2058,14 +2040,19 @@ class MultiC_Sim_Funcs_Refactored:
                 mask_stack,
             )
 
+            # Signal photoelectrons summed over dyes, plus background (QE = 1)
+            n_photoelectrons_total = np.sum(n_photoelectrons_all, axis=-1) + np.random.poisson(
+                np.broadcast_to(background_mean, (s, w, h))
+            )
+
             # Early exit: return summed photoelectrons before Phase 3 (no read noise)
             if return_photoelectrons_stack:
-                return np.sum(n_photoelectrons_all, axis=-1).astype(np.int32)
+                return n_photoelectrons_total.astype(np.int32)
 
             # PHASE 3: Convert photoelectrons to images (per-frame loop, fast)
             for frame in range(s):
                 bayer_image[frame, :, :] = self.psf.photoelectrons_to_image(
-                    np.sum(n_photoelectrons_all[frame, :, :, :], axis=-1),
+                    n_photoelectrons_total[frame],
                     _cal_frame(gain, frame),
                     _cal_frame(offset, frame),
                     _cal_frame(variance, frame),
@@ -2080,7 +2067,7 @@ class MultiC_Sim_Funcs_Refactored:
                     n_photoelectrons_normal = self.psf.gen_photoelectrons(
                         n_photons_frame_total.astype(int),
                         overall_QY_frame / len(pixel_colours)  # Average QY across channels
-                    )
+                    ) + np.random.poisson(_cal_frame(background_mean_normal, frame))
 
                     if return_photoelectrons:
                         # Return raw photoelectrons (ground truth for demosaicing validation)
@@ -2103,7 +2090,7 @@ class MultiC_Sim_Funcs_Refactored:
                     sigma_x = sigma_per_frame[frame]
                     sigma_y = sigma_x
 
-                # Update abs_QE and background if per-frame colour ratios (stochastic mode)
+                # Rebuild QE_per_channel_frame if per-frame colour ratios (stochastic mode)
                 # OR if the pixel-colour mask itself varies per frame.
                 # Check if dye_pixel_efficiency has per-frame dimension: (n_frames, n_colours)
                 dye_pixel_efficiency_per_frame = (
@@ -2113,7 +2100,6 @@ class MultiC_Sim_Funcs_Refactored:
                     # Stochastic mode / per-frame masks: recalculate for this frame
                     # Store QE per channel (not per pixel!) - shape: (n_dyes, n_channels)
                     QE_per_channel_frame = np.zeros([len(dye_names), len(pixel_colours)])
-                    background_photons_matrix_frame = np.zeros([w, h, len(dye_names)])
 
                     for j, dye in enumerate(dye_names):
                         for i, colour in enumerate(pixel_colours):
@@ -2128,16 +2114,6 @@ class MultiC_Sim_Funcs_Refactored:
                                 )
                             )
                             QE_per_channel_frame[j, i] = dpe
-
-                            mask_this_frame = (
-                                masks[colour][frame] if masks_vary_per_frame else masks[colour]
-                            )
-                            if dpe != 0:
-                                background_photons_matrix_frame[:, :, j] += (
-                                    mask_this_frame
-                                    * (background_colour_normalized[i] / dpe)
-                                    * background_photons_perdye
-                                )
                 else:
                     # Deterministic mode: use pre-computed QE values
                     # Extract QE per channel from abs_QE array
@@ -2148,7 +2124,6 @@ class MultiC_Sim_Funcs_Refactored:
                             mask_indices = np.where(masks[colour])
                             if len(mask_indices[0]) > 0:
                                 QE_per_channel_frame[j, i] = abs_QE[mask_indices[0][0], mask_indices[1][0], j]
-                    background_photons_matrix_frame = background_photons_matrix
     
                 n_photons_hitting_detector = np.zeros([w, h, len(dye_names)], dtype=int)
                 n_photoelectrons = np.zeros_like(n_photons_hitting_detector)
@@ -2225,7 +2200,7 @@ class MultiC_Sim_Funcs_Refactored:
 
                         # Generate photons hitting detector (includes background)
                         n_photons_total = self.psf.gen_photons_hitting_detector(
-                            photon_spatial_pdf, background_photons_matrix_frame[:, :, j]
+                            photon_spatial_pdf
                         )
                         n_photons_hitting_detector[:, :, j] = n_photons_total
     
@@ -2266,7 +2241,8 @@ class MultiC_Sim_Funcs_Refactored:
                             n_photoelectrons[:, :, j] = np.sum(photoelectrons_per_channel, axis=-1)
     
                 bayer_image[frame, :, :] = self.psf.photoelectrons_to_image(
-                    np.sum(n_photoelectrons, axis=-1), _cal_frame(gain, frame),
+                    np.sum(n_photoelectrons, axis=-1) + _background_frame(frame),
+                    _cal_frame(gain, frame),
                     _cal_frame(offset, frame), _cal_frame(variance, frame),
                 )
 
@@ -2277,7 +2253,7 @@ class MultiC_Sim_Funcs_Refactored:
                     n_photoelectrons_normal = self.psf.gen_photoelectrons(
                         n_photons_frame_total.astype(int),
                         overall_QY_frame
-                    )
+                    ) + np.random.poisson(_cal_frame(background_mean_normal, frame))
 
                     if return_photoelectrons:
                         # Return raw photoelectrons (ground truth for demosaicing validation)
@@ -2825,8 +2801,7 @@ class MultiC_Sim_Funcs_Refactored:
                 full_chip_calibration=camera_params.full_chip_calibration,
             )
 
-        # Real-chip noise: swap the flat tiles for one sampled chip crop per bootstrap,
-        # now that the final simulated image size is known.
+        # Real-chip noise: one sampled chip crop per bootstrap, at the final image size
         use_full_chip = camera_params.full_chip_calibration is not None
         if use_full_chip:
             camera_params = self._sample_full_chip_calibration(
@@ -3100,9 +3075,8 @@ class MultiC_Sim_Funcs_Refactored:
                 )
             )
             if use_full_chip:
-                # Per-pixel offsets/gains make smoothing non-commuting with the ADU ->
-                # photoelectron conversion; smooth photoelectrons, as the real pipeline
-                # does (SR_Functions), so a hot-offset pixel doesn't bleed into neighbours.
+                # Smooth photoelectrons, not ADU, as the real pipeline does, so hot
+                # offsets don't bleed into neighbours
                 smoothed_data = smoothing_function.smoothing_function(
                     **{smoothing_function.data_arg: photoelectron_data, **smoothing_function.args}
                 )

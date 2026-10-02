@@ -46,26 +46,8 @@ CHIP_SAMPLING_SEED = 2026
 MOSAIC_BAYER = np.array([["R", "G"], ["G", "B"]])
 PIXEL_ORDER = ["B", "G", "R"]
 
-# Simulator background_photons, as in every other SI sweep. It is spread evenly over
-# the 3 colour channels, so each pixel gets background_photons / 3 detected
-# photoelectrons per frame (5.0 -> 1.67 e-/pixel). See background_pe_per_pixel().
+# Mean background photons sensed per pixel per frame (any colour, any dye)
 DEFAULT_BACKGROUND_PHOTONS = 5.0
-
-
-def background_pe_per_pixel(background_photons: float) -> float:
-    """Detected background photoelectrons per pixel per frame for a given simulator
-    ``background_photons``.
-
-    With a uniform ``background_colour`` (the default, [1, 1, 1]),
-    ``gen_camera_image_stack`` splits ``background_photons`` evenly over the pixel
-    colours; each pixel only sees its own colour's share. That share is pre-divided by
-    the pixel's QE for the dye, which photon detection then multiplies back, so every
-    pixel -- B, G or R, for any dye -- gets ``background_photons / len(PIXEL_ORDER)``
-    detected photoelectrons per frame (Poisson mean). Checked numerically: 5.0 -> 1.67,
-    20.0 -> 6.67 e-/pixel.
-    """
-    return background_photons / len(PIXEL_ORDER)
-
 
 NOISE_MODELS = {"median": "bayer_median_noise_", "chip": "bayer_chip_noise_"}
 
@@ -184,8 +166,7 @@ def main() -> None:
     parser.add_argument("--n-photon-levels", type=int, default=200)
     parser.add_argument(
         "--background-photons", type=float, default=DEFAULT_BACKGROUND_PHOTONS,
-        help="Simulator background_photons: spread over the 3 colour channels, so each "
-             "pixel gets background_photons/3 detected photoelectrons per frame.",
+        help="Mean background photons sensed per pixel per frame.",
     )
     args = parser.parse_args()
 

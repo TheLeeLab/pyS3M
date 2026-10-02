@@ -1393,3 +1393,37 @@ class TestSimulationMethodFullChip:
                 smoothing_function=smoothing_function, strategy=FittingStrategy.DEMOSAIC,
                 config=self._config(save_raw_results=False),
             )
+
+
+class TestBackgroundDefinition:
+    """background_photons = mean photons sensed per pixel (QE = 1, dye-independent)."""
+
+    def _bg_pe(self, sim, camera_parameters, wl, dpe, colour, n=4000, n_photons=0):
+        x0y0, _ = _minimal_x0y0_photons(n_bootstrap=n)
+        return sim.gen_camera_image_stack(
+            camera_parameters, wl, 600.0, np.asarray(dpe), {"dye": np.full(n, n_photons)},
+            x0y0, background_photons=5.0, background_colour=colour,
+            return_photoelectrons_stack=True,
+        )
+
+    @pytest.mark.parametrize("dpe", [[0.12, 0.61, 0.09], [0.04, 0.14, 0.49]])
+    def test_each_pixel_senses_background_photons_for_any_dye(
+        self, sim, camera_parameters, wavelength_and_qys, dpe
+    ):
+        wl, _ = wavelength_and_qys
+        pe = self._bg_pe(sim, camera_parameters, wl, dpe, [1, 1, 1])
+        for c in "BGR":
+            assert pe[:, camera_parameters["masks"][c]].mean() == pytest.approx(5.0, rel=0.03)
+
+    def test_colour_scaled_by_max(self, sim, camera_parameters, wavelength_and_qys):
+        wl, _ = wavelength_and_qys
+        pe = self._bg_pe(sim, camera_parameters, wl, [0.1, 0.5, 0.3], [1, 2, 1])  # B, G, R
+        m = camera_parameters["masks"]
+        assert pe[:, m["G"]].mean() == pytest.approx(5.0, rel=0.03)
+        assert pe[:, m["B"]].mean() == pytest.approx(2.5, rel=0.03)
+        assert pe[:, m["R"]].mean() == pytest.approx(2.5, rel=0.03)
+
+    def test_bad_background_colour_raises(self, sim, camera_parameters, wavelength_and_qys):
+        wl, _ = wavelength_and_qys
+        with pytest.raises(SimulationValidationError, match="background_colour"):
+            self._bg_pe(sim, camera_parameters, wl, [0.1, 0.5, 0.3], [1, 1], n=2)
