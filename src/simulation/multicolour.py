@@ -66,24 +66,34 @@ class CameraParameters:
         gain (np.ndarray): Pixel-wise gain map for sCMOS camera
         offset (np.ndarray): Pixel-wise offset map for sCMOS camera
         variance (np.ndarray): Pixel-wise variance map for sCMOS camera
-        readnoise (float): Camera read noise level
+        readnoise (float | np.ndarray): Camera read noise (photoelectrons, RMS). A scalar,
+            or a per-frame (n_bootstrap, H, W) map when full_chip_calibration is sampled.
         rqe (np.ndarray): Relative quantum efficiency map
         masks (Dict[str, np.ndarray]): Bayer filter masks by colour channel
         pixel_QYs (np.ndarray): Quantum yields vs wavelength for each pixel type
         pixel_order (List[str]): Order of colour channels (e.g. ['B', 'G', 'R'])
         pixel_order_indices (Dict[str, int]): Mapping from colour to channel index
+        mosaic_unit (Optional[np.ndarray]): Mosaic unit cell, e.g. [['R','G'],['G','B']]
+        full_chip_calibration (Optional[Dict[str, np.ndarray]]): Real full-chip
+            ``gain``/``offset``/``variance``/``rqe`` maps (all the same 2D chip shape).
+            When given, ``test_simulation_method`` ignores the flat gain/offset/variance/
+            rqe tiles and instead gives every bootstrap sample its own randomly-located
+            crop of these maps (see :func:`sample_chip_patches_batch`), so hot/defective
+            pixels appear at their real frequency. Read noise for fit weighting is then
+            derived per pixel as sqrt(variance)/gain from the same crop.
     """
 
     gain: np.ndarray
     offset: np.ndarray
     variance: np.ndarray
-    readnoise: float
+    readnoise: float | np.ndarray
     rqe: np.ndarray
     masks: dict[str, np.ndarray]
     pixel_QYs: np.ndarray
     pixel_order: list[str]
     pixel_order_indices: dict[str, int]
     mosaic_unit: Optional[np.ndarray] = None
+    full_chip_calibration: Optional[dict[str, np.ndarray]] = None
 
     @classmethod
     def validate_and_create(
@@ -124,6 +134,7 @@ class CameraParameters:
 
         params = {param: camera_parameters[param] for param in required_params}
         params["mosaic_unit"] = camera_parameters.get("mosaic_unit", None)
+        params["full_chip_calibration"] = camera_parameters.get("full_chip_calibration", None)
         return cls(**params)
 
 
@@ -168,6 +179,9 @@ class SimulationConfig:
             see sCMOSFunctions.sCMOS_Functions.DEMOSAIC_STRATEGIES. Not variance-aware —
             plain colour-interpolation demosaicing; per-channel weighting is applied
             afterwards, at the per-channel Gaussian fit stage.
+        chip_sampling_seed (int | None): Seed for the per-bootstrap crop locations drawn
+            when ``camera_parameters`` carries ``full_chip_calibration`` (default None =
+            unseeded). Ignored otherwise.
     """
 
     n_bootstrap: int = 100000
@@ -190,6 +204,7 @@ class SimulationConfig:
     n_unit_cells: int = 7
     sbr: float | None = None
     demosaic_strategy: str = "bilinear"
+    chip_sampling_seed: int | None = None
 
     def __post_init__(self):
         """
@@ -197,6 +212,94 @@ class SimulationConfig:
         """
         if self.background_colour is None:
             self.background_colour = [1, 1, 1]
+
+
+CALIBRATION_MAP_KEYS = ("gain", "offset", "variance", "rqe")
+
+
+def sanitise_calibration_maps(
+    maps: dict[str, np.ndarray],
+) -> tuple[dict[str, np.ndarray], int]:
+    """
+    Replace physically-invalid calibration pixels with the chip median.
+
+    A real calibration can contain a handful of unphysical pixels (e.g. the Ximea chip
+    has 3 of 3.19M with negative gain/rqe -- failed calibration fits on dead pixels)
+    that would otherwise produce negative means or divide-by-negative when converting
+    back to photoelectrons. Hot pixels (large-but-positive variance/offset) are real
+    sensor behaviour and are kept untouched.
+
+    Args:
+        maps (Dict[str, np.ndarray]): ``gain``/``offset``/``variance``/``rqe`` 2D maps,
+            all the same shape.
+
+    Returns:
+        Tuple[Dict[str, np.ndarray], int]: float32 copies of the maps with every pixel
+            where any of gain/variance/rqe is <= 0, or any map is non-finite, replaced
+            by that map's median over the valid pixels; and the number of pixels replaced.
+    """
+    missing = [k for k in CALIBRATION_MAP_KEYS if k not in maps]
+    if missing:
+        raise ValueError(f"full_chip_calibration missing required maps: {missing}")
+    shapes = {np.shape(maps[k]) for k in CALIBRATION_MAP_KEYS}
+    if len(shapes) != 1 or len(next(iter(shapes))) != 2:
+        raise ValueError(f"full_chip_calibration maps must share one 2D shape; got {shapes}")
+
+    out = {k: np.asarray(maps[k], dtype=np.float32).copy() for k in CALIBRATION_MAP_KEYS}
+    invalid = np.zeros(out["gain"].shape, dtype=bool)
+    for k in CALIBRATION_MAP_KEYS:
+        invalid |= ~np.isfinite(out[k])
+    for k in ("gain", "variance", "rqe"):
+        invalid |= out[k] <= 0
+    for k in CALIBRATION_MAP_KEYS:
+        out[k][invalid] = np.median(out[k][~invalid])
+    return out, int(invalid.sum())
+
+
+def sample_chip_patches_batch(
+    chip_maps: dict[str, np.ndarray],
+    patch_shape: tuple[int, int],
+    n_samples: int,
+    rng: np.random.Generator,
+    offsets: Optional[tuple[np.ndarray, np.ndarray]] = None,
+) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray]:
+    """
+    Draw ``n_samples`` independently-located crops from same-shape full-chip maps.
+
+    Every map is cropped at the *same* location for a given sample, so the gain/offset/
+    variance/rqe of one simulated frame all come from one physical patch of sensor.
+
+    Args:
+        chip_maps (Dict[str, np.ndarray]): 2D full-chip maps, all the same shape.
+        patch_shape (Tuple[int, int]): (rows, cols) of each crop, in pixels.
+        n_samples (int): Number of crops (one per bootstrap sample).
+        rng (np.random.Generator): Random generator for the crop locations.
+        offsets (Optional[Tuple[np.ndarray, np.ndarray]]): Pre-drawn (row, col) top-left
+            offsets, each shape (n_samples,), to reproduce a previous draw exactly.
+
+    Returns:
+        Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray]: per-key crops of shape
+            (n_samples, rows, cols), and the row/col offsets used.
+
+    Example:
+        >>> maps = {"gain": np.random.rand(100, 120)}
+        >>> crops, r0, c0 = sample_chip_patches_batch(maps, (14, 14), 5, np.random.default_rng(0))
+        >>> crops["gain"].shape
+        (5, 14, 14)
+    """
+    chip_h, chip_w = next(iter(chip_maps.values())).shape
+    ph, pw = patch_shape
+    if ph > chip_h or pw > chip_w:
+        raise ValueError(f"patch {patch_shape} larger than chip {(chip_h, chip_w)}")
+    if offsets is None:
+        r0 = rng.integers(0, chip_h - ph + 1, size=n_samples)
+        c0 = rng.integers(0, chip_w - pw + 1, size=n_samples)
+    else:
+        r0, c0 = (np.asarray(o, dtype=np.int64) for o in offsets)
+    rows = r0[:, None, None] + np.arange(ph)[None, :, None]
+    cols = c0[:, None, None] + np.arange(pw)[None, None, :]
+    crops = {k: m[rows, cols] for k, m in chip_maps.items()}
+    return crops, r0, c0
 
 
 class SimulationValidationError(Exception):
@@ -541,7 +644,7 @@ class MultiC_Sim_Funcs_Refactored:
             Tuple[np.ndarray, np.ndarray, Dict[str, Any]]: x0 positions, y0 positions,
                                                          and dictionary of setup parameters
         """
-        image_size = config.pixel_size * np.array(camera_params.gain.shape)
+        image_size = config.pixel_size * np.array(camera_params.gain.shape[-2:])
 
         # Generate random positions spanning one full unit cell so that every
         # pixel-type environment in the mosaic is sampled uniformly.
@@ -565,8 +668,8 @@ class MultiC_Sim_Funcs_Refactored:
 
         expected_parameters = np.array(
             [
-                camera_params.gain.shape[0] / 2,  # xc in pixels
-                camera_params.gain.shape[1] / 2,  # yc in pixels
+                camera_params.gain.shape[-2] / 2,  # xc in pixels
+                camera_params.gain.shape[-1] / 2,  # yc in pixels
                 sigma_PSF / config.pixel_size,  # s_x in pixels
                 sigma_PSF / config.pixel_size,  # s_y in pixels
             ]
@@ -1709,7 +1812,13 @@ class MultiC_Sim_Funcs_Refactored:
                 dye_pixel_efficiency, axis=len(dye_pixel_efficiency.shape) - 1
             )
 
-        w, h = gain.shape
+        # Per-frame calibration support: gain/offset/variance/rqe may each be 3D
+        # (n_bootstrap, H, W) -- one sampled crop of the real chip per frame (see
+        # sample_chip_patches_batch) -- instead of one static (H, W) map.
+        def _cal_frame(arr, frame):
+            return arr[frame] if np.ndim(arr) == 3 else arr
+
+        w, h = gain.shape[-2:]
         try:
             s = n_photons[list(dye_names)[0]].shape[0]
         except (AttributeError, IndexError):
@@ -1913,10 +2022,10 @@ class MultiC_Sim_Funcs_Refactored:
                         if _motion_displacement_px > 0.0:
                             _angle = float(_motion_angles[frame])
                             if _vpsf_patch is not None:
-                                _fn = lambda x0, y0, n, _p=_vpsf_patch, _q=relative_QE: \
+                                _fn = lambda x0, y0, n, _p=_vpsf_patch, _q=_cal_frame(relative_QE, frame): \
                                     self._gen_photon_map_vectorial(_p, x0, y0, n, _q)
                             else:
-                                _fn = lambda x0, y0, n, _x=x, _y=y, _sx=sigma_x, _sy=sigma_y, _q=relative_QE: \
+                                _fn = lambda x0, y0, n, _x=x, _y=y, _sx=sigma_x, _sy=sigma_y, _q=_cal_frame(relative_QE, frame): \
                                     self.psf.gen_spatial_PSF_fast(_x, _y, _sx, _sy, x0, y0, n, _q)
                             photon_spatial_pdf = self._apply_motion_blur(
                                 _fn, x0_pixels, y0_pixels, n_photons_array,
@@ -1925,12 +2034,13 @@ class MultiC_Sim_Funcs_Refactored:
                         elif _vpsf_patch is not None:
                             photon_spatial_pdf = self._gen_photon_map_vectorial(
                                 _vpsf_patch, x0_pixels, y0_pixels,
-                                n_photons_array, relative_QE,
+                                n_photons_array, _cal_frame(relative_QE, frame),
                             )
                         else:
                             photon_spatial_pdf = self.psf.gen_spatial_PSF_fast(
                                 x, y, sigma_x, sigma_y,
-                                x0_pixels, y0_pixels, n_photons_array, relative_QE,
+                                x0_pixels, y0_pixels, n_photons_array,
+                                _cal_frame(relative_QE, frame),
                             )
 
                         n_photons_total = self.psf.gen_photons_hitting_detector(
@@ -1956,9 +2066,9 @@ class MultiC_Sim_Funcs_Refactored:
             for frame in range(s):
                 bayer_image[frame, :, :] = self.psf.photoelectrons_to_image(
                     np.sum(n_photoelectrons_all[frame, :, :, :], axis=-1),
-                    gain,
-                    offset,
-                    variance,
+                    _cal_frame(gain, frame),
+                    _cal_frame(offset, frame),
+                    _cal_frame(variance, frame),
                 )
 
                 if return_normal_image:
@@ -1978,7 +2088,8 @@ class MultiC_Sim_Funcs_Refactored:
                     else:
                         # Convert to ADU (standard output)
                         normal_image[frame, :, :] = self.psf.photoelectrons_to_image(
-                            n_photoelectrons_normal, gain, offset, variance
+                            n_photoelectrons_normal, _cal_frame(gain, frame),
+                            _cal_frame(offset, frame), _cal_frame(variance, frame),
                         )
 
         else:
@@ -2091,10 +2202,10 @@ class MultiC_Sim_Funcs_Refactored:
                         if _motion_displacement_px > 0.0:
                             _angle = float(_motion_angles[frame])
                             if _vpsf_patch is not None:
-                                _fn = lambda x0, y0, n, _p=_vpsf_patch, _q=relative_QE: \
+                                _fn = lambda x0, y0, n, _p=_vpsf_patch, _q=_cal_frame(relative_QE, frame): \
                                     self._gen_photon_map_vectorial(_p, x0, y0, n, _q)
                             else:
-                                _fn = lambda x0, y0, n, _x=x, _y=y, _sx=sigma_x, _sy=sigma_y, _q=relative_QE: \
+                                _fn = lambda x0, y0, n, _x=x, _y=y, _sx=sigma_x, _sy=sigma_y, _q=_cal_frame(relative_QE, frame): \
                                     self.psf.gen_spatial_PSF_fast(_x, _y, _sx, _sy, x0, y0, n, _q)
                             photon_spatial_pdf = self._apply_motion_blur(
                                 _fn, x0_pixels, y0_pixels, n_photons_array,
@@ -2103,12 +2214,13 @@ class MultiC_Sim_Funcs_Refactored:
                         elif _vpsf_patch is not None:
                             photon_spatial_pdf = self._gen_photon_map_vectorial(
                                 _vpsf_patch, x0_pixels, y0_pixels,
-                                n_photons_array, relative_QE,
+                                n_photons_array, _cal_frame(relative_QE, frame),
                             )
                         else:
                             photon_spatial_pdf = self.psf.gen_spatial_PSF_fast(
                                 x, y, sigma_x, sigma_y,
-                                x0_pixels, y0_pixels, n_photons_array, relative_QE,
+                                x0_pixels, y0_pixels, n_photons_array,
+                                _cal_frame(relative_QE, frame),
                             )
 
                         # Generate photons hitting detector (includes background)
@@ -2154,7 +2266,8 @@ class MultiC_Sim_Funcs_Refactored:
                             n_photoelectrons[:, :, j] = np.sum(photoelectrons_per_channel, axis=-1)
     
                 bayer_image[frame, :, :] = self.psf.photoelectrons_to_image(
-                    np.sum(n_photoelectrons, axis=-1), gain, offset, variance
+                    np.sum(n_photoelectrons, axis=-1), _cal_frame(gain, frame),
+                    _cal_frame(offset, frame), _cal_frame(variance, frame),
                 )
 
                 if return_normal_image:
@@ -2172,7 +2285,8 @@ class MultiC_Sim_Funcs_Refactored:
                     else:
                         # Convert to ADU (standard output)
                         normal_image[frame, :, :] = self.psf.photoelectrons_to_image(
-                            n_photoelectrons_normal, gain, offset, variance
+                            n_photoelectrons_normal, _cal_frame(gain, frame),
+                            _cal_frame(offset, frame), _cal_frame(variance, frame),
                         )
 
         # Check for bit depth overflow and automatically scale to appropriate bit depth
@@ -2578,6 +2692,73 @@ class MultiC_Sim_Funcs_Refactored:
         total_elapsed = (time.time() - start_total) / 60.0
         logger.info(f"\n[{dye}] 2-D sweep complete: {total_combinations} combinations  " f"total time {total_elapsed:.3f} min")
 
+    def _sample_full_chip_calibration(
+        self,
+        camera_params: CameraParameters,
+        config: SimulationConfig,
+        strategy: FittingStrategy,
+        offsets_path: Path,
+        overwrite: bool,
+    ) -> CameraParameters:
+        """
+        Replace flat calibration tiles with one real-chip crop per bootstrap sample.
+
+        Crops are drawn once per call (so bootstrap k sees the same patch of sensor at
+        every photon level, like its ground-truth position) and are used both to
+        generate the images and to convert/weight them for fitting -- exactly as the
+        real pipeline uses the calibration maps under each punctum. Crop offsets are
+        saved to ``offsets_path`` and reloaded on a continuation run (overwrite=False).
+
+        Args:
+            camera_params (CameraParameters): Parameters whose gain/offset/variance/rqe
+                already have the final simulated (H, W) shape.
+            config (SimulationConfig): Supplies n_bootstrap and chip_sampling_seed.
+            strategy (FittingStrategy): Must be STANDARD or ELLIPTICAL -- the other
+                strategies reshape the data (demosaic) or collapse readnoise to a scalar.
+            offsets_path (Path): CSV of per-bootstrap (row0, col0) crop offsets.
+            overwrite (bool): If False and offsets_path exists, reuse those offsets.
+
+        Returns:
+            CameraParameters: Copy with (n_bootstrap, H, W) gain/offset/variance/rqe and
+                readnoise = sqrt(variance)/gain (photoelectrons RMS), per pixel.
+        """
+        import polars as pl
+        from dataclasses import replace
+
+        if strategy not in (FittingStrategy.STANDARD, FittingStrategy.ELLIPTICAL):
+            raise SimulationValidationError(
+                "full_chip_calibration is only supported for STANDARD/ELLIPTICAL "
+                f"fitting; got {strategy.value}"
+            )
+        chip, n_fixed = sanitise_calibration_maps(camera_params.full_chip_calibration)
+        if n_fixed:
+            logger.info(f"full_chip_calibration: replaced {n_fixed} invalid pixel(s) with chip medians")
+
+        offsets = None
+        if (not overwrite) and offsets_path.exists():
+            saved = pl.read_csv(str(offsets_path))
+            if len(saved) == config.n_bootstrap:
+                offsets = (saved["row0"].to_numpy(), saved["col0"].to_numpy())
+
+        crops, r0, c0 = sample_chip_patches_batch(
+            chip,
+            camera_params.gain.shape[-2:],
+            config.n_bootstrap,
+            np.random.default_rng(config.chip_sampling_seed),
+            offsets=offsets,
+        )
+        if offsets is None:
+            pl.DataFrame({"row0": r0, "col0": c0}).write_csv(offsets_path)
+
+        return replace(
+            camera_params,
+            gain=crops["gain"],
+            offset=crops["offset"],
+            variance=crops["variance"],
+            rqe=crops["rqe"],
+            readnoise=np.sqrt(crops["variance"]) / crops["gain"],
+        )
+
     def test_simulation_method(
         self,
         dye: str,
@@ -2641,6 +2822,17 @@ class MultiC_Sim_Funcs_Refactored:
                 pixel_order=camera_params.pixel_order,
                 pixel_order_indices=camera_params.pixel_order_indices,
                 mosaic_unit=uc,
+                full_chip_calibration=camera_params.full_chip_calibration,
+            )
+
+        # Real-chip noise: swap the flat tiles for one sampled chip crop per bootstrap,
+        # now that the final simulated image size is known.
+        use_full_chip = camera_params.full_chip_calibration is not None
+        if use_full_chip:
+            camera_params = self._sample_full_chip_calibration(
+                camera_params, config, strategy,
+                Path(save_folder) / f"{starting_flag}LM_method_{dye.replace('/', '-')}_fittesting_chipcrop_offsets.csv",
+                overwrite,
             )
 
         # Build a dict from the (possibly resized) camera_params for gen_camera_image_stack.
@@ -2907,6 +3099,13 @@ class MultiC_Sim_Funcs_Refactored:
                     bayer_image, smoothed_image, camera_params, strategy, config
                 )
             )
+            if use_full_chip:
+                # Per-pixel offsets/gains make smoothing non-commuting with the ADU ->
+                # photoelectron conversion; smooth photoelectrons, as the real pipeline
+                # does (SR_Functions), so a hot-offset pixel doesn't bleed into neighbours.
+                smoothed_data = smoothing_function.smoothing_function(
+                    **{smoothing_function.data_arg: photoelectron_data, **smoothing_function.args}
+                )
 
             # Compute error maps
             weights_map, weights_grayscale_map = self._compute_error_maps(

@@ -1247,3 +1247,149 @@ class TestSimulationMethodGaps:
             smoothing_function=smoothing_function, strategy=FittingStrategy.STANDARD,
             config=config,
         )
+
+
+# ======================================================================
+# Full-chip calibration sampling (per-bootstrap real-sensor noise crops)
+# ======================================================================
+
+from pyS3M.simulation.multicolour import (  # noqa: E402
+    sample_chip_patches_batch,
+    sanitise_calibration_maps,
+)
+
+
+def _chip_maps(shape=(30, 40), seed=0):
+    rng = np.random.default_rng(seed)
+    return {
+        "gain": rng.uniform(0.9, 1.1, shape),
+        "offset": np.full(shape, 100.0),
+        "variance": rng.uniform(0.5, 1.5, shape),
+        "rqe": np.ones(shape),
+    }
+
+
+class TestChipSamplingHelpers:
+    def test_crops_share_one_location_across_maps(self):
+        chip = {"a": np.arange(30 * 40).reshape(30, 40), "b": -np.arange(30 * 40).reshape(30, 40)}
+        crops, r0, c0 = sample_chip_patches_batch(chip, (5, 6), 50, np.random.default_rng(1))
+        assert crops["a"].shape == (50, 5, 6)
+        np.testing.assert_array_equal(crops["a"], -crops["b"])
+        for k in range(50):
+            np.testing.assert_array_equal(crops["a"][k], chip["a"][r0[k]:r0[k] + 5, c0[k]:c0[k] + 6])
+
+    def test_offsets_reach_last_valid_position_and_stay_in_bounds(self):
+        chip = {"a": np.zeros((6, 7))}
+        _, r0, c0 = sample_chip_patches_batch(chip, (5, 5), 2000, np.random.default_rng(2))
+        assert r0.min() == 0 and r0.max() == 1
+        assert c0.min() == 0 and c0.max() == 2
+
+    def test_given_offsets_reproduce_draw(self):
+        chip = _chip_maps()
+        crops1, r0, c0 = sample_chip_patches_batch(chip, (4, 4), 10, np.random.default_rng(3))
+        crops2, _, _ = sample_chip_patches_batch(chip, (4, 4), 10, None, offsets=(r0, c0))
+        np.testing.assert_array_equal(crops1["gain"], crops2["gain"])
+
+    def test_patch_larger_than_chip_raises(self):
+        with pytest.raises(ValueError, match="larger than chip"):
+            sample_chip_patches_batch({"a": np.zeros((4, 4))}, (5, 5), 1, np.random.default_rng())
+
+    def test_sanitise_replaces_only_invalid_pixels(self):
+        chip = _chip_maps()
+        chip["gain"][0, 0] = -20.0
+        chip["rqe"][1, 1] = 0.0
+        chip["variance"][2, 2] = np.nan
+        chip["variance"][3, 3] = 44_000.0  # hot pixel: real, must be kept
+        out, n = sanitise_calibration_maps(chip)
+        assert n == 3
+        assert out["gain"][0, 0] > 0 and out["rqe"][1, 1] > 0 and np.isfinite(out["variance"][2, 2])
+        assert out["variance"][3, 3] == pytest.approx(44_000.0)
+        assert out["gain"].dtype == np.float32
+
+    def test_sanitise_shape_and_key_errors(self):
+        with pytest.raises(ValueError, match="missing"):
+            sanitise_calibration_maps({"gain": np.ones((3, 3))})
+        bad = _chip_maps()
+        bad["rqe"] = np.ones((5, 5))
+        with pytest.raises(ValueError, match="share one 2D shape"):
+            sanitise_calibration_maps(bad)
+
+
+class TestPerFrameCalibrationGeneration:
+    @pytest.mark.parametrize("vectorized", [True, False])
+    def test_hot_offset_pixel_lands_in_its_own_frame(
+        self, sim, camera_parameters, wavelength_and_qys, smoothing_function, vectorized
+    ):
+        wl, _ = wavelength_and_qys
+        x0y0, n_photons = _minimal_x0y0_photons()
+        cp = dict(camera_parameters)
+        n = 2
+        for k in ("gain", "rqe"):
+            cp[k] = np.stack([camera_parameters[k]] * n)
+        cp["variance"] = np.stack([camera_parameters["variance"]] * n)
+        cp["offset"] = np.stack([camera_parameters["offset"]] * n)
+        cp["offset"][1, 0, 0] = 5000.0  # hot offset only in frame 1
+        bayer, _, _ = sim.gen_camera_image_stack(
+            cp, wl, 660.0, np.array([0.2, 0.3, 0.5]), n_photons, x0y0,
+            smoothing_function=smoothing_function, background_photons=5.0,
+            use_vectorized_photoelectrons=vectorized,
+        )
+        assert bayer.shape == (2, 8, 8)
+        assert bayer[1, 0, 0] >= 5000
+        assert bayer[0, 0, 0] < 1000
+
+
+class TestSimulationMethodFullChip:
+    def _config(self, **kw):
+        base = dict(
+            n_bootstrap=3, background_photons=5.0, save_raw_results=True,
+            save_summary_csvs=False, verbose=False, use_stochastic_photons=False,
+            n_unit_cells=4, chip_sampling_seed=7,
+        )
+        base.update(kw)
+        return SimulationConfig(**base)
+
+    def _cp(self, sim, pixel_QYs):
+        cp = _camera_params_dict(size=8, mosaic_unit=sim.mosaic_unit, pixel_QYs=pixel_QYs)
+        cp["full_chip_calibration"] = _chip_maps()
+        return cp
+
+    def test_runs_and_saves_crop_offsets(self, sim, wavelength_and_qys, smoothing_function, tmp_path):
+        wl, pixel_QYs = wavelength_and_qys
+        sim.test_simulation_method(
+            dye=DYE, filters=FILTERS, wavelength=wl, camera_parameters=self._cp(sim, pixel_QYs),
+            save_folder=str(tmp_path), n_photon_space=np.array([2000.0, 4000.0]),
+            smoothing_function=smoothing_function, strategy=FittingStrategy.STANDARD,
+            config=self._config(),
+        )
+        offsets = pd.read_csv(next(tmp_path.glob("*chipcrop_offsets.csv")))
+        assert len(offsets) == 3
+        assert offsets["row0"].between(0, 30 - 8).all() and offsets["col0"].between(0, 40 - 8).all()
+        raw = pd.read_hdf(next(tmp_path.glob("*rawresults.h5")))
+        assert set(raw["photon_level"]) == {0, 1}
+
+    def test_continuation_reuses_saved_offsets(self, sim, wavelength_and_qys, smoothing_function, tmp_path):
+        wl, pixel_QYs = wavelength_and_qys
+        common = dict(
+            dye=DYE, filters=FILTERS, wavelength=wl, camera_parameters=self._cp(sim, pixel_QYs),
+            save_folder=str(tmp_path), n_photon_space=np.array([2000.0]),
+            smoothing_function=smoothing_function, strategy=FittingStrategy.STANDARD,
+        )
+        sim.test_simulation_method(**common, config=self._config(save_raw_results=False), overwrite=True)
+        path = next(tmp_path.glob("*chipcrop_offsets.csv"))
+        first = pd.read_csv(path)
+        sim.test_simulation_method(
+            **common, config=self._config(save_raw_results=False, chip_sampling_seed=999),
+            overwrite=False,
+        )
+        pd.testing.assert_frame_equal(first, pd.read_csv(path))
+
+    def test_unsupported_strategy_raises(self, sim, wavelength_and_qys, smoothing_function, tmp_path):
+        wl, pixel_QYs = wavelength_and_qys
+        with pytest.raises(SimulationValidationError, match="only supported"):
+            sim.test_simulation_method(
+                dye=DYE, filters=FILTERS, wavelength=wl, camera_parameters=self._cp(sim, pixel_QYs),
+                save_folder=str(tmp_path), n_photon_space=np.array([2000.0]),
+                smoothing_function=smoothing_function, strategy=FittingStrategy.DEMOSAIC,
+                config=self._config(save_raw_results=False),
+            )
