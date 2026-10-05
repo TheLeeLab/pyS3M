@@ -1396,7 +1396,8 @@ class TestSimulationMethodFullChip:
 
 
 class TestBackgroundDefinition:
-    """background_photons = mean photons sensed per pixel (QE = 1, dye-independent)."""
+    """background_photons = mean photons reaching each pixel, detected with the pixel's
+    flat-spectrum background QE (SI Eqs. pe_generation, qe_background), whatever the dye."""
 
     def _bg_pe(self, sim, camera_parameters, wl, dpe, colour, n=4000, n_photons=0):
         x0y0, _ = _minimal_x0y0_photons(n_bootstrap=n)
@@ -1406,24 +1407,64 @@ class TestBackgroundDefinition:
             return_photoelectrons_stack=True,
         )
 
+    def test_flat_spectrum_qe_is_qe_averaged_over_wavelength(self, sim):
+        wl = np.linspace(400.0, 800.0, 401)
+        qys = np.vstack([np.full_like(wl, 0.4),                 # constant -> 0.4
+                         (wl - 400.0) / 400.0,                   # 0 -> 1 ramp -> 0.5
+                         np.where(wl < 600.0, 0.0, 0.8)])        # half the range at 0.8 -> 0.4
+        np.testing.assert_allclose(sim.background_pixel_efficiency(wl, qys), [0.4, 0.5, 0.4], atol=1e-3)
+
+    def test_background_colour_weights_scaled_by_max(self, sim):
+        wl = np.linspace(400.0, 800.0, 401)
+        qys = np.full((3, wl.size), 0.6)
+        np.testing.assert_allclose(sim.background_pixel_efficiency(wl, qys, [1, 2, 1]), [0.3, 0.6, 0.3])
+        np.testing.assert_allclose(sim.background_pixel_efficiency(wl, qys, [0.5, 0.5, 0.5]), [0.6] * 3)
+
+    @pytest.mark.parametrize("colour", [[1, 1], [1, -1, 1], [0, 0, 0]])
+    def test_bad_background_colour_raises(self, sim, wavelength_and_qys, colour):
+        wl, qys = wavelength_and_qys
+        with pytest.raises(SimulationValidationError, match="background_colour"):
+            sim.background_pixel_efficiency(wl, qys, colour)
+
     @pytest.mark.parametrize("dpe", [[0.12, 0.61, 0.09], [0.04, 0.14, 0.49]])
-    def test_each_pixel_senses_background_photons_for_any_dye(
+    def test_each_pixel_detects_flat_spectrum_background_for_any_dye(
         self, sim, camera_parameters, wavelength_and_qys, dpe
     ):
-        wl, _ = wavelength_and_qys
+        wl, qys = wavelength_and_qys
+        expected = 5.0 * sim.background_pixel_efficiency(wl, qys)  # B, G, R
         pe = self._bg_pe(sim, camera_parameters, wl, dpe, [1, 1, 1])
-        for c in "BGR":
-            assert pe[:, camera_parameters["masks"][c]].mean() == pytest.approx(5.0, rel=0.03)
+        for i, c in enumerate("BGR"):
+            assert pe[:, camera_parameters["masks"][c]].mean() == pytest.approx(expected[i], rel=0.04)
 
-    def test_colour_scaled_by_max(self, sim, camera_parameters, wavelength_and_qys):
+    def test_detected_background_is_poisson(self, sim, camera_parameters, wavelength_and_qys):
+        # Binomial(Poisson(b), q) is Poisson(b * q): variance equals mean
         wl, _ = wavelength_and_qys
+        pe = self._bg_pe(sim, camera_parameters, wl, [0.1, 0.5, 0.3], [1, 1, 1]).astype(float)
+        assert (pe.var(axis=0) / pe.mean(axis=0)).mean() == pytest.approx(1.0, abs=0.03)
+
+    def test_background_colour_in_image(self, sim, camera_parameters, wavelength_and_qys):
+        wl, qys = wavelength_and_qys
+        flat = sim.background_pixel_efficiency(wl, qys)
         pe = self._bg_pe(sim, camera_parameters, wl, [0.1, 0.5, 0.3], [1, 2, 1])  # B, G, R
         m = camera_parameters["masks"]
-        assert pe[:, m["G"]].mean() == pytest.approx(5.0, rel=0.03)
-        assert pe[:, m["B"]].mean() == pytest.approx(2.5, rel=0.03)
-        assert pe[:, m["R"]].mean() == pytest.approx(2.5, rel=0.03)
+        assert pe[:, m["G"]].mean() == pytest.approx(5.0 * flat[1], rel=0.04)
+        assert pe[:, m["B"]].mean() == pytest.approx(2.5 * flat[0], rel=0.04)
+        assert pe[:, m["R"]].mean() == pytest.approx(2.5 * flat[2], rel=0.04)
 
-    def test_bad_background_colour_raises(self, sim, camera_parameters, wavelength_and_qys):
+    def test_bad_background_colour_raises_in_image(self, sim, camera_parameters, wavelength_and_qys):
         wl, _ = wavelength_and_qys
         with pytest.raises(SimulationValidationError, match="background_colour"):
             self._bg_pe(sim, camera_parameters, wl, [0.1, 0.5, 0.3], [1, 1], n=2)
+
+    def test_normal_image_detects_channel_averaged_background(
+        self, sim, camera_parameters, wavelength_and_qys
+    ):
+        wl, qys = wavelength_and_qys
+        n = 3000
+        x0y0, _ = _minimal_x0y0_photons(n_bootstrap=n)
+        _, _, normal = sim.gen_camera_image_stack(
+            camera_parameters, wl, 600.0, np.array([0.1, 0.5, 0.3]), {"dye": np.zeros(n)},
+            x0y0, background_photons=5.0, return_normal_image=True, return_photoelectrons=True,
+        )
+        expected = 5.0 * sim.background_pixel_efficiency(wl, qys).mean()
+        assert normal.mean() == pytest.approx(expected, rel=0.04)

@@ -145,10 +145,12 @@ class SimulationConfig:
 
     Attributes:
         n_bootstrap (int): Number of bootstrap simulations to run (default: 100000)
-        background_photons (float): Mean background photons sensed per pixel per frame
-            (QE = 1, dye-independent), for the brightest colour (default: 40.0)
-        background_colour (list[float]): Relative background per pixel colour, scaled
-            by its max (default: [1,1,1]; [1,2,1] -> G pixels background_photons, B/R half)
+        background_photons (float): Mean background photons reaching each pixel per frame,
+            before detection; detected with each pixel's flat-spectrum background QE,
+            independent of the dye (default: 40.0)
+        background_colour (list[float]): Relative weight per pixel colour on the background
+            QE, scaled by its max, to mimic a non-flat background spectrum (default: [1,1,1],
+            the flat spectrum; [1,2,1] -> G at its flat-spectrum QE, B/R half)
         NA (float): Numerical aperture of objective lens (default: 1.49)
         pixel_size (float): Camera pixel size in nanometers (default: 69)
         cpu_fraction (float): Fraction of CPU cores to use for parallel processing (default: 0.9)
@@ -627,6 +629,7 @@ class MultiC_Sim_Funcs_Refactored:
         dye_pixel_efficiency: np.ndarray,
         average_emission_wavelength: float,
         dye: str,
+        wavelength: np.ndarray,
         unit_cell_shape: Optional[tuple[int, int]] = None,
     ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
         """
@@ -638,6 +641,7 @@ class MultiC_Sim_Funcs_Refactored:
             dye_pixel_efficiency (np.ndarray): Pixel detection efficiency for the dye
             average_emission_wavelength (float): Average emission wavelength for PSF calculation
             dye (str): Dye name for identification
+            wavelength (np.ndarray): Wavelength grid (nm), for the background QE
             unit_cell_shape (Optional[Tuple[int, int]]): Mosaic unit cell (rows, cols).
                 When provided, positions are drawn uniformly over one full unit cell so
                 that all pixel-type environments are sampled equally.
@@ -676,12 +680,15 @@ class MultiC_Sim_Funcs_Refactored:
                 sigma_PSF / config.pixel_size,  # s_y in pixels
             ]
         )
-        # Fit reports bg_* as fractions of the total background
-        bg_colour = np.asarray(config.background_colour, dtype=float)
+        # Fit reports bg_* as fractions of the total background: each colour's share of the
+        # detected background, set by its background QE
+        bg_qe = self.background_pixel_efficiency(
+            wavelength, camera_params.pixel_QYs, config.background_colour
+        )
         expected_parameters = np.hstack(
             [
                 expected_parameters,
-                (bg_colour / bg_colour.sum()).ravel(),
+                (bg_qe / bg_qe.sum()).ravel(),
                 dye_fit_expectation.ravel(),
             ]
         )
@@ -1703,6 +1710,45 @@ class MultiC_Sim_Funcs_Refactored:
                 accum += pm
         return accum / n_samples  # type: ignore[operator]
 
+    @staticmethod
+    def background_pixel_efficiency(
+        wavelength: np.ndarray,
+        pixel_QYs: np.ndarray,
+        background_colour: Optional[List[float]] = None,
+    ) -> np.ndarray:
+        """Probability that a background photon is detected, per pixel colour (SI Eq. qe_background).
+
+        Background photons have a spectrum that is flat in wavelength over the camera's QE
+        range, ``wavelength[0]`` to ``wavelength[-1]``, so each colour's detection probability
+        is its QE curve averaged over that range -- the same for every dye.
+        ``background_colour`` optionally weights the colours, scaled by its max, to mimic a
+        background spectrum that is not flat: ``[1, 1, 1]`` (default) is the flat spectrum;
+        ``[1, 2, 1]`` keeps G at its flat-spectrum value and halves B and R.
+
+        Args:
+            wavelength: Wavelength grid (nm), the camera's QE range.
+            pixel_QYs: Absolute QE curves, shape (n_colours, n_wavelengths), in pixel_order.
+            background_colour: Relative weight per colour (pixel_order), or None for flat.
+
+        Returns:
+            np.ndarray: Detection probability per colour, shape (n_colours,), in pixel_order.
+
+        Raises:
+            SimulationValidationError: If background_colour has the wrong length, a negative
+                weight, or no positive weight.
+        """
+        pixel_QYs = np.atleast_2d(np.asarray(pixel_QYs, dtype=float))
+        wavelength = np.asarray(wavelength, dtype=float)
+        n_colours = pixel_QYs.shape[0]
+        weights = np.ones(n_colours) if background_colour is None else np.asarray(background_colour, dtype=float)
+        if weights.shape != (n_colours,) or weights.min() < 0 or weights.max() <= 0:
+            raise SimulationValidationError(
+                f"background_colour needs {n_colours} non-negative weights (one per pixel colour) "
+                f"with a positive max; got {background_colour}"
+            )
+        flat_spectrum_qe = np.trapz(pixel_QYs, wavelength, axis=-1) / (wavelength[-1] - wavelength[0])
+        return flat_spectrum_qe * weights / weights.max()
+
     def gen_camera_image_stack(
         self,
         camera_calibration: Dict[str, Any],
@@ -1728,10 +1774,13 @@ class MultiC_Sim_Funcs_Refactored:
         """Generate camera image stack with optional vectorized photoelectron generation.
 
         Args:
-            background_photons: Mean background photons sensed per pixel per frame
-                (Poisson, QE = 1, independent of the dye), for the brightest colour.
-            background_colour: Relative background per pixel colour (pixel_order),
-                scaled by its max: [1, 2, 1] -> G pixels background_photons, B/R half.
+            background_photons: Mean background photons reaching each pixel per frame
+                (Poisson, the same for every pixel), before detection. Each is detected with
+                the pixel's background QE (``background_pixel_efficiency``: its QE curve
+                averaged over a flat spectrum, independent of the dye).
+            background_colour: Relative weight per pixel colour (pixel_order) on the
+                background QE, scaled by its max, to mimic a non-flat background spectrum.
+                None or [1, 1, 1] (default) is the flat spectrum.
             x0y0: Dict mapping each dye key to an (n_bootstrap, 2, n_molecules) position
                 array in nm, ordered (y, x): index 0 is the row/y coordinate, index 1 is
                 the column/x coordinate.
@@ -1880,24 +1929,28 @@ class MultiC_Sim_Funcs_Refactored:
                         dpe = dye_pixel_efficiency
                     abs_QE[:, :, j] += masks[colour] * dpe
 
-        # Background: mean photons sensed per pixel (QE = 1, dye-independent), with
-        # background_colour scaled by its max. Scaled by rqe like the signal.
-        background_colour = np.asarray(background_colour, dtype=float)
-        if background_colour.shape != (len(pixel_colours),) or background_colour.max() <= 0:
-            raise SimulationValidationError(
-                f"background_colour needs {len(pixel_colours)} non-negative weights "
-                f"(one per {pixel_colours}) with a positive max; got {background_colour}"
-            )
-        background_weight = np.tensordot(
-            mask_stack.astype(float), background_colour / background_colour.max(), axes=([-1], [0])
+        # Background (SI Eqs. pe_generation, qe_background): every pixel receives
+        # Poisson(background_photons) photons, scaled by rqe like the signal, each detected
+        # with the pixel's background QE -- its QE curve averaged over a flat spectrum,
+        # independent of the dye: Binomial(Poisson(background_photons * rqe), QE_bg).
+        background_qe_per_channel = self.background_pixel_efficiency(
+            wavelength, camera_calibration["pixel_QYs"], background_colour
+        )
+        background_qe = np.tensordot(
+            mask_stack.astype(float), background_qe_per_channel, axes=([-1], [0])
         )  # (w, h), or (s, w, h) if masks vary per frame
-        background_mean = background_photons * background_weight * relative_QE
-        if return_normal_image:
-            # Unfiltered reference camera: every pixel senses background_photons
-            background_mean_normal = background_photons * np.asarray(relative_QE, dtype=float)
+        background_rate = background_photons * np.asarray(relative_QE, dtype=float)
 
         def _background_frame(frame):
-            return np.random.poisson(_cal_frame(background_mean, frame))
+            return np.random.binomial(
+                np.random.poisson(_cal_frame(background_rate, frame)), _cal_frame(background_qe, frame)
+            )
+
+        def _background_normal_frame(frame):
+            # Unfiltered reference camera: detects with the channel-averaged QE, as its signal does
+            return np.random.binomial(
+                np.random.poisson(_cal_frame(background_rate, frame)), background_qe_per_channel.mean()
+            )
 
         bayer_image = np.zeros([s, w, h])
         if return_normal_image:
@@ -2040,9 +2093,10 @@ class MultiC_Sim_Funcs_Refactored:
                 mask_stack,
             )
 
-            # Signal photoelectrons summed over dyes, plus background (QE = 1)
-            n_photoelectrons_total = np.sum(n_photoelectrons_all, axis=-1) + np.random.poisson(
-                np.broadcast_to(background_mean, (s, w, h))
+            # Signal photoelectrons summed over dyes, plus background photoelectrons
+            n_photoelectrons_total = np.sum(n_photoelectrons_all, axis=-1) + np.random.binomial(
+                np.random.poisson(np.broadcast_to(background_rate, (s, w, h))),
+                np.broadcast_to(background_qe, (s, w, h)),
             )
 
             # Early exit: return summed photoelectrons before Phase 3 (no read noise)
@@ -2067,7 +2121,7 @@ class MultiC_Sim_Funcs_Refactored:
                     n_photoelectrons_normal = self.psf.gen_photoelectrons(
                         n_photons_frame_total.astype(int),
                         overall_QY_frame / len(pixel_colours)  # Average QY across channels
-                    ) + np.random.poisson(_cal_frame(background_mean_normal, frame))
+                    ) + _background_normal_frame(frame)
 
                     if return_photoelectrons:
                         # Return raw photoelectrons (ground truth for demosaicing validation)
@@ -2253,7 +2307,7 @@ class MultiC_Sim_Funcs_Refactored:
                     n_photoelectrons_normal = self.psf.gen_photoelectrons(
                         n_photons_frame_total.astype(int),
                         overall_QY_frame
-                    ) + np.random.poisson(_cal_frame(background_mean_normal, frame))
+                    ) + _background_normal_frame(frame)
 
                     if return_photoelectrons:
                         # Return raw photoelectrons (ground truth for demosaicing validation)
@@ -2479,7 +2533,7 @@ class MultiC_Sim_Funcs_Refactored:
         # Simulation geometry (once per function call; x0/y0 do not depend on QY or RN)
         x0, y0, setup_data = self._setup_simulation_parameters(
             camera_params_base, config, dye_pixel_efficiency,
-            average_emission_wavelength, dye,
+            average_emission_wavelength, dye, wavelength,
             unit_cell_shape=unit_cell_shape,
         )
         x0y0 = {"dye": np.zeros([config.n_bootstrap, 2, 1])}
@@ -2875,6 +2929,7 @@ class MultiC_Sim_Funcs_Refactored:
             dye_pixel_efficiency,
             average_emission_wavelength,
             dye,
+            wavelength,
             unit_cell_shape=unit_cell_shape,
         )
 
