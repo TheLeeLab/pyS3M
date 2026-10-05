@@ -477,3 +477,16 @@ class TestUndrift:
 
         _, kwargs = fake_dcf.undrift.call_args
         assert kwargs["method"] == "auto"
+
+
+class TestFitGateConfig:
+    def test_fit_sets_the_configured_gate(self):
+        pipe = AnalysisPipeline(camera="ximea")
+        pipe.load_calibration(CAL_DIR)
+        pipe._sr = MagicMock()
+        pipe.fit(Path("x"), mode="smlm", fitting_config=FittingConfig(fit_gate="amplitude_snr", noise_rate=0.05))
+        pipe._sr.image_analysis.set_gate.assert_called_once_with("amplitude_snr", 0.05)
+
+    def test_default_gate_is_delta_chi2_at_one_percent(self):
+        fc = FittingConfig()
+        assert fc.fit_gate == "delta_chi2" and fc.noise_rate == 0.01

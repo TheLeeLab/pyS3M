@@ -4,6 +4,14 @@ from pathlib import Path
 import pytest
 
 TEST_OUTPUT_DIR = Path(__file__).parent / "test_output"
+
+# Delta-chi^2 fit gate: calibrate into a throw-away folder (never into the repo's
+# Camera_Calibrations/) with few null fits, so the calibrations tests trigger are fast.
+import os
+import tempfile
+_FIT_GATE_DIR = tempfile.mkdtemp(prefix="pys3m_fit_gate_")
+os.environ["PYS3M_FIT_GATE_DIR"] = _FIT_GATE_DIR
+os.environ["PYS3M_FIT_GATE_NNULL"] = "200"
 PROJECT_ROOT = Path(__file__).parent.parent
 
 
@@ -79,3 +87,4 @@ def pytest_sessionfinish(session, exitstatus):
     """Remove all test-generated output once the full test session completes."""
     if TEST_OUTPUT_DIR.exists():
         shutil.rmtree(TEST_OUTPUT_DIR)
+    shutil.rmtree(_FIT_GATE_DIR, ignore_errors=True)

@@ -54,6 +54,11 @@ class FittingConfig:
     # bound (sigma must still be > 0). Quality filtering later uses FilteringCriteria instead.
     fit_min_sigma: float | None = None
     fit_max_sigma: float | None = None
+    # Fit-acceptance gate: "delta_chi2" (likelihood-ratio test, threshold calibrated so that
+    # noise_rate of pure-noise fits pass; calibrations are cached), "amplitude_snr" (the
+    # previous gate, to reproduce earlier results) or None (no gate).
+    fit_gate: str | None = "delta_chi2"
+    noise_rate: float = 0.01
 
 
 class AnalysisPipeline:
@@ -340,6 +345,7 @@ class AnalysisPipeline:
             fit_max_sigma=fc.fit_max_sigma,
         )
         common.update(kwargs)
+        self.sr.image_analysis.set_gate(fc.fit_gate, fc.noise_rate)
 
         method_map: dict[str, Any] = {
             "smlm":     self.sr.fit_SM_data,

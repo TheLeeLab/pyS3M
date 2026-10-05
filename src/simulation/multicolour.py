@@ -186,6 +186,10 @@ class SimulationConfig:
         chip_sampling_seed (int | None): Seed for the per-bootstrap crop locations drawn
             when ``camera_parameters`` carries ``full_chip_calibration`` (default None =
             unseeded). Ignored otherwise.
+        fit_gate (str | None): Fit-acceptance gate -- "delta_chi2" (default, a likelihood-ratio
+            test whose threshold is calibrated so noise_rate of pure-noise fits pass),
+            "amplitude_snr" (the previous gate, to reproduce earlier results) or None (no gate)
+        noise_rate (float): For "delta_chi2", the fraction of pure-noise fits that pass (default 0.01)
     """
 
     n_bootstrap: int = 100000
@@ -209,6 +213,8 @@ class SimulationConfig:
     sbr: float | None = None
     demosaic_strategy: str = "bilinear"
     chip_sampling_seed: int | None = None
+    fit_gate: str | None = "delta_chi2"
+    noise_rate: float = 0.01
 
     def __post_init__(self):
         """
@@ -2488,6 +2494,7 @@ class MultiC_Sim_Funcs_Refactored:
         """
         if config is None:
             config = SimulationConfig()
+        self.image_analysis.set_gate(config.fit_gate, config.noise_rate)
 
         import polars as pl
         import pyS3M.SpectralFunctions as SpectralFunctions
@@ -2838,6 +2845,7 @@ class MultiC_Sim_Funcs_Refactored:
         """
         if config is None:
             config = SimulationConfig()
+        self.image_analysis.set_gate(config.fit_gate, config.noise_rate)
 
         # Import required modules
         import polars as pl
