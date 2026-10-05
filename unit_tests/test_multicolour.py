@@ -1483,3 +1483,30 @@ class TestBuildFrameReadnoise:
         rn = np.arange(24, dtype=np.float32).reshape(4, 2, 3)
         out = MultiC_Sim_Funcs_Refactored._build_frame_readnoise(rn, 4)
         assert [o.tolist() for o in out] == [rn[i].tolist() for i in range(4)]
+
+
+class TestStochasticPhotonColourStatistics:
+    """Stochastic-photon images must reproduce photon-by-photon colour statistics: the same
+    mean colour as deterministic images (no bias) and Poisson channel counts (variance =
+    mean), not inflated by a second, per-image colour draw."""
+
+    def _channel_counts(self, sim, camera_parameters, wl, avg_wl, dpe, n, N, seed):
+        x0y0, _ = _minimal_x0y0_photons(n_bootstrap=n)
+        np.random.seed(seed)
+        pe = sim.gen_camera_image_stack(camera_parameters, wl, avg_wl, dpe, {"dye": np.full(n, float(N))}, x0y0,
+                                        background_photons=0.0, return_photoelectrons_stack=True).astype(float)
+        m = camera_parameters["masks"]
+        return np.stack([pe[:, m[c]].sum(axis=1) for c in "BGR"], axis=1)
+
+    def test_unbiased_poisson_colour_counts(self, sim, camera_parameters, wavelength_and_qys, spectral):
+        wl, qys = wavelength_and_qys
+        n, N = 3000, 5000
+        spectrum = spectral.get_dye_or_filter_data(names=["ATTO 488"], wavelength=wl, dye_or_filter=True)[0]
+        mwl, ratios = spectral.generate_bootstrap_colour_ratios(
+            spectrum, wl, qys, n_photons_per_image=N, n_bootstrap=n, random_state=np.random.default_rng(0))
+        avg_wl, dpe = spectral.get_pixel_fractions_dye_and_filters(["ATTO 488"], [], wl, qys, normalized=False)
+        stoch = self._channel_counts(sim, camera_parameters, wl, mwl, ratios, n, N, seed=1)
+        determ = self._channel_counts(sim, camera_parameters, wl, avg_wl, dpe, n, N, seed=2)
+        np.testing.assert_allclose(stoch.var(0) / stoch.mean(0), 1.0, atol=0.1)
+        frac_s, frac_d = stoch.sum(0) / stoch.sum(), determ.sum(0) / determ.sum()
+        np.testing.assert_allclose(frac_s, frac_d, atol=0.002)    # old code: G off by ~0.008

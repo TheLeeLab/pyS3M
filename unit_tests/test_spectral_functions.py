@@ -637,6 +637,38 @@ class TestCalculateColourRatioFromPhotonWavelengths:
 # ======================================================================
 
 class TestGenerateBootstrapColourRatios:
+    @pytest.mark.parametrize("dye", ["ATTO 488", "ATTO 565", "ATTO 647N"])
+    def test_colour_ratios_are_the_unbiased_detection_efficiencies(self, sf, pixel_qys, dye):
+        # Regression: the old per-photon channel assignment gave E[QE_c/sum QE] * E[sum QE]
+        # instead of E[QE_c] -- for ATTO 488 a fingerprint bias of about (-0.47, +0.77, -0.29) pp.
+        pixel_QYs, wavelength = pixel_qys
+        spectrum = sf.get_spectral_data([dye], wavelength, SpectralDataType.DYE)[0]
+        _, ratios = sf.generate_bootstrap_colour_ratios(
+            spectrum, wavelength, pixel_QYs, n_photons_per_image=200, n_bootstrap=5,
+            random_state=np.random.default_rng(0),
+        )
+        _, expected = sf.get_pixel_fractions_dye_and_filters([dye], [], wavelength, pixel_QYs, normalized=False)
+        np.testing.assert_allclose(ratios, np.tile(expected, (5, 1)), rtol=1e-9)
+
+    def test_mean_wavelength_fluctuates_per_image_like_n_sampled_photons(self, sf, pixel_qys):
+        pixel_QYs, wavelength = pixel_qys
+        spectrum = sf.get_spectral_data(DYE_NAME, wavelength, SpectralDataType.DYE)[0]
+        n = 400
+        mean_wls, _ = sf.generate_bootstrap_colour_ratios(
+            spectrum, wavelength, pixel_QYs, n_photons_per_image=n, n_bootstrap=2000,
+            random_state=np.random.default_rng(3),
+        )
+        p = np.maximum(spectrum, 0) / np.trapz(np.maximum(spectrum, 0), wavelength)
+        mu = np.trapz(p * wavelength, wavelength); sd = np.sqrt(np.trapz(p * (wavelength - mu) ** 2, wavelength))
+        assert mean_wls.mean() == pytest.approx(mu, abs=0.5)
+        assert mean_wls.std() == pytest.approx(sd / np.sqrt(n), rel=0.1)
+
+    def test_empty_spectrum_raises(self, sf, pixel_qys):
+        pixel_QYs, wavelength = pixel_qys
+        with pytest.raises(ValueError):
+            sf.generate_bootstrap_colour_ratios(np.zeros_like(wavelength), wavelength, pixel_QYs,
+                                                n_photons_per_image=10, n_bootstrap=2)
+
     def test_parallel_path(self, sf, pixel_qys):
         pixel_QYs, wavelength = pixel_qys
         spectrum = sf.get_spectral_data(DYE_NAME, wavelength, SpectralDataType.DYE)[0]
