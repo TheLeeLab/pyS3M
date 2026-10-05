@@ -50,6 +50,10 @@ class FittingConfig:
     fraction_true: float = 0.0
     image_type: str = ".tif"
     use_variance_aware_demosaic: bool = True
+    # Optional PSF sigma bounds (pixels) for keeping a fit straight after fitting; None = no
+    # bound (sigma must still be > 0). Quality filtering later uses FilteringCriteria instead.
+    fit_min_sigma: float | None = None
+    fit_max_sigma: float | None = None
 
 
 class AnalysisPipeline:
@@ -332,6 +336,8 @@ class AnalysisPipeline:
             fraction_true=fc.fraction_true,
             image_type=fc.image_type,
             use_variance_aware_demosaic=fc.use_variance_aware_demosaic,
+            fit_min_sigma=fc.fit_min_sigma,
+            fit_max_sigma=fc.fit_max_sigma,
         )
         common.update(kwargs)
 

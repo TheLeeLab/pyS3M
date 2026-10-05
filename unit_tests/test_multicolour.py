@@ -1468,3 +1468,18 @@ class TestBackgroundDefinition:
         )
         expected = 5.0 * sim.background_pixel_efficiency(wl, qys).mean()
         assert normal.mean() == pytest.approx(expected, rel=0.04)
+
+
+class TestBuildFrameReadnoise:
+    def test_scalar_gives_none(self):
+        assert MultiC_Sim_Funcs_Refactored._build_frame_readnoise(2.3, 4) is None
+
+    def test_2d_map_shared_by_every_frame(self):
+        rn = np.arange(6, dtype=np.float32).reshape(2, 3)
+        out = MultiC_Sim_Funcs_Refactored._build_frame_readnoise(rn, 3)
+        assert len(out) == 3 and all(np.array_equal(o, rn) for o in out)
+
+    def test_3d_stack_gives_each_frame_its_own_map(self):
+        rn = np.arange(24, dtype=np.float32).reshape(4, 2, 3)
+        out = MultiC_Sim_Funcs_Refactored._build_frame_readnoise(rn, 4)
+        assert [o.tolist() for o in out] == [rn[i].tolist() for i in range(4)]

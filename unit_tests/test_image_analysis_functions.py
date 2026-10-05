@@ -1175,3 +1175,78 @@ class TestFitPunctaMethodStandaloneSysPath:
         )
         assert pfit.shape[0] == 1
         assert _dir in sys.path
+
+
+# ======================================================================
+# Per-pixel read noise (CMOS): each punctum's own read-noise crop reaches the fitter
+# ======================================================================
+
+def _noisy_punctum(seed=0, size=SIZE, bg=20.0, amp=400.0):
+    punctum, masks = _synthetic_punctum(size=size, bg=bg, amp=amp)
+    rng = np.random.default_rng(seed)
+    return rng.poisson(np.clip(punctum, 0, None)).astype(np.float32), masks
+
+
+class TestReadnoiseMaps:
+    def test_readnoise_sq_uses_map_else_scalar(self):
+        p = StandardDataFittingProcessor(readnoise=2.0)
+        assert p._readnoise_sq(None) == pytest.approx(4.0)
+        rn = np.array([[1.0, 3.0]], dtype=np.float32)
+        np.testing.assert_allclose(p._readnoise_sq(rn), [[1.0, 9.0]])
+
+    def test_raw_data_weights_are_per_pixel(self):
+        p = StandardDataFittingProcessor(readnoise=2.0)
+        punctum, _ = _noisy_punctum()
+        rn = np.linspace(1.0, 5.0, SIZE * SIZE, dtype=np.float32).reshape(SIZE, SIZE)
+        w = p._raw_data_weights(punctum, p._readnoise_sq(rn))
+        np.testing.assert_allclose(w, 1.0 / (np.maximum(punctum, 0) + 1.0 + rn ** 2), rtol=1e-6)
+
+    @pytest.mark.parametrize("proc_cls", [StandardIterFittingProcessor, StandardDataFittingProcessor])
+    def test_uniform_map_gives_the_scalar_fit(self, proc_cls):
+        punctum, masks = _noisy_punctum(seed=1)
+        p = proc_cls(readnoise=2.0)
+        a = p.fit_single_punctum(punctum, punctum, _weights(), [0.0, 0.0], masks=masks)
+        b = p.fit_single_punctum(punctum, punctum, _weights(), [0.0, 0.0], masks=masks,
+                                 readnoise_map=np.full((SIZE, SIZE), 2.0, np.float32))
+        np.testing.assert_allclose(a[0], b[0], rtol=1e-5, equal_nan=True)
+
+    def test_noisy_pixel_is_downweighted_by_its_map(self):
+        # A read-noise outlier pixel (strongly negative) drags the fitted background down
+        # when every pixel is weighted with the scalar read noise; flagging that pixel's
+        # large read noise in the map removes its influence.
+        # Stage-1 weights come from the same read noise, as the pipeline builds them
+        # (IO_Functions.generate_weights with the ROI's read-noise crop).
+        punctum, masks = _synthetic_punctum(bg=20.0, amp=400.0)
+        punctum = punctum.copy(); punctum[0, 0] = -300.0           # a channel-0 pixel
+        p = StandardDataFittingProcessor(readnoise=1.5)
+        rn = np.full((SIZE, SIZE), 1.5, np.float32); rn[0, 0] = 300.0
+        smoothed = np.clip(punctum, 0, None)
+        w_scalar = 1.0 / (smoothed + 1.0 + 1.5 ** 2)
+        w_map = 1.0 / (smoothed + 1.0 + rn ** 2)
+        scalar = p.fit_single_punctum(punctum, smoothed, w_scalar, [0.0, 0.0], masks=masks)[0]
+        mapped = p.fit_single_punctum(punctum, smoothed, w_map, [0.0, 0.0], masks=masks, readnoise_map=rn)[0]
+        np.testing.assert_allclose(mapped[[0, 1, 4, 7]], [4.0, 4.0, 20.0, 400.0], rtol=0.01)   # x, y, bg_0, A_0
+        assert np.isnan(scalar[0]) or abs(scalar[4] - 20.0) > 1.0                             # outlier spoils it
+
+    def test_fit_puncta_method_passes_maps(self):
+        punctum, masks = _noisy_punctum(seed=2)
+        args = ([punctum], [punctum], [_weights()], [[0.0, 0.0]], [0])
+        with_map = Image_Analysis_Functions(readnoise=1.5).fit_puncta_method(
+            *args, FittingStrategy.STANDARD_DATA, masks=[masks], readnoise_maps=[np.full((SIZE, SIZE), 7.0, np.float32)])
+        scalar7 = Image_Analysis_Functions(readnoise=7.0).fit_puncta_method(
+            *args, FittingStrategy.STANDARD_DATA, masks=[masks])
+        np.testing.assert_allclose(with_map[0], scalar7[0], rtol=1e-5, equal_nan=True)
+
+    def test_parallel_workers_inherit_the_processor_read_noise(self):
+        # Worker processes build a fresh fitter; without the parent's settings they would
+        # fall back to the 1.5 e- default.
+        punctum, masks = _noisy_punctum(seed=3)
+        args = ([punctum], [punctum], [_weights()], [[0.0, 0.0]], [0])
+        iaf_7 = Image_Analysis_Functions(readnoise=7.0)
+        state = iaf_7._processor_state(FittingStrategy.STANDARD_DATA)
+        assert state == {"readnoise": 7.0}
+        serial = iaf_7.fit_puncta_method(*args, FittingStrategy.STANDARD_DATA, masks=[masks])
+        worker = _fit_puncta_method_standalone(*args, FittingStrategy.STANDARD_DATA, [masks], None, state)
+        default = _fit_puncta_method_standalone(*args, FittingStrategy.STANDARD_DATA, [masks])
+        np.testing.assert_allclose(worker[0], serial[0], rtol=1e-6, equal_nan=True)
+        assert not np.allclose(default[0], serial[0], equal_nan=True)

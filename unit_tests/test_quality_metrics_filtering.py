@@ -86,7 +86,7 @@ def test_quality_metrics_filtering():
     )
 
     (puncta_tofit, smoothed_puncta_tofit, masks_tofit, weights_tofit,
-     relative_coords, planes, filtered_quality_metrics) = results
+     relative_coords, planes, filtered_quality_metrics, readnoise_tofit) = results
 
     # Check that we got 2 valid ROIs (indices 0 and 3)
     assert len(puncta_tofit) == 2, f"Expected 2 valid ROIs, got {len(puncta_tofit)}"
@@ -152,7 +152,7 @@ def test_no_quality_metrics():
     )
 
     (puncta_tofit, smoothed_puncta_tofit, masks_tofit, weights_tofit,
-     relative_coords, planes, filtered_quality_metrics) = results
+     relative_coords, planes, filtered_quality_metrics, readnoise_tofit) = results
 
     # Check that we got 1 valid ROI
     assert len(puncta_tofit) == 1, f"Expected 1 valid ROI, got {len(puncta_tofit)}"

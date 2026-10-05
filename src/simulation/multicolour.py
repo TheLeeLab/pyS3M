@@ -915,6 +915,21 @@ class MultiC_Sim_Funcs_Refactored:
             for frame in range(n_bootstrap)
         ]
 
+    @staticmethod
+    def _build_frame_readnoise(readnoise, n_bootstrap: int) -> Optional[list]:
+        """One (H, W) read-noise map (e-) per bootstrap frame, for the fitter's per-pixel weights.
+
+        None when the read noise is a single value: the fit processor's scalar read noise
+        is then exact. A 2D map is shared by every frame; a 3D (n_bootstrap, H, W) stack
+        (full-chip mode, one chip crop per bootstrap) gives each frame its own map.
+        """
+        rn = np.asarray(readnoise, dtype=np.float32)
+        if rn.ndim == 0:
+            return None
+        if rn.ndim == 2:
+            return [rn] * n_bootstrap
+        return [rn[frame] for frame in range(n_bootstrap)]
+
     def _fit_standard(
         self,
         photoelectron_data: np.ndarray,
@@ -961,6 +976,7 @@ class MultiC_Sim_Funcs_Refactored:
             planes,
             IAF_FittingStrategy.STANDARD,
             masks=masks_tofit,
+            readnoise_maps=self._build_frame_readnoise(camera_params.readnoise, len(puncta_tofit)),
         )
 
         _lbls = camera_params.pixel_order
@@ -1043,6 +1059,7 @@ class MultiC_Sim_Funcs_Refactored:
             planes,
             IAF_FittingStrategy.ELLIPTICAL,
             masks=masks_tofit,
+            readnoise_maps=self._build_frame_readnoise(camera_params.readnoise, len(puncta_tofit)),
         )
 
         _lbls = camera_params.pixel_order
@@ -1123,6 +1140,7 @@ class MultiC_Sim_Funcs_Refactored:
             planes,
             IAF_FittingStrategy.STANDARD_ITER,
             masks=masks_tofit,
+            readnoise_maps=self._build_frame_readnoise(camera_params.readnoise, len(puncta_tofit)),
         )
 
         _lbls = camera_params.pixel_order
@@ -1202,6 +1220,7 @@ class MultiC_Sim_Funcs_Refactored:
             planes,
             IAF_FittingStrategy.STANDARD_DATA,
             masks=masks_tofit,
+            readnoise_maps=self._build_frame_readnoise(camera_params.readnoise, len(puncta_tofit)),
         )
 
         _lbls = camera_params.pixel_order
