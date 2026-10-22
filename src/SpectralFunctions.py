@@ -1408,123 +1408,60 @@ class Spectral_Funcs:
         random_state: Optional[np.random.Generator] = None,
         use_parallel: bool = True,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Efficiently generate many bootstrap samples of colour ratios and mean wavelengths.
+        """Per-image mean emission wavelengths and per-channel detection efficiencies for
+        stochastic-photon simulations (``use_stochastic_photons=True``).
 
-        This function samples all photons at once (n_bootstrap × n_photons_per_image),
-        then divides into bootstrap chunks. This is ~n_bootstrap times faster than
-        calling sample_photons_from_spectrum repeatedly.
+        Each of the ``n_bootstrap`` images samples ``n_photons_per_image`` photon wavelengths
+        from ``spectrum``; their mean sets that image's PSF width, so the width fluctuates
+        from image to image as it would for a real emitter.
+
+        The colour ratios are the *deterministic* per-channel detection efficiencies,
+        identical for every image (SI Eq. for QE_d,n):
+
+            QE_c = sum_lambda s(lambda) QE_c(lambda) / sum_lambda s(lambda)
+
+        -- the same values as ``get_pixel_fractions_dye_and_filters(normalized=False)`` for
+        that spectrum. They are not drawn from the sampled photons: the image generator
+        already applies Poisson and Binomial detection noise per photon, which gives exactly
+        the photon-by-photon colour statistics, so a per-image fluctuation on top of it would
+        count colour noise twice. (Until 2026-10-05 each photon was assigned a channel with
+        probability QE_c/sum QE and the shares rescaled by the mean total QE; that estimates
+        E[QE_c/sum QE] * E[sum QE], not E[QE_c], biasing green dyes by up to ~0.8 pp, and it
+        inflated colour variance by 10-30%.)
 
         Args:
             spectrum: Emission spectrum (can include filter transmission).
             wavelength: Wavelength array corresponding to spectrum (nm).
             pixel_QYs: Pixel quantum efficiencies, shape (n_colours, n_wavelengths).
-            n_photons_per_image: Number of photons per bootstrap sample.
-            n_bootstrap: Number of bootstrap samples to generate.
-            pixel_order: List of pixel colour names (e.g., ['B', 'G', 'R']).
-            pixel_order_indices: Indices or dict mapping colours to indices.
+            n_photons_per_image: Photons sampled per image, for its mean wavelength.
+            n_bootstrap: Number of images.
+            pixel_order: Unused; kept for call compatibility (rows follow pixel_QYs).
+            pixel_order_indices: Unused; kept for call compatibility.
             random_state: Optional numpy random generator.
-            use_parallel: If True, use Numba parallel processing (3-3.5× faster). Default: True.
+            use_parallel: Unused; kept for call compatibility.
 
         Returns:
             Tuple of (mean_wavelengths, colour_ratios):
-                - mean_wavelengths: Array of shape (n_bootstrap,)
-                - colour_ratios: Array of shape (n_bootstrap, n_ch) with per-channel ratios
-
-        Example:
-            >>> sf = Spectral_Funcs()
-            >>> # Generate 1000 bootstrap samples at 500 photons each
-            >>> mean_wls, bgr_ratios = sf.generate_bootstrap_colour_ratios(
-            ...     dye_spec[0], wl, pixel_QYs,
-            ...     n_photons_per_image=500,
-            ...     n_bootstrap=1000,
-            ...     pixel_order=['B', 'G', 'R'],
-            ...     random_state=rng
-            ... )
-            >>> # Analyze shot noise statistics
-            >>> print(f"Mean B: {bgr_ratios[:, 0].mean():.3f} ± {bgr_ratios[:, 0].std():.3f}")
+                - mean_wavelengths: shape (n_bootstrap,), each image's mean photon wavelength
+                - colour_ratios: shape (n_bootstrap, n_colours), the absolute detection
+                  efficiency per channel (rows identical), in pixel_QYs row order
         """
         if random_state is None:
             random_state = np.random.default_rng()
 
-        # Sample all photons at once
-        total_photons = n_photons_per_image * n_bootstrap
-        all_photon_wavelengths = self.sample_photons_from_spectrum(
-            spectrum, wavelength, total_photons, random_state
-        )
+        # Per-image mean wavelength from that image's sampled photons (PSF width)
+        photon_wavelengths = self.sample_photons_from_spectrum(
+            spectrum, wavelength, n_photons_per_image * n_bootstrap, random_state
+        ).reshape(n_bootstrap, n_photons_per_image)
+        mean_wavelengths = photon_wavelengths.mean(axis=1).astype(np.float64)
 
-        # Reshape into bootstrap samples
-        photon_wavelengths_bootstrap = all_photon_wavelengths.reshape(
-            n_bootstrap, n_photons_per_image
-        )
-
-        # Preallocate output arrays
-        n_ch = pixel_QYs.shape[0]
-        mean_wavelengths = np.zeros(n_bootstrap, dtype=np.float64)
-        counts_array = np.zeros((n_bootstrap, n_ch), dtype=np.float64)
-        mean_total_qe_array = np.zeros(n_bootstrap, dtype=np.float64)
-
-        # OPTIMIZATION: Pre-compute QE lookup table to avoid repeated interpolation
-        # This creates a dense wavelength grid (0.5nm spacing) and pre-interpolates QE values
-        # Speedup: ~20-50× by replacing 300,000 interpolations with array lookups
-        qe_lut = self._create_qe_lut(wavelength, pixel_QYs, grid_spacing=0.5)
-        lut_wavelengths, lut_qe = qe_lut
-
-        if use_parallel:
-            # Parallel Numba path — works for any number of channels
-            uniform_randoms_all = np.random.uniform(
-                0, 1, size=(n_bootstrap, n_photons_per_image)
-            )
-            mean_wavelengths, counts_array, mean_total_qe_array = _process_bootstrap_samples_parallel(
-                photon_wavelengths_bootstrap,
-                lut_wavelengths,
-                lut_qe,
-                uniform_randoms_all,
-            )
-        else:
-            # Sequential path (for debugging / verification)
-            for i in range(n_bootstrap):
-                mean_wl, counts, mean_total_qe = self.calculate_colourratio_from_photon_wavelengths(
-                    photon_wavelengths_bootstrap[i, :],
-                    wavelength,
-                    pixel_QYs,
-                    pixel_order=pixel_order,
-                    pixel_order_indices=pixel_order_indices,
-                    return_counts=True,
-                    return_total_qe=True,
-                    qe_lut=qe_lut,
-                )
-                mean_wavelengths[i] = mean_wl
-                counts_array[i, :] = counts
-                mean_total_qe_array[i] = mean_total_qe
-
-        # OPTIMIZATION: Vectorize the QE conversion across all bootstrap samples at once
-        # Convert counts to effective QE values
-        # counts = [n_B, n_G, n_R] where n_X is number of photons detected in channel X
-        # mean_total_qe = average of (QE_B + QE_G + QE_R) across sampled wavelengths
-        #
-        # calculate_colourratio_from_photon_wavelengths assigns photons stochastically
-        # based on P(channel | wavelength) = QE_channel(λ) / total_QE(λ)
-        #
-        # The normalized fractions are: n_B/N, n_G/N, n_R/N
-        # These approximate: <QE_B(λ) / total_QE(λ)>, <QE_G(λ) / total_QE(λ)>, <QE_R(λ) / total_QE(λ)>
-        #
-        # To get absolute QE values:
-        # QE_B = <QE_B(λ) / total_QE(λ)> × <total_QE(λ)> = (n_B / N) × mean_total_qe
-
-        # Vectorized computation: (n_bootstrap, 3) arrays
-        total_detected = np.sum(counts_array, axis=1)  # Shape: (n_bootstrap,)
-        valid_mask = total_detected > 0
-
-        # Initialize output
-        colour_ratios = np.zeros((n_bootstrap, n_ch), dtype=np.float64)
-
-        # Vectorized QE calculation for all valid samples at once
-        # counts_array[valid_mask, :] has shape (n_valid, 3)
-        # mean_total_qe_array[valid_mask, np.newaxis] has shape (n_valid, 1) -> broadcasts to (n_valid, 3)
-        colour_ratios[valid_mask, :] = (
-            (counts_array[valid_mask, :] / n_photons_per_image) *
-            mean_total_qe_array[valid_mask, np.newaxis]
-        )
+        # Deterministic detection efficiency per channel: spectrum-weighted mean QE
+        weights = np.maximum(np.asarray(spectrum, dtype=np.float64), 0.0)
+        total = weights.sum()
+        if total <= 0:
+            raise ValueError("generate_bootstrap_colour_ratios: spectrum has no positive weight")
+        efficiency = np.asarray(pixel_QYs, dtype=np.float64) @ weights / total
+        colour_ratios = np.tile(efficiency, (n_bootstrap, 1))
 
         return mean_wavelengths, colour_ratios
 

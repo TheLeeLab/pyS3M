@@ -38,6 +38,7 @@ import pyS3M.sCMOSFunctions as sCMOSFunctions
 import pyS3M.PSFFunctions as PSFFunctions
 import pyS3M.gaussoptfuncs as gaussoptfuncs
 import pyS3M.HelperFunctions as HelperFunctions
+import pyS3M.FitGate as FitGate
 
 
 class FittingStrategy(Enum):
@@ -366,6 +367,39 @@ class FittingResultProcessor:
         return float(np.sum(np.abs(pfit[amp_start:amp_start + n_ch])) / np.sqrt(np.sum(variances)))
 
     @staticmethod
+    def delta_chi_squared(
+        residuals: np.ndarray, data: np.ndarray, masks: np.ndarray, weights: np.ndarray
+    ) -> float:
+        """Likelihood-ratio statistic: weighted chi^2 of a background-only model minus that
+        of the fit, under the fit's own final weights.
+
+        The background-only model is one constant per colour channel, constrained >= 0 like
+        the fit's backgrounds (so the two models are nested); its best value per channel is
+        the weighted mean of that channel's pixels.
+
+        Args:
+            residuals: The fit's chi vector, sqrt(w) * (data - model).
+            data: Punctum data (photoelectrons).
+            masks: (H, W, n_channels) boolean colour masks.
+            weights: The fit's final per-pixel weights.
+
+        Returns:
+            float: chi^2(background only) - chi^2(fit). Larger = stronger evidence of an emitter.
+        """
+        d = np.asarray(data, dtype=np.float64)
+        w = np.asarray(weights, dtype=np.float64)
+        chi2_fit = float(np.sum(np.square(np.asarray(residuals, dtype=np.float64))))
+        chi2_bg = 0.0
+        for c in range(masks.shape[-1]):
+            sel = np.asarray(masks[:, :, c], dtype=bool)
+            if not sel.any():
+                continue
+            ws, ds = w[sel], d[sel]
+            mu = max(float(np.sum(ws * ds) / np.sum(ws)), 0.0)
+            chi2_bg += float(np.sum(ws * np.square(ds - mu)))
+        return chi2_bg - chi2_fit
+
+    @staticmethod
     def process_fit_results(
         pfit: np.ndarray,
         pcov: np.ndarray,
@@ -373,6 +407,8 @@ class FittingResultProcessor:
         relative_coords: List[float],
         strategy: FittingStrategy,
         chisqr: float = 1.0,
+        delta_chi2: Optional[float] = None,
+        gate: Any = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Process raw fitting results into standardized format.
 
@@ -383,6 +419,10 @@ class FittingResultProcessor:
             size: Image size in fitting.
             strategy: Fitting strategy used.
             chisqr: Chi-squared value from fitting (default 1.0).
+            delta_chi2: Drop in weighted chi^2 from a background-only model to this fit
+                (see delta_chi_squared), used by FitGate.DeltaChi2Gate.
+            gate: Fit-acceptance gate (FitGate): a fit it rejects comes back as NaN.
+                None keeps every fit that passes the position/width check.
 
         Returns:
             Tuple of (processed_parameters, parameter_errors).
@@ -398,6 +438,7 @@ class FittingResultProcessor:
         # But output needs [x, y, sx, sy, bg_B, bg_G, bg_R, A_B, A_G, A_R] (sx/sy order corrected)
 
         _standard_like = {FittingStrategy.STANDARD, FittingStrategy.STANDARD_ITER, FittingStrategy.STANDARD_DATA}
+        _gated_strategies = _standard_like | {FittingStrategy.ELLIPTICAL, FittingStrategy.CIRCULAR}
 
         if strategy in _standard_like:
             # Dynamic n_ch: pfit layout is [x, y, sy, sx, bg_0,...,bg_{n-1}, A_0,...,A_{n-1}]
@@ -469,27 +510,17 @@ class FittingResultProcessor:
             ):
                 pfit_processed[:2] += relative_coords[:2]
 
-        # Stage 2: Amplitude SNR gate (Wald t-statistic, replaces MIN_PHOTON + MAX_CHI_SQUARED)
-        # Uses sqrt-space pfit[7:10] and chi_sqr-scaled pcov — must run BEFORE squaring.
-        # High chi_sqr inflates pcov → reduces z (automatically conservative for poor fits).
-        if strategy in _standard_like:
-            amplitude_snr = FittingResultProcessor._compute_amplitude_snr(pfit, pcov)
-            if amplitude_snr < FittingConstants.AMPLITUDE_SNR_THRESHOLD:
-                return (
-                    np.full(len(pfit_processed), np.nan),
-                    np.full(len(pfit_processed), np.nan),
-                )
-        elif strategy == FittingStrategy.ELLIPTICAL:
-            # Amplitudes are at indices 8:11 in the 11-param elliptical vector
-            amplitude_snr = FittingResultProcessor._compute_amplitude_snr_elliptical(pfit, pcov)
-            if amplitude_snr < FittingConstants.AMPLITUDE_SNR_THRESHOLD:
-                return (
-                    np.full(len(pfit_processed), np.nan),
-                    np.full(len(pfit_processed), np.nan),
-                )
-        elif strategy == FittingStrategy.CIRCULAR:
-            amplitude_snr = FittingResultProcessor._compute_amplitude_snr_circular(pfit, pcov)
-            if amplitude_snr < FittingConstants.AMPLITUDE_SNR_THRESHOLD:
+        # Stage 2: fit gate -- is this a real emitter, or noise? (see FitGate). Runs on the
+        # raw sqrt-space pfit, before squaring.
+        if gate is not None and strategy in _gated_strategies:
+            if strategy == FittingStrategy.ELLIPTICAL:
+                n_ch_gate = (len(pfit) - 5) // 2
+            elif strategy == FittingStrategy.CIRCULAR:
+                n_ch_gate = (len(pfit) - 3) // 2
+            else:
+                n_ch_gate = (len(pfit) - 4) // 2
+            background = FitGate.fitted_background(pfit, strategy, n_ch_gate)
+            if not gate.accept(pfit, pcov, strategy, delta_chi2=delta_chi2, background=background):
                 return (
                     np.full(len(pfit_processed), np.nan),
                     np.full(len(pfit_processed), np.nan),
@@ -538,6 +569,7 @@ class FittingProcessor(ABC):
         weights: np.ndarray,
         relative_coords: List[float],
         masks: Optional[np.ndarray] = None,
+        readnoise_map: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Fit a single punctum with this strategy.
 
@@ -547,11 +579,25 @@ class FittingProcessor(ABC):
             weights: 2D array containing fitting weights.
             relative_coords: Relative coordinate offsets.
             masks: Optional 3D array containing colour masks.
+            readnoise_map: Optional 2D array, the punctum's own per-pixel read noise (e-),
+                cropped from the camera's read-noise map. Strategies that re-weight
+                between passes use it per pixel; without it they use the processor's
+                scalar ``readnoise``.
 
         Returns:
             Tuple of (fit_parameters, parameter_errors).
         """
         pass
+
+    readnoise: float = 1.5  # scalar fallback (e-); processors that re-weight set their own
+    gate: Any = None        # fit-acceptance gate (FitGate); set by Image_Analysis_Functions
+
+    def _readnoise_sq(self, readnoise_map: Optional[np.ndarray]) -> Union[np.ndarray, np.float32]:
+        """Per-pixel read-noise variance (e-^2) for weighting: the punctum's own map when
+        given (a CMOS camera's read noise varies per pixel), else the scalar read noise."""
+        if readnoise_map is not None:
+            return np.square(np.asarray(readnoise_map, dtype=np.float32))
+        return np.float32(float(self.readnoise) ** 2)
 
 
 class StandardFittingProcessor(FittingProcessor):
@@ -564,6 +610,7 @@ class StandardFittingProcessor(FittingProcessor):
         weights: np.ndarray,
         relative_coords: List[float],
         masks: Optional[np.ndarray] = None,
+        readnoise_map: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Fit single punctum using standard colour fitting.
 
@@ -665,8 +712,10 @@ class StandardFittingProcessor(FittingProcessor):
                 pcov, chisqr, len(data.ravel()), len(initial_guess)
             )
 
+            delta_chi2 = FittingResultProcessor.delta_chi_squared(residuals, data, masks, weights)
             return FittingResultProcessor.process_fit_results(
                 pfit, pcov, size, relative_coords, FittingStrategy.STANDARD, chisqr,
+                delta_chi2=delta_chi2, gate=self.gate,
             )
 
         except Exception as e:
@@ -711,6 +760,7 @@ class StandardIGFittingProcessor(StandardFittingProcessor):
         weights: np.ndarray,
         relative_coords,          # (xc, yc, s_x, s_y, b, A) from demosaiced fit
         masks: Optional[np.ndarray] = None,
+        readnoise_map: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         if masks is None:
             raise FittingValidationError("Standard-IG fitting requires masks")
@@ -759,7 +809,7 @@ class StandardIterFittingProcessor(StandardFittingProcessor):
         self.readnoise = readnoise
 
     def _model_based_weights(
-        self, pfit: np.ndarray, masks: np.ndarray, size: int
+        self, pfit: np.ndarray, masks: np.ndarray, size: int, rn2=None
     ) -> np.ndarray:
         """Compute per-pixel weights from the current model estimate."""
         x_arr = np.arange(size, dtype=np.float32)
@@ -767,7 +817,7 @@ class StandardIterFittingProcessor(StandardFittingProcessor):
         model = gaussoptfuncs.WLS_model_nobounds(
             pfit.astype(np.float32), masks, x_arr, buf
         )
-        e = np.maximum(model, 0).astype(np.float32) + 1.0 + float(self.readnoise) ** 2
+        e = np.maximum(model, 0).astype(np.float32) + 1.0 + (self._readnoise_sq(None) if rn2 is None else rn2)
         return (1.0 / e).astype(np.float32)
 
     def _leastsq_step(
@@ -796,6 +846,7 @@ class StandardIterFittingProcessor(StandardFittingProcessor):
         weights: np.ndarray,
         relative_coords,
         masks: Optional[np.ndarray] = None,
+        readnoise_map: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         if masks is None:
             raise FittingValidationError("Standard-ITER fitting requires masks")
@@ -807,6 +858,7 @@ class StandardIterFittingProcessor(StandardFittingProcessor):
             return nan_result
 
         size = int(punctum.shape[0])
+        rn2 = self._readnoise_sq(readnoise_map)
         ravelsize = size * size
 
         try:
@@ -818,13 +870,13 @@ class StandardIterFittingProcessor(StandardFittingProcessor):
                 return nan_result
 
             # Stage 2: model weights from Stage 1 fit
-            w2 = self._model_based_weights(pfit1, masks, size)
+            w2 = self._model_based_weights(pfit1, masks, size, rn2)
             pfit2, _, ok2 = self._leastsq_step(pfit1, punctum, masks, w2, size)
             if ok2 not in (1, 2, 3, 4):
                 return nan_result
 
             # Stage 3: model weights from Stage 2 fit (final)
-            w3 = self._model_based_weights(pfit2, masks, size)
+            w3 = self._model_based_weights(pfit2, masks, size, rn2)
             pfit3, pcov3, ok3 = self._leastsq_step(pfit2, punctum, masks, w3, size)
             if ok3 not in (1, 2, 3, 4):
                 return nan_result
@@ -840,8 +892,10 @@ class StandardIterFittingProcessor(StandardFittingProcessor):
                 pcov3, chisqr, ravelsize, len(ig)
             )
 
+            delta_chi2 = FittingResultProcessor.delta_chi_squared(residuals, punctum, masks, w3)
             return FittingResultProcessor.process_fit_results(
-                pfit3, pcov3, size, relative_coords, FittingStrategy.STANDARD_ITER, chisqr
+                pfit3, pcov3, size, relative_coords, FittingStrategy.STANDARD_ITER, chisqr,
+                delta_chi2=delta_chi2, gate=self.gate,
             )
 
         except Exception as e:
@@ -872,7 +926,7 @@ class StandardDataFittingProcessor(StandardIterFittingProcessor):
         readnoise: Camera read noise in electrons (default 1.5 e-).
     """
 
-    def _raw_data_weights(self, punctum: np.ndarray) -> np.ndarray:
+    def _raw_data_weights(self, punctum: np.ndarray, rn2=None) -> np.ndarray:
         """Compute per-pixel weights from the observed raw data.
 
         Args:
@@ -881,7 +935,7 @@ class StandardDataFittingProcessor(StandardIterFittingProcessor):
         Returns:
             float32 weight array, shape (H, W).
         """
-        e = np.maximum(punctum, 0).astype(np.float32) + 1.0 + float(self.readnoise) ** 2
+        e = np.maximum(punctum, 0).astype(np.float32) + 1.0 + (self._readnoise_sq(None) if rn2 is None else rn2)
         return (1.0 / e).astype(np.float32)
 
     def fit_single_punctum(
@@ -891,6 +945,7 @@ class StandardDataFittingProcessor(StandardIterFittingProcessor):
         weights: np.ndarray,
         relative_coords,
         masks: Optional[np.ndarray] = None,
+        readnoise_map: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         if masks is None:
             raise FittingValidationError("Standard-DATA fitting requires masks")
@@ -902,6 +957,7 @@ class StandardDataFittingProcessor(StandardIterFittingProcessor):
             return nan_result
 
         size = int(punctum.shape[0])
+        rn2 = self._readnoise_sq(readnoise_map)
         ravelsize = size * size
 
         try:
@@ -913,13 +969,13 @@ class StandardDataFittingProcessor(StandardIterFittingProcessor):
                 return nan_result
 
             # Stage 2: model weights from Stage 1 fit
-            w2 = self._model_based_weights(pfit1, masks, size)
+            w2 = self._model_based_weights(pfit1, masks, size, rn2)
             pfit2, _, ok2 = self._leastsq_step(pfit1, punctum, masks, w2, size)
             if ok2 not in (1, 2, 3, 4):
                 return nan_result
 
             # Stage 3: raw-data weights (unbiased final pass)
-            w3 = self._raw_data_weights(punctum)
+            w3 = self._raw_data_weights(punctum, rn2)
             pfit3, pcov3, ok3 = self._leastsq_step(pfit2, punctum, masks, w3, size)
             if ok3 not in (1, 2, 3, 4):
                 return nan_result
@@ -935,8 +991,10 @@ class StandardDataFittingProcessor(StandardIterFittingProcessor):
                 pcov3, chisqr, ravelsize, len(ig)
             )
 
+            delta_chi2 = FittingResultProcessor.delta_chi_squared(residuals, punctum, masks, w3)
             return FittingResultProcessor.process_fit_results(
-                pfit3, pcov3, size, relative_coords, FittingStrategy.STANDARD_DATA, chisqr
+                pfit3, pcov3, size, relative_coords, FittingStrategy.STANDARD_DATA, chisqr,
+                delta_chi2=delta_chi2, gate=self.gate,
             )
 
         except Exception as e:
@@ -977,7 +1035,7 @@ class CircularFittingProcessor(StandardDataFittingProcessor):
         return np.concatenate([[ig[0], ig[1], s_mean], ig[4:]])
 
     def _model_based_weights(
-        self, pfit: np.ndarray, masks: np.ndarray, size: int
+        self, pfit: np.ndarray, masks: np.ndarray, size: int, rn2=None
     ) -> np.ndarray:
         """Same as StandardIterFittingProcessor._model_based_weights, but pfit carries
         one shared width -- expand to [x, y, s, s, bg..., A...] before evaluating the
@@ -987,7 +1045,7 @@ class CircularFittingProcessor(StandardDataFittingProcessor):
         x_arr = np.arange(size, dtype=np.float32)
         buf = np.zeros((size, size), dtype=np.float32)
         model = gaussoptfuncs.WLS_model_nobounds(full_pfit, masks, x_arr, buf)
-        e = np.maximum(model, 0).astype(np.float32) + 1.0 + float(self.readnoise) ** 2
+        e = np.maximum(model, 0).astype(np.float32) + 1.0 + (self._readnoise_sq(None) if rn2 is None else rn2)
         return (1.0 / e).astype(np.float32)
 
     def _leastsq_step(
@@ -1016,6 +1074,7 @@ class CircularFittingProcessor(StandardDataFittingProcessor):
         weights: np.ndarray,
         relative_coords,
         masks: Optional[np.ndarray] = None,
+        readnoise_map: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         if masks is None:
             raise FittingValidationError("Circular fitting requires masks")
@@ -1027,6 +1086,7 @@ class CircularFittingProcessor(StandardDataFittingProcessor):
             return nan_result
 
         size = int(punctum.shape[0])
+        rn2 = self._readnoise_sq(readnoise_map)
         ravelsize = size * size
 
         try:
@@ -1038,13 +1098,13 @@ class CircularFittingProcessor(StandardDataFittingProcessor):
                 return nan_result
 
             # Stage 2: model weights from Stage 1 fit
-            w2 = self._model_based_weights(pfit1, masks, size)
+            w2 = self._model_based_weights(pfit1, masks, size, rn2)
             pfit2, _, ok2 = self._leastsq_step(pfit1, punctum, masks, w2, size)
             if ok2 not in (1, 2, 3, 4):
                 return nan_result
 
             # Stage 3: raw-data weights (unbiased final pass)
-            w3 = self._raw_data_weights(punctum)
+            w3 = self._raw_data_weights(punctum, rn2)
             pfit3, pcov3, ok3 = self._leastsq_step(pfit2, punctum, masks, w3, size)
             if ok3 not in (1, 2, 3, 4):
                 return nan_result
@@ -1060,8 +1120,10 @@ class CircularFittingProcessor(StandardDataFittingProcessor):
                 pcov3, chisqr, ravelsize, len(ig)
             )
 
+            delta_chi2 = FittingResultProcessor.delta_chi_squared(residuals, punctum, masks, w3)
             return FittingResultProcessor.process_fit_results(
-                pfit3, pcov3, size, relative_coords, FittingStrategy.CIRCULAR, chisqr
+                pfit3, pcov3, size, relative_coords, FittingStrategy.CIRCULAR, chisqr,
+                delta_chi2=delta_chi2, gate=self.gate,
             )
 
         except Exception as e:
@@ -1093,6 +1155,7 @@ class EllipticalFittingProcessor(FittingProcessor):
         weights: np.ndarray,
         relative_coords: List[float],
         masks: Optional[np.ndarray] = None,
+        readnoise_map: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         if masks is None:
             raise FittingValidationError("Elliptical fitting requires masks")
@@ -1143,8 +1206,10 @@ class EllipticalFittingProcessor(FittingProcessor):
                 pcov, chisqr, ravelsize, len(initial_guess)
             )
 
+            delta_chi2 = FittingResultProcessor.delta_chi_squared(residuals, data, masks, weights)
             return FittingResultProcessor.process_fit_results(
-                pfit, pcov, size, relative_coords, FittingStrategy.ELLIPTICAL, chisqr
+                pfit, pcov, size, relative_coords, FittingStrategy.ELLIPTICAL, chisqr,
+                delta_chi2=delta_chi2, gate=self.gate,
             )
 
         except Exception as e:
@@ -1166,6 +1231,7 @@ class NoColourFittingProcessor(FittingProcessor):
         weights: np.ndarray,
         relative_coords: List[float],
         masks: Optional[np.ndarray] = None,
+        readnoise_map: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Fit single punctum using no-colour strategy.
 
@@ -1290,6 +1356,7 @@ class JustColourFittingProcessor(FittingProcessor):
         weights: np.ndarray,
         relative_coords: List[float],
         masks: Optional[np.ndarray] = None,
+        readnoise_map: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Fit single punctum using just-colour strategy.
 
@@ -1389,6 +1456,7 @@ class RawColourFittingProcessor(FittingProcessor):
         weights: np.ndarray,
         relative_coords: List[float],
         masks: Optional[np.ndarray] = None,
+        readnoise_map: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Fit single punctum using raw-colour strategy."""
         if masks is None:
@@ -1483,6 +1551,7 @@ class PosthenColourFittingProcessor(FittingProcessor):
         weights: np.ndarray,
         relative_coords: List[float],
         masks: Optional[np.ndarray] = None,
+        readnoise_map: Optional[np.ndarray] = None,
         raw_punctum: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Fit single punctum using post-colour enhancement strategy.
@@ -1642,7 +1711,8 @@ class Image_Analysis_Functions:
         )
     """
 
-    def __init__(self, helper_functions=None, readnoise: float = 1.5):
+    def __init__(self, helper_functions=None, readnoise: float = 1.5,
+                 fit_gate: Any = "delta_chi2", noise_rate: float = 0.01):
         """Initialize the Image_Analysis_Functions class.
 
         Sets up strategy processors and loads required dependencies.
@@ -1651,6 +1721,12 @@ class Image_Analysis_Functions:
             helper_functions: Helper functions instance (default: creates new instance)
             readnoise: Camera read noise in electrons, used by STANDARD_ITER for
                 model-based weight updates (default 1.5 e-).
+            fit_gate: Fit-acceptance gate for the colour Gaussian strategies (STANDARD,
+                STANDARD_ITER, STANDARD_DATA, CIRCULAR, ELLIPTICAL): "delta_chi2" (default,
+                a likelihood-ratio test calibrated to noise_rate), "amplitude_snr" (the
+                previous Wald test), None (no gate), or a FitGate gate object.
+            noise_rate: For "delta_chi2", the fraction of pure-noise ROIs that should pass
+                (default 0.01).
         """
         # Initialize strategy processors
         self.processors = {
@@ -1666,6 +1742,9 @@ class Image_Analysis_Functions:
             FittingStrategy.POSTHENCOLOUR: PosthenColourFittingProcessor(),
         }
 
+        self._skip_gate_prepare = False   # set in worker processes, which receive a prepared gate
+        self.set_gate(fit_gate, noise_rate)
+
         # Initialize dependencies
         self.io = IOFunctions.IO_Functions()
         self.scmos = sCMOSFunctions.sCMOS_Functions()
@@ -1676,6 +1755,39 @@ class Image_Analysis_Functions:
             else HelperFunctions.Helper_Functions()
         )
 
+    # Processor attributes a worker process must inherit (see _fit_puncta_method_standalone)
+    _WORKER_STATE_ATTRS = ("readnoise", "gate")
+
+    _GATED_STRATEGIES = (
+        FittingStrategy.STANDARD, FittingStrategy.STANDARD_ITER, FittingStrategy.STANDARD_DATA,
+        FittingStrategy.CIRCULAR, FittingStrategy.ELLIPTICAL,
+    )
+
+    def set_gate(self, fit_gate: Any = "delta_chi2", noise_rate: float = 0.01) -> None:
+        """Set the fit-acceptance gate of every gated strategy (see __init__)."""
+        self.gate = FitGate.make_gate(fit_gate, noise_rate)
+        for strategy in self._GATED_STRATEGIES:
+            self.processors[strategy].gate = self.gate
+
+    def _prepare_gate(self, strategy: FittingStrategy, puncta, masks, readnoise_maps) -> None:
+        """Load (or calibrate, once, and cache) the delta-chi^2 gate's thresholds for this
+        strategy, ROI size and read noise before fitting."""
+        gate = getattr(self.processors[strategy], "gate", None)
+        if (self._skip_gate_prepare or not isinstance(gate, FitGate.DeltaChi2Gate)
+                or len(puncta) == 0 or masks is None):
+            return
+        if readnoise_maps is not None and len(readnoise_maps) > 0:
+            readnoise = float(np.median(np.concatenate([np.ravel(r) for r in readnoise_maps])))
+        else:
+            readnoise = float(getattr(self.processors[strategy], "readnoise", 1.5))
+        gate.prepare(strategy, int(np.shape(puncta[0])[0]), readnoise, np.asarray(masks[0]))
+
+    def _processor_state(self, strategy: FittingStrategy) -> dict:
+        """Settings of this strategy's processor that worker processes must copy."""
+        processor = self.processors[strategy]
+        return {name: getattr(processor, name) for name in self._WORKER_STATE_ATTRS
+                if name in vars(processor)}
+
     def fit_puncta_method(
         self,
         puncta: List[np.ndarray],
@@ -1685,6 +1797,7 @@ class Image_Analysis_Functions:
         planes: List[int],
         strategy: FittingStrategy,
         masks: Optional[List[np.ndarray]] = None,
+        readnoise_maps: Optional[List[np.ndarray]] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Fit puncta using specified strategy.
 
@@ -1724,6 +1837,8 @@ class Image_Analysis_Functions:
                 strategy=FittingStrategy.NOCOLOUR
             )
         """
+        self._prepare_gate(strategy, puncta, masks, readnoise_maps)
+
         # Create and validate parameters
         params = FittingParameters(
             puncta=puncta,
@@ -1785,6 +1900,7 @@ class Image_Analysis_Functions:
                     weights=weights[i],
                     relative_coords=relative_coords[i],
                     masks=punctum_masks,
+                    readnoise_map=readnoise_maps[i] if readnoise_maps is not None else None,
                 )
 
                 # fit_params: [x,y,sx,sy, bg×n_ch, A×n_ch, chi_sqr]  (fit_dim-1 elements)
@@ -1817,6 +1933,7 @@ class Image_Analysis_Functions:
         strategy: FittingStrategy,
         masks: Optional[List[np.ndarray]] = None,
         asynch: bool = False,
+        readnoise_maps: Optional[List[np.ndarray]] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Fit puncta in parallel using specified strategy.
 
@@ -1857,6 +1974,12 @@ class Image_Analysis_Functions:
             )
         )
 
+        self._prepare_gate(strategy, puncta, masks, readnoise_maps)
+
+        # Worker processes build their own fitter, so copy this processor's settings
+        # (scalar read noise, fit gate) across rather than falling back to defaults
+        processor_state = self._processor_state(strategy)
+
         # Submit tasks to process pool
         fs = []
         with futures.ProcessPoolExecutor(n_workers) as executor:
@@ -1871,6 +1994,9 @@ class Image_Analysis_Functions:
                 task_coords = relative_coords[i : i + n_puncta_task]
                 task_planes = planes[i : i + n_puncta_task]
                 task_masks = masks[i : i + n_puncta_task] if masks is not None else None
+                task_readnoise = (
+                    readnoise_maps[i : i + n_puncta_task] if readnoise_maps is not None else None
+                )
 
                 # Submit task
                 fs.append(
@@ -1883,6 +2009,8 @@ class Image_Analysis_Functions:
                         task_planes,
                         strategy,
                         task_masks,
+                        task_readnoise,
+                        processor_state,
                     )
                 )
 
@@ -1945,6 +2073,8 @@ def _fit_puncta_method_standalone(
     planes: List[int],
     strategy: FittingStrategy,
     masks: Optional[List[np.ndarray]] = None,
+    readnoise_maps: Optional[List[np.ndarray]] = None,
+    processor_state: Optional[dict] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Standalone version of fit_puncta_method for multiprocessing.
 
@@ -1960,6 +2090,10 @@ def _fit_puncta_method_standalone(
     try:
         # Create instance with proper error handling
         fitter = Image_Analysis_Functions()
+        # Settings of the parent process's processor (scalar read noise, prepared fit gate)
+        for name, value in (processor_state or {}).items():
+            setattr(fitter.processors[strategy], name, value)
+        fitter._skip_gate_prepare = "gate" in (processor_state or {})
         return fitter.fit_puncta_method(
             puncta=puncta,
             smoothed_puncta=smoothed_puncta,
@@ -1968,6 +2102,7 @@ def _fit_puncta_method_standalone(
             planes=planes,
             strategy=strategy,
             masks=masks,
+            readnoise_maps=readnoise_maps,
         )
     except Exception:
         # Return empty arrays if fitting fails to prevent crash

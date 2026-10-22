@@ -280,6 +280,18 @@ class TestFit:
         default = FittingConfig()
         assert kwargs["pfa"] == default.pfa
         assert kwargs["ROI_size"] == default.ROI_size
+        assert kwargs["fit_min_sigma"] is None and kwargs["fit_max_sigma"] is None
+
+    def test_fit_forwards_fit_sigma_bounds(self):
+        pipe = AnalysisPipeline(camera="ximea")
+        pipe.load_calibration(CAL_DIR)
+        pipe._sr = MagicMock()
+        pipe._sr.fit_SM_data = MagicMock(return_value=None)
+
+        pipe.fit(Path("x"), mode="smlm", fitting_config=FittingConfig(fit_min_sigma=0.7, fit_max_sigma=3.6))
+
+        _, kwargs = pipe._sr.fit_SM_data.call_args
+        assert kwargs["fit_min_sigma"] == 0.7 and kwargs["fit_max_sigma"] == 3.6
 
     def test_fit_real_end_to_end_smlm(self, fitted_pipeline):
         """Mirrors notebooks/analyses/01: real fit, real localisations."""
@@ -465,3 +477,16 @@ class TestUndrift:
 
         _, kwargs = fake_dcf.undrift.call_args
         assert kwargs["method"] == "auto"
+
+
+class TestFitGateConfig:
+    def test_fit_sets_the_configured_gate(self):
+        pipe = AnalysisPipeline(camera="ximea")
+        pipe.load_calibration(CAL_DIR)
+        pipe._sr = MagicMock()
+        pipe.fit(Path("x"), mode="smlm", fitting_config=FittingConfig(fit_gate="amplitude_snr", noise_rate=0.05))
+        pipe._sr.image_analysis.set_gate.assert_called_once_with("amplitude_snr", 0.05)
+
+    def test_default_gate_is_delta_chi2_at_one_percent(self):
+        fc = FittingConfig()
+        assert fc.fit_gate == "delta_chi2" and fc.noise_rate == 0.01

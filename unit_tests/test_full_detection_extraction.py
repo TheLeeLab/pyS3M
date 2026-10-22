@@ -137,7 +137,7 @@ def test_full_pipeline(test_output_dir):
         )
 
         if result is not None:
-            photoelectron_roi, smoothed_roi, weights_roi, mask_roi, coords, plane = result
+            photoelectron_roi, smoothed_roi, weights_roi, mask_roi, coords, plane, readnoise_roi = result
             extracted_rois.append(photoelectron_roi)
             roi_max_values.append(photoelectron_roi.max())
             roi_coords.append(coords)

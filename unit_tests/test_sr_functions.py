@@ -148,13 +148,56 @@ class TestFilterFitResults:
         # CIRCULAR-style results: single shared 's' column instead of s_x/s_y.
         fit_results = pd.DataFrame({
             "xc": [10.0, 10.0], "yc": [10.0, 10.0],
-            "s": [1.0, 5.0],  # second row: s=5 > 3 -> filtered out
+            "s": [1.0, 5.0],  # second row: s=5 > max_sigma=3 -> filtered out
             "A_B": [5.0, 5.0], "A_G": [5.0, 5.0], "A_R": [5.0, 5.0],
             "bg_B": [2.0, 2.0], "bg_G": [2.0, 2.0], "bg_R": [2.0, 2.0],
         })
-        out = sr._filter_fit_results(fit_results, width=100, height=100)
+        out = sr._filter_fit_results(fit_results, width=100, height=100, max_sigma=3.0)
         assert len(out) == 1
         assert out["s"].iloc[0] == 1.0
+
+    @staticmethod
+    def _sxsy(s_x, s_y):
+        n = len(s_x)
+        return pd.DataFrame({
+            "xc": [10.0] * n, "yc": [10.0] * n, "s_x": s_x, "s_y": s_y,
+            "A_B": [5.0] * n, "A_G": [5.0] * n, "A_R": [5.0] * n,
+            "bg_B": [2.0] * n, "bg_G": [2.0] * n, "bg_R": [2.0] * n,
+        })
+
+    def test_no_sigma_cap_by_default(self, sr):
+        # Wide PSFs (here 5 and 20 px) are kept unless the caller sets a bound
+        out = sr._filter_fit_results(self._sxsy([1.0, 5.0, 20.0], [1.0, 5.0, 20.0]), width=100, height=100)
+        assert len(out) == 3
+
+    def test_non_positive_sigma_always_rejected(self, sr):
+        out = sr._filter_fit_results(self._sxsy([1.0, 0.0, -1.0, 1.0], [1.0, 1.0, 1.0, -0.5]), width=100, height=100)
+        assert out["s_x"].tolist() == [1.0]
+
+    def test_user_sigma_bounds_applied_to_both_axes(self, sr):
+        fr = self._sxsy([0.5, 1.0, 2.0, 1.0, 4.0], [1.0, 1.0, 1.0, 3.5, 1.0])
+        out = sr._filter_fit_results(fr, width=100, height=100, min_sigma=0.8, max_sigma=3.0)
+        assert out["s_x"].tolist() == [1.0, 2.0]  # 0.5 below min; s_y 3.5 and s_x 4.0 above max
+
+    def test_postprocess_forwards_sigma_bounds(self, sr):
+        cols = ResultColumns.get_all_columns()
+        n = 2
+        res = np.full((n, len(ResultColumns.STANDARD_FIT_PARAMS)), 1.0)
+        err = np.full((n, len(ResultColumns.STANDARD_FIT_ERRORS)), 0.1)
+        s_x, s_y = cols.index("s_x"), cols.index("s_y")
+        res[:, [s_x, s_y]] = [[1.0, 1.0], [5.0, 5.0]]
+        res[:, cols.index("xc")] = res[:, cols.index("yc")] = 10.0
+        kept_default = sr._postprocess_fit_results(res, err, cols, [0, 0], width=100, height=100)
+        kept_capped = sr._postprocess_fit_results(res, err, cols, [0, 0], width=100, height=100, max_sigma=3.0)
+        assert len(kept_default) == 2 and len(kept_capped) == 1
+
+    @pytest.mark.parametrize("method", ["fit_SM_data", "fit_imaging_data", "fit_FRET_data",
+                                        "fit_QD_data", "fit_tracking_data", "_fit_files"])
+    def test_every_fit_method_accepts_sigma_bounds(self, sr, method):
+        # AnalysisPipeline.fit passes fit_min_sigma/fit_max_sigma to every mode
+        import inspect
+        params = inspect.signature(getattr(sr, method)).parameters
+        assert params["fit_min_sigma"].default is None and params["fit_max_sigma"].default is None
 
 
 # ======================================================================
@@ -193,8 +236,30 @@ class TestProcessDetectedPunctaBatchQualityMetrics:
             gain_map=1.0, offset_map=0.0, rqe=1.0,
             quality_metrics=quality_metrics,
         )
-        filtered_quality_metrics = result[-1]
+        filtered_quality_metrics = result[6]
         assert filtered_quality_metrics == {}
+
+    def test_returns_each_rois_own_read_noise_crop(self, sr):
+        raw_data = np.full((30, 30), 100.0, dtype=np.float32)
+        detected_puncta = np.array([[15.0, 15.0, 0.0]])
+        masks = np.zeros((30, 30, 3), dtype=bool)
+        masks[:, :, 0] = True
+        read_noise = np.arange(900, dtype=np.float32).reshape(30, 30)   # every pixel distinct
+        result = sr._process_detected_puncta_batch(
+            raw_data, detected_puncta, width=30, height=30, ROI_size=8,
+            smoothing_function=None, read_noise=read_noise, masks=masks,
+            gain_map=1.0, offset_map=0.0, rqe=1.0,
+        )
+        (xmin, ymin), (rn_roi,) = result[4][0], result[7]
+        np.testing.assert_array_equal(rn_roi, read_noise[ymin:ymin + 8, xmin:xmin + 8])
+
+    def test_scalar_read_noise_becomes_a_uniform_crop(self, sr):
+        raw_data = np.full((30, 30), 100.0, dtype=np.float32)
+        masks = np.zeros((30, 30, 3), dtype=bool)
+        masks[:, :, 0] = True
+        result = sr._process_roi(raw_data, np.array([[15.0, 15.0, 0.0]]), 0, width=30, height=30, ROI_size=8,
+                                 smoothing_function=None, read_noise=2.5, masks=masks)
+        assert result[6].shape == result[0].shape and np.all(result[6] == 2.5)
 
 
 # ======================================================================

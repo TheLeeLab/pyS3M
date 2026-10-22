@@ -34,6 +34,7 @@ from pyS3M.ImageAnalysisFunctions import (
     Image_Analysis_Functions,
     _fit_puncta_method_standalone,
 )
+from pyS3M.FitGate import AmplitudeSNRGate, DeltaChi2Gate, RecordingGate, make_gate
 
 
 SIZE = 8
@@ -355,7 +356,7 @@ class TestProcessFitResults:
         pfit = np.array([4.0, 4.0, 1.3, 1.3, 4.5, 4.5, 4.5, 20.0, 20.0, 20.0])
         pcov = np.diag(np.ones(len(pfit)) * 1e6)  # huge variance -> low SNR
         out, err = FittingResultProcessor.process_fit_results(
-            pfit, pcov, SIZE, [0.0, 0.0], FittingStrategy.STANDARD,
+            pfit, pcov, SIZE, [0.0, 0.0], FittingStrategy.STANDARD, gate=AmplitudeSNRGate(),
         )
         assert np.all(np.isnan(out))
 
@@ -403,7 +404,7 @@ class TestProcessFitResults:
         pfit = np.array([4.0, 4.0, 1.3, 1.3, 0.4, 4.5, 4.5, 4.5, 20.0, 20.0, 20.0])
         pcov = np.diag(np.ones(len(pfit)) * 1e6)
         out, err = FittingResultProcessor.process_fit_results(
-            pfit, pcov, SIZE, [0.0, 0.0], FittingStrategy.ELLIPTICAL,
+            pfit, pcov, SIZE, [0.0, 0.0], FittingStrategy.ELLIPTICAL, gate=AmplitudeSNRGate(),
         )
         assert np.all(np.isnan(out))
 
@@ -437,7 +438,7 @@ class TestProcessFitResults:
         pfit = np.array([4.0, 4.0, 1.3, 4.5, 4.5, 4.5, 20.0, 20.0, 20.0])
         pcov = np.diag(np.ones(len(pfit)) * 1e6)
         out, err = FittingResultProcessor.process_fit_results(
-            pfit, pcov, SIZE, [0.0, 0.0], FittingStrategy.CIRCULAR,
+            pfit, pcov, SIZE, [0.0, 0.0], FittingStrategy.CIRCULAR, gate=AmplitudeSNRGate(),
         )
         assert np.all(np.isnan(out))
 
@@ -634,6 +635,38 @@ class TestStandardDataFittingProcessor:
             punctum, punctum, _weights(), [0.0, 0.0], masks=masks,
         )
         assert pfit[0] == pytest.approx(4.0, abs=1.0)
+
+    @pytest.mark.parametrize("seed", range(5))
+    def test_zero_background_channels_do_not_stall_colour_fit(self, seed):
+        # Regression: at ~1 background photon/pixel every channel's minimum pixel is 0, which
+        # used to give a background initial guess of exactly 0. The model squares it, so the fit
+        # stalled with the colour amplitudes stuck at their equal starting guess (A_B = A_G =
+        # A_R, i.e. a (1/3, 1/3, 1/3) colour) -- every one of these seeds failed that way before
+        # gaussoptfuncs._BG_GUESS_FLOOR. Real 2x2 Bayer tiling, Poisson noise, strongly green.
+        size = 14
+        masks = np.zeros((size, size, 3), dtype=np.bool_)
+        masks[0::2, 0::2, 0] = True                              # B
+        masks[0::2, 1::2, 1] = masks[1::2, 0::2, 1] = True       # G
+        masks[1::2, 1::2, 2] = True                              # R
+        amps = np.array([1500.0, 9000.0, 1200.0])
+        params = np.concatenate([[7.3, 6.8, 1.2, 1.2], np.ones(3), np.sqrt(amps)])
+        expected = gaussoptfuncs.WLS_model_nobounds(
+            params, masks, _x(size), np.zeros((size, size), dtype=np.float32))
+        punctum = np.random.default_rng(seed).poisson(expected).astype(np.float32)
+        assert all(punctum[masks[:, :, c]].min() == 0 for c in range(3))  # the failing regime
+
+        from scipy.ndimage import gaussian_filter
+        smoothed = gaussian_filter(punctum, 1.5).astype(np.float32)
+        weights = (1.0 / (np.clip(smoothed, 0, None) + 2.0)).astype(np.float32)
+        pfit, _ = StandardDataFittingProcessor(readnoise=1.0).fit_single_punctum(
+            punctum, smoothed, weights, [0.0, 0.0], masks=masks,
+        )
+
+        fitted = pfit[7:10]
+        assert not np.allclose(fitted, fitted[0])  # not stuck at equal amplitudes
+        np.testing.assert_allclose(fitted / fitted.sum(), amps / amps.sum(), atol=0.03)
+        assert pfit[0] == pytest.approx(7.3, abs=0.2)
+        assert pfit[1] == pytest.approx(6.8, abs=0.2)
 
     def test_stage1_failure_returns_nan(self, monkeypatch):
         punctum, masks = _synthetic_punctum()
@@ -1143,3 +1176,223 @@ class TestFitPunctaMethodStandaloneSysPath:
         )
         assert pfit.shape[0] == 1
         assert _dir in sys.path
+
+
+# ======================================================================
+# Per-pixel read noise (CMOS): each punctum's own read-noise crop reaches the fitter
+# ======================================================================
+
+def _noisy_punctum(seed=0, size=SIZE, bg=20.0, amp=400.0):
+    punctum, masks = _synthetic_punctum(size=size, bg=bg, amp=amp)
+    rng = np.random.default_rng(seed)
+    return rng.poisson(np.clip(punctum, 0, None)).astype(np.float32), masks
+
+
+class TestReadnoiseMaps:
+    def test_readnoise_sq_uses_map_else_scalar(self):
+        p = StandardDataFittingProcessor(readnoise=2.0)
+        assert p._readnoise_sq(None) == pytest.approx(4.0)
+        rn = np.array([[1.0, 3.0]], dtype=np.float32)
+        np.testing.assert_allclose(p._readnoise_sq(rn), [[1.0, 9.0]])
+
+    def test_raw_data_weights_are_per_pixel(self):
+        p = StandardDataFittingProcessor(readnoise=2.0)
+        punctum, _ = _noisy_punctum()
+        rn = np.linspace(1.0, 5.0, SIZE * SIZE, dtype=np.float32).reshape(SIZE, SIZE)
+        w = p._raw_data_weights(punctum, p._readnoise_sq(rn))
+        np.testing.assert_allclose(w, 1.0 / (np.maximum(punctum, 0) + 1.0 + rn ** 2), rtol=1e-6)
+
+    @pytest.mark.parametrize("proc_cls", [StandardIterFittingProcessor, StandardDataFittingProcessor])
+    def test_uniform_map_gives_the_scalar_fit(self, proc_cls):
+        punctum, masks = _noisy_punctum(seed=1)
+        p = proc_cls(readnoise=2.0)
+        a = p.fit_single_punctum(punctum, punctum, _weights(), [0.0, 0.0], masks=masks)
+        b = p.fit_single_punctum(punctum, punctum, _weights(), [0.0, 0.0], masks=masks,
+                                 readnoise_map=np.full((SIZE, SIZE), 2.0, np.float32))
+        np.testing.assert_allclose(a[0], b[0], rtol=1e-5, equal_nan=True)
+
+    def test_noisy_pixel_is_downweighted_by_its_map(self):
+        # A read-noise outlier pixel (strongly negative) drags the fitted background down
+        # when every pixel is weighted with the scalar read noise; flagging that pixel's
+        # large read noise in the map removes its influence.
+        # Stage-1 weights come from the same read noise, as the pipeline builds them
+        # (IO_Functions.generate_weights with the ROI's read-noise crop).
+        punctum, masks = _synthetic_punctum(bg=20.0, amp=400.0)
+        punctum = punctum.copy(); punctum[0, 0] = -300.0           # a channel-0 pixel
+        p = StandardDataFittingProcessor(readnoise=1.5)
+        rn = np.full((SIZE, SIZE), 1.5, np.float32); rn[0, 0] = 300.0
+        smoothed = np.clip(punctum, 0, None)
+        w_scalar = 1.0 / (smoothed + 1.0 + 1.5 ** 2)
+        w_map = 1.0 / (smoothed + 1.0 + rn ** 2)
+        scalar = p.fit_single_punctum(punctum, smoothed, w_scalar, [0.0, 0.0], masks=masks)[0]
+        mapped = p.fit_single_punctum(punctum, smoothed, w_map, [0.0, 0.0], masks=masks, readnoise_map=rn)[0]
+        np.testing.assert_allclose(mapped[[0, 1, 4, 7]], [4.0, 4.0, 20.0, 400.0], rtol=0.01)   # x, y, bg_0, A_0
+        assert np.isnan(scalar[0]) or abs(scalar[4] - 20.0) > 1.0                             # outlier spoils it
+
+    def test_fit_puncta_method_passes_maps(self):
+        punctum, masks = _noisy_punctum(seed=2)
+        args = ([punctum], [punctum], [_weights()], [[0.0, 0.0]], [0])
+        with_map = Image_Analysis_Functions(readnoise=1.5).fit_puncta_method(
+            *args, FittingStrategy.STANDARD_DATA, masks=[masks], readnoise_maps=[np.full((SIZE, SIZE), 7.0, np.float32)])
+        scalar7 = Image_Analysis_Functions(readnoise=7.0).fit_puncta_method(
+            *args, FittingStrategy.STANDARD_DATA, masks=[masks])
+        np.testing.assert_allclose(with_map[0], scalar7[0], rtol=1e-5, equal_nan=True)
+
+    def test_parallel_workers_inherit_the_processor_read_noise(self):
+        # Worker processes build a fresh fitter; without the parent's settings they would
+        # fall back to the 1.5 e- default.
+        punctum, masks = _noisy_punctum(seed=3)
+        args = ([punctum], [punctum], [_weights()], [[0.0, 0.0]], [0])
+        iaf_7 = Image_Analysis_Functions(readnoise=7.0)
+        state = iaf_7._processor_state(FittingStrategy.STANDARD_DATA)
+        assert state["readnoise"] == 7.0 and state["gate"] is iaf_7.gate
+        serial = iaf_7.fit_puncta_method(*args, FittingStrategy.STANDARD_DATA, masks=[masks])
+        worker = _fit_puncta_method_standalone(*args, FittingStrategy.STANDARD_DATA, [masks], None, state)
+        default = _fit_puncta_method_standalone(*args, FittingStrategy.STANDARD_DATA, [masks])
+        np.testing.assert_allclose(worker[0], serial[0], rtol=1e-6, equal_nan=True)
+        assert not np.allclose(default[0], serial[0], equal_nan=True)
+
+
+# ======================================================================
+# Fit gate: likelihood-ratio (delta chi^2) test calibrated to a noise rate
+# ======================================================================
+
+class TestDeltaChiSquared:
+    def test_matches_hand_computation(self):
+        masks = _bayer_masks()
+        rng = np.random.default_rng(0)
+        data = rng.uniform(0, 10, (SIZE, SIZE)).astype(np.float32)
+        w = rng.uniform(0.5, 1.5, (SIZE, SIZE)).astype(np.float32)
+        residuals = np.sqrt(w) * (data - 3.0)                          # any fitted model
+        expected_bg = 0.0
+        for c in range(3):
+            sel = masks[:, :, c]
+            mu = max(np.sum(w[sel] * data[sel]) / np.sum(w[sel]), 0.0)
+            expected_bg += np.sum(w[sel] * (data[sel] - mu) ** 2)
+        got = FittingResultProcessor.delta_chi_squared(residuals, data, masks, w)
+        assert got == pytest.approx(expected_bg - np.sum(residuals ** 2), rel=1e-6)
+
+    def test_background_only_model_is_constrained_non_negative(self):
+        masks = _bayer_masks()
+        data = np.full((SIZE, SIZE), -2.0, np.float32)                # negative mean in every channel
+        w = np.ones((SIZE, SIZE), np.float32)
+        out = FittingResultProcessor.delta_chi_squared(np.zeros(SIZE * SIZE), data, masks, w)
+        assert out == pytest.approx(np.sum(data.astype(float) ** 2))   # background fixed at 0, not -2
+
+
+class TestFitGates:
+    def test_make_gate(self):
+        assert isinstance(make_gate("delta_chi2", 0.05), DeltaChi2Gate) and make_gate("delta_chi2", 0.05).noise_rate == 0.05
+        assert isinstance(make_gate("amplitude_snr"), AmplitudeSNRGate)
+        assert make_gate(None) is None
+        g = RecordingGate(); assert make_gate(g) is g
+        with pytest.raises(ValueError):
+            make_gate("bogus")
+
+    def test_noise_rate_must_be_in_calibrated_range(self):
+        with pytest.raises(ValueError):
+            DeltaChi2Gate(noise_rate=0.5)
+
+    def test_threshold_interpolates_noise_rate_and_background(self):
+        g = DeltaChi2Gate(noise_rate=0.01)
+        table = np.tile(np.linspace(30, 2, len(g.RATE_GRID)), (2, 1))   # threshold falls with rate
+        table[1] += 10                                                   # higher at high background
+        g._set_table(table, np.array([1.0, 100.0]))
+        t_low, t_high = g.threshold(1.0), g.threshold(100.0)
+        assert t_high == pytest.approx(t_low + 10)
+        assert g.threshold(10.0) == pytest.approx(t_low + 5)            # halfway in log background
+        assert g.accept(None, None, None, delta_chi2=t_low + 0.1, background=1.0)
+        assert not g.accept(None, None, None, delta_chi2=t_low - 0.1, background=1.0)
+        assert not g.accept(None, None, None, delta_chi2=np.nan, background=1.0)
+
+    def test_unprepared_gate_raises(self):
+        with pytest.raises(RuntimeError):
+            DeltaChi2Gate().threshold(1.0)
+
+    def test_process_fit_results_asks_the_gate(self):
+        pfit = np.array([4.0, 4.0, 1.3, 1.3, 2.0, 2.0, 2.0, 20.0, 20.0, 20.0])
+        pcov = np.eye(len(pfit)) * 0.01
+        rec = RecordingGate()
+        out, _ = FittingResultProcessor.process_fit_results(pfit, pcov, SIZE, [0.0, 0.0], FittingStrategy.STANDARD,
+                                                             delta_chi2=12.5, gate=rec)
+        assert not np.isnan(out[0]) and rec.records == [(12.5, pytest.approx(4.0))]   # mean of squared sqrt-bg
+
+        class Reject:
+            def accept(self, *a, **k):
+                return False
+        out, _ = FittingResultProcessor.process_fit_results(pfit, pcov, SIZE, [0.0, 0.0], FittingStrategy.STANDARD,
+                                                             delta_chi2=12.5, gate=Reject())
+        assert np.all(np.isnan(out))
+
+    def test_no_gate_keeps_low_snr_fits(self):
+        pfit = np.array([4.0, 4.0, 1.3, 1.3, 4.5, 4.5, 4.5, 20.0, 20.0, 20.0])
+        pcov = np.diag(np.ones(len(pfit)) * 1e6)
+        out, _ = FittingResultProcessor.process_fit_results(pfit, pcov, SIZE, [0.0, 0.0], FittingStrategy.STANDARD)
+        assert not np.isnan(out[0])
+
+    def test_default_fitter_gate_is_delta_chi2_at_one_percent(self):
+        iaf_ = Image_Analysis_Functions()
+        assert isinstance(iaf_.gate, DeltaChi2Gate) and iaf_.gate.noise_rate == 0.01
+        for s in Image_Analysis_Functions._GATED_STRATEGIES:
+            assert iaf_.processors[s].gate is iaf_.gate
+        iaf_.set_gate(None)
+        assert all(iaf_.processors[s].gate is None for s in Image_Analysis_Functions._GATED_STRATEGIES)
+
+
+class TestDeltaChi2GateCalibration:
+    def _rois(self, n=60, signal=0.0, size=10, rn=2.0, seed=0):
+        from scipy.ndimage import gaussian_filter
+        rng = np.random.default_rng(seed)
+        yy, xx = np.mgrid[0:size, 0:size]
+        psf = np.exp(-((yy - size / 2) ** 2 + (xx - size / 2) ** 2) / (2 * 1.3 ** 2)); psf /= psf.sum()
+        pe = (rng.poisson(1.0 + signal * psf, (n, size, size)) + rng.normal(0, rn, (n, size, size))).astype(np.float32)
+        sm = gaussian_filter(pe, (0, 1.5, 1.5), mode="nearest")
+        w = (1 / (np.clip(sm, 0, None) + 1 + rn ** 2)).astype(np.float32)
+        return list(pe), list(sm), list(w), [(0.0, 0.0)] * n, list(range(n)), _bayer_masks(size)
+
+    def test_calibrates_once_then_loads_from_cache(self, tmp_path):
+        pe, sm, w, coords, planes, masks = self._rois()
+        g = DeltaChi2Gate(noise_rate=0.01, cache_dir=tmp_path, n_null=150)
+        iaf_ = Image_Analysis_Functions(readnoise=2.0, fit_gate=g)
+        iaf_.fit_puncta_method(pe, sm, w, coords, planes, FittingStrategy.STANDARD_DATA, masks=[masks] * len(pe))
+        files = list(tmp_path.glob("*.json"))
+        assert len(files) == 1 and g._thresholds is not None
+        saved = files[0].read_text()
+
+        g2 = DeltaChi2Gate(noise_rate=0.05, cache_dir=tmp_path, n_null=150)   # another rate: same table
+        g2._calibrate = lambda *a, **k: (_ for _ in ()).throw(AssertionError("should load from cache"))
+        g2.prepare(FittingStrategy.STANDARD_DATA, 10, 2.0, masks)
+        assert files[0].read_text() == saved
+        assert g2.threshold(1.0) <= g.threshold(1.0)                          # higher rate -> lower bar
+
+    def test_new_read_noise_or_strategy_recalibrates(self, tmp_path):
+        _, _, _, _, _, masks = self._rois()
+        g = DeltaChi2Gate(cache_dir=tmp_path, n_null=100)
+        g.prepare(FittingStrategy.STANDARD_DATA, 10, 2.0, masks)
+        g.prepare(FittingStrategy.STANDARD_DATA, 10, 5.0, masks)
+        g.prepare(FittingStrategy.STANDARD, 10, 5.0, masks)
+        assert len(list(tmp_path.glob("*.json"))) == 3
+
+    def test_bright_emitters_pass_and_noise_mostly_rejected(self, tmp_path):
+        g = DeltaChi2Gate(noise_rate=0.01, cache_dir=tmp_path, n_null=300)
+        iaf_ = Image_Analysis_Functions(readnoise=2.0, fit_gate=g)
+        for signal, lo, hi in ((0.0, 0.0, 0.15), (500.0, 0.9, 1.0)):
+            pe, sm, w, coords, planes, masks = self._rois(n=100, signal=signal, seed=int(signal) + 1)
+            fit, _ = iaf_.fit_puncta_method(pe, sm, w, coords, planes, FittingStrategy.STANDARD_DATA,
+                                            masks=[masks] * len(pe))
+            kept = np.mean(~np.isnan(fit[:, 0]))
+            assert lo <= kept <= hi, (signal, kept)
+
+    def test_parallel_workers_get_the_prepared_gate(self, tmp_path):
+        pe, sm, w, coords, planes, masks = self._rois(n=8, signal=500.0)
+        g = DeltaChi2Gate(cache_dir=tmp_path, n_null=100)
+        iaf_ = Image_Analysis_Functions(readnoise=2.0, fit_gate=g)
+        iaf_._prepare_gate(FittingStrategy.STANDARD_DATA, pe, [masks] * len(pe), None)
+        state = iaf_._processor_state(FittingStrategy.STANDARD_DATA)
+        assert state["gate"] is g
+        n_files = len(list(tmp_path.glob("*.json")))
+        # a different read noise in the worker's own data must not trigger recalibration there
+        out = _fit_puncta_method_standalone(pe, sm, w, coords, planes, FittingStrategy.STANDARD_DATA,
+                                            [masks] * len(pe), [np.full((10, 10), 9.0, np.float32)] * len(pe), state)
+        assert len(list(tmp_path.glob("*.json"))) == n_files
+        assert np.mean(~np.isnan(out[0][:, 0])) > 0.5

@@ -8,6 +8,18 @@ Created on Wed Jun  4 14:55:31 2025
 import numpy as np
 from numba import jit
 
+# Lower bound on each channel's background initial guess, in photoelectrons per pixel.
+# The guess is the channel minimum, which is often exactly 0 at a few background photons per
+# pixel (Poisson). The models square the sqrt-space background parameter, so a guess of exactly 0
+# gives a zero finite-difference Jacobian column, and with the loose DEFAULT_FTOL the fit then
+# "converges" without moving the colour amplitudes off their equal starting guess (A_B = A_G =
+# A_R). That corrupts the fitted colour, sigma and position: on simulated 14x14 Bayer ROIs at
+# 0.3-5 background photons/pixel it hit 64-100% of fits. Flooring the guess at 1 photoelectron
+# removed it in every scenario tested, and changes nothing when a channel's minimum is already
+# >= 1. (A per-channel median of the ROI's edge pixels was tested too and was less robust: it is
+# 0 at low background and stalled fits at high background.)
+_BG_GUESS_FLOOR = 1.0
+
 
 @jit(nopython=True, nogil=True, cache=True)
 def gaussian_unscaled_model(
@@ -402,13 +414,16 @@ def initial_guess(smoothed_data, raw_data, masks):
         Background and amplitude parameters are returned as sqrt(value) because
         WLS_model_nobounds squares them. This prevents catastrophic initial guess
         errors at high photon counts (>30k) that cause LM fitting to fail.
+
+        Each channel's background guess is its minimum pixel value, floored at
+        _BG_GUESS_FLOOR: a guess of exactly 0 stalls the fit (see _BG_GUESS_FLOOR).
     """
     n_ch = masks.shape[-1]
     BG_matrix = np.zeros(n_ch)
     flattened_rawdata = raw_data.ravel()
     for i in range(n_ch):
         pixels = masks[:, :, i].ravel()
-        BG_matrix[i] = np.min(np.abs(flattened_rawdata[pixels]))
+        BG_matrix[i] = max(np.min(np.abs(flattened_rawdata[pixels])), _BG_GUESS_FLOOR)
 
     ig_data = np.abs(smoothed_data)
     bs_data = ig_data - np.abs(np.min(ig_data))
@@ -579,7 +594,7 @@ def initial_guess_elliptical(smoothed_data, raw_data, masks):
     flattened_rawdata = raw_data.ravel()
     for i in np.arange(masks.shape[-1]):
         pixels = masks[:, :, i].ravel()
-        BG_matrix[i] = np.min(np.abs(flattened_rawdata[pixels]))
+        BG_matrix[i] = max(np.min(np.abs(flattened_rawdata[pixels])), _BG_GUESS_FLOOR)
     bB, bG, bR = BG_matrix
     ig_data = np.abs(smoothed_data)
     bs_data = ig_data - np.abs(np.min(ig_data))

@@ -50,6 +50,15 @@ class FittingConfig:
     fraction_true: float = 0.0
     image_type: str = ".tif"
     use_variance_aware_demosaic: bool = True
+    # Optional PSF sigma bounds (pixels) for keeping a fit straight after fitting; None = no
+    # bound (sigma must still be > 0). Quality filtering later uses FilteringCriteria instead.
+    fit_min_sigma: float | None = None
+    fit_max_sigma: float | None = None
+    # Fit-acceptance gate: "delta_chi2" (likelihood-ratio test, threshold calibrated so that
+    # noise_rate of pure-noise fits pass; calibrations are cached), "amplitude_snr" (the
+    # previous gate, to reproduce earlier results) or None (no gate).
+    fit_gate: str | None = "delta_chi2"
+    noise_rate: float = 0.01
 
 
 class AnalysisPipeline:
@@ -332,8 +341,11 @@ class AnalysisPipeline:
             fraction_true=fc.fraction_true,
             image_type=fc.image_type,
             use_variance_aware_demosaic=fc.use_variance_aware_demosaic,
+            fit_min_sigma=fc.fit_min_sigma,
+            fit_max_sigma=fc.fit_max_sigma,
         )
         common.update(kwargs)
+        self.sr.image_analysis.set_gate(fc.fit_gate, fc.noise_rate)
 
         method_map: dict[str, Any] = {
             "smlm":     self.sr.fit_SM_data,

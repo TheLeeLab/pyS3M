@@ -116,6 +116,8 @@ class SuperRes_Functions:
         width: int,
         height: int,
         quality_metrics: dict[str, NDArray] | None = None,
+        min_sigma: float | None = None,
+        max_sigma: float | None = None,
     ) -> pd.DataFrame:
         """Post-process fitting results into filtered DataFrame.
 
@@ -127,6 +129,8 @@ class SuperRes_Functions:
             width (int): ROI width for filtering
             height (int): ROI height for filtering
             quality_metrics (dict): Optional dict of quality metric arrays per detection
+            min_sigma, max_sigma (float | None): Optional PSF sigma bounds in pixels,
+                passed to _filter_fit_results (None = no bound)
 
         Returns:
             pd.DataFrame: Filtered and sorted fit results with quality metrics (if provided)
@@ -153,18 +157,28 @@ class SuperRes_Functions:
 
         # Apply filtering - this will automatically filter both fits AND quality metrics
         # Failed fits (NaN values) will be removed along with their quality metrics
-        fit_results = self._filter_fit_results(fit_results, width, height)
+        fit_results = self._filter_fit_results(
+            fit_results, width, height, min_sigma=min_sigma, max_sigma=max_sigma
+        )
 
         return fit_results
 
-    def _filter_fit_results(self, fit_results: pd.DataFrame, width: int, height: int) -> pd.DataFrame:
+    def _filter_fit_results(
+        self,
+        fit_results: pd.DataFrame,
+        width: int,
+        height: int,
+        min_sigma: float | None = None,
+        max_sigma: float | None = None,
+    ) -> pd.DataFrame:
         """Filter localization results based on physical and quality constraints.
 
         Applies multiple quality filters in a single pass for optimal performance:
         - Removes NaN values
         - Filters coordinates to be within image bounds
-        - Filters sigma values to reasonable PSF range (0-3 pixels) -- independent
-          s_x/s_y for STANDARD/ELLIPTICAL-style results, or a single shared "s" for
+        - Requires positive sigma, and optionally min_sigma < sigma < max_sigma (no
+          upper or lower bound unless given) -- independent s_x/s_y for
+          STANDARD/ELLIPTICAL-style results, or a single shared "s" for
           CIRCULAR-style results, depending on which are present.
         - Ensures positive amplitudes and backgrounds -- per-channel (A_B/A_G/A_R,
           bg_B/bg_G/bg_R) for STANDARD/ELLIPTICAL-style results, or single-column
@@ -174,6 +188,8 @@ class SuperRes_Functions:
             fit_results: Structured array of localization results
             width: Image width in pixels
             height: Image height in pixels
+            min_sigma: Optional lower PSF sigma bound in pixels (None = only sigma > 0)
+            max_sigma: Optional upper PSF sigma bound in pixels (None = no upper bound)
 
         Returns:
             Filtered results with index reset
@@ -187,13 +203,14 @@ class SuperRes_Functions:
             & (fit_results["yc"] < height)
         )
 
-        if all(c in fit_results.columns for c in ("s_x", "s_y")):
-            mask &= (
-                (fit_results["s_x"] > 0) & (fit_results["s_x"] < 3)
-                & (fit_results["s_y"] > 0) & (fit_results["s_y"] < 3)
-            )
-        elif "s" in fit_results.columns:
-            mask &= (fit_results["s"] > 0) & (fit_results["s"] < 3)
+        sigma_cols = [c for c in ("s_x", "s_y") if c in fit_results.columns]
+        if len(sigma_cols) < 2:
+            sigma_cols = ["s"] if "s" in fit_results.columns else []
+        lower = 0.0 if min_sigma is None else max(0.0, min_sigma)
+        for col in sigma_cols:
+            mask &= fit_results[col] > lower
+            if max_sigma is not None:
+                mask &= fit_results[col] < max_sigma
 
         if all(c in fit_results.columns for c in ("A_B", "A_G", "A_R")):
             mask &= (
@@ -252,7 +269,8 @@ class SuperRes_Functions:
             is_multi_frame (bool): Whether data has multiple frames
 
         Returns:
-            tuple or None: (photoelectron_roi, smoothed_roi, weights_roi, mask_roi, coords, plane)
+            tuple or None: (photoelectron_roi, smoothed_roi, weights_roi, mask_roi, coords, plane,
+                readnoise_roi), with readnoise_roi the ROI's read noise (e-) per pixel
                           Returns None if ROI is invalid (not square)
         """
         # detected_puncta stores [row, col, frame] from np.where()
@@ -337,7 +355,12 @@ class SuperRes_Functions:
         coords = (xmin, ymin)
         plane = frame + frame_offset
 
-        return photoelectron_roi, smoothed_roi, weights_roi, mask_roi, coords, plane
+        # The punctum's own read-noise crop, so the fitter can weight per pixel (CMOS)
+        readnoise_roi = np.broadcast_to(
+            np.asarray(read_noise_roi, dtype=np.float32), photoelectron_roi.shape
+        ).copy()
+
+        return photoelectron_roi, smoothed_roi, weights_roi, mask_roi, coords, plane, readnoise_roi
 
     def _process_detected_puncta_batch(
         self,
@@ -381,7 +404,7 @@ class SuperRes_Functions:
 
         Returns:
             tuple: (puncta_tofit, smoothed_puncta_tofit, masks_tofit, weights_tofit,
-                   relative_coords, planes, filtered_quality_metrics)
+                   relative_coords, planes, filtered_quality_metrics, readnoise_tofit)
                 - puncta_tofit: List of photoelectron ROIs ready for fitting
                 - smoothed_puncta_tofit: List of smoothed ROIs
                 - masks_tofit: List of Bayer mask ROIs
@@ -390,6 +413,7 @@ class SuperRes_Functions:
                 - planes: List of frame numbers for each ROI
                 - filtered_quality_metrics: Quality metrics filtered to match processed ROIs
                   (None if quality_metrics was None)
+                - readnoise_tofit: List of per-pixel read-noise ROIs (e-), for the fitter's weights
 
         Example:
             >>> # Single frame processing
@@ -397,7 +421,7 @@ class SuperRes_Functions:
             ...     raw_data, detected_puncta, width, height, ROI_size,
             ...     smoothing_function, read_noise, masks
             ... )
-            >>> puncta, smoothed, masks_roi, weights, coords, frames, qm = results
+            >>> puncta, smoothed, masks_roi, weights, coords, frames, qm, readnoise = results
 
         """
         puncta_tofit = []
@@ -406,6 +430,7 @@ class SuperRes_Functions:
         weights_tofit = []
         relative_coords = []
         planes = []
+        readnoise_tofit = []
         valid_indices = []  # Track which indices were successfully processed
 
         for i in np.arange(len(detected_puncta)):
@@ -429,7 +454,7 @@ class SuperRes_Functions:
             if result is None:
                 continue
 
-            photoelectron_roi, smoothed_roi, weights_roi, mask_roi, coords, plane = (
+            photoelectron_roi, smoothed_roi, weights_roi, mask_roi, coords, plane, readnoise_roi = (
                 result
             )
 
@@ -439,6 +464,7 @@ class SuperRes_Functions:
             weights_tofit.append(weights_roi)
             relative_coords.append(coords)
             planes.append(plane)
+            readnoise_tofit.append(readnoise_roi)
             valid_indices.append(i)  # Track that this index was successfully processed
 
         # Filter quality metrics to match successfully processed ROIs
@@ -469,6 +495,7 @@ class SuperRes_Functions:
             relative_coords,
             planes,
             filtered_quality_metrics,
+            readnoise_tofit,
         )
 
     def example_spots_singleframe(
@@ -547,6 +574,7 @@ class SuperRes_Functions:
         smoothed_puncta_tofit = []
         masks_tofit = []
         weights_tofit = []
+        readnoise_tofit = []
         relative_coords = []
 
         # Load raw data for the requested frame(s)
@@ -659,6 +687,7 @@ class SuperRes_Functions:
             relative_coords,
             _,
             _,  # filtered_quality_metrics (None - not using quality metrics in this method)
+            readnoise_tofit,
         ) = self._process_detected_puncta_batch(
             raw_data,
             detected_puncta,
@@ -688,6 +717,7 @@ class SuperRes_Functions:
             list(np.zeros(len(puncta_tofit), dtype=int)),
             FittingStrategy.STANDARD_DATA,
             masks=masks_tofit,
+            readnoise_maps=readnoise_tofit,
         )
 
         columns = [
@@ -975,6 +1005,8 @@ class SuperRes_Functions:
         pixel_size: float = None,
         image_type: str = ".tif",
         use_variance_aware_demosaic: bool = True,
+        fit_min_sigma: float | None = None,
+        fit_max_sigma: float | None = None,
     ) -> None:
         """Complete FRET analysis pipeline with change point detection.
 
@@ -988,6 +1020,8 @@ class SuperRes_Functions:
         7. Save results to HDF5 database (one per input file)
 
         Args:
+            fit_min_sigma, fit_max_sigma (float | None): Optional PSF sigma bounds in pixels
+                for keeping a fit (None = no bound; sigma must still be > 0). Default: none.
             image_folder: Path to folder containing image files
             smoothing_function: Function namespace with smoothing parameters
             gain_map: 2D gain calibration map
@@ -1153,6 +1187,7 @@ class SuperRes_Functions:
             smoothed_puncta_tofit = []
             masks_tofit = []
             weights_tofit = []
+            readnoise_tofit = []
             relative_coords = []
             puncta_ids = []
             frame_indices = []
@@ -1226,6 +1261,9 @@ class SuperRes_Functions:
                         puncta_tofit.append(photoelectrons[local_idx, ymin:ymax, xmin:xmax].copy())
                         smoothed_puncta_tofit.append(smoothed[local_idx, ymin:ymax, xmin:xmax].copy())
                         masks_tofit.append(masks_stacked[ymin:ymax, xmin:xmax, :].copy())
+                        readnoise_tofit.append(np.broadcast_to(
+                            np.asarray(read_noise_crop, dtype=np.float32), photoelectrons.shape[1:]
+                        )[ymin:ymax, xmin:xmax].copy())
                         weights_tofit.append(weights_data[local_idx, ymin:ymax, xmin:xmax].copy())
                         relative_coords.append((xmin, ymin))
                         puncta_ids.append(puncta_idx)
@@ -1247,6 +1285,7 @@ class SuperRes_Functions:
                 list(range(len(puncta_tofit))),
                 FittingStrategy.STANDARD_DATA,
                 masks=masks_tofit,
+                readnoise_maps=readnoise_tofit,
             )
 
             # Build result DataFrame
@@ -1270,7 +1309,9 @@ class SuperRes_Functions:
             fit_df["frame"] = frame_indices
 
             # Filter results
-            fit_df = self._filter_fit_results(fit_df, width, height)
+            fit_df = self._filter_fit_results(
+                fit_df, width, height, min_sigma=fit_min_sigma, max_sigma=fit_max_sigma
+            )
 
             # Save to HDF5 database
             self.io.write_h5_database(fit_df, fit_savename, append=False)
@@ -1309,6 +1350,8 @@ class SuperRes_Functions:
         image_type: str = ".tif",
         use_variance_aware_demosaic: bool = True,
         chunk_size: int = 500,
+        fit_min_sigma: float | None = None,
+        fit_max_sigma: float | None = None,
     ) -> None:
         """QDot analysis pipeline: detect spots on summed frames, fit every frame.
 
@@ -1323,6 +1366,8 @@ class SuperRes_Functions:
         4. Save results to HDF5 database (one per input file, chunks appended)
 
         Args:
+            fit_min_sigma, fit_max_sigma (float | None): Optional PSF sigma bounds in pixels
+                for keeping a fit (None = no bound; sigma must still be > 0). Default: none.
             image_folder: Path to folder containing image files
             smoothing_function: Function namespace with smoothing parameters
             gain_map: 2D gain calibration map
@@ -1491,6 +1536,7 @@ class SuperRes_Functions:
                 smoothed_puncta_tofit = []
                 masks_tofit = []
                 weights_tofit = []
+                readnoise_tofit = []
                 relative_coords = []
                 puncta_ids = []
                 frame_indices = []
@@ -1505,6 +1551,9 @@ class SuperRes_Functions:
                         puncta_tofit.append(photoelectrons[local_idx, ymin:ymax, xmin:xmax].copy())
                         smoothed_puncta_tofit.append(smoothed[local_idx, ymin:ymax, xmin:xmax].copy())
                         masks_tofit.append(masks_stacked[ymin:ymax, xmin:xmax, :].copy())
+                        readnoise_tofit.append(np.broadcast_to(
+                            np.asarray(read_noise_crop, dtype=np.float32), photoelectrons.shape[1:]
+                        )[ymin:ymax, xmin:xmax].copy())
                         weights_tofit.append(weights_data[local_idx, ymin:ymax, xmin:xmax].copy())
                         relative_coords.append((xmin, ymin))
                         puncta_ids.append(puncta_idx)
@@ -1524,6 +1573,7 @@ class SuperRes_Functions:
                     list(range(len(puncta_tofit))),
                     FittingStrategy.STANDARD_DATA,
                     masks=masks_tofit,
+                    readnoise_maps=readnoise_tofit,
                 )
 
                 # Build result DataFrame
@@ -1538,7 +1588,9 @@ class SuperRes_Functions:
                 fit_df["frame"] = frame_indices
 
                 # Filter results
-                fit_df = self._filter_fit_results(fit_df, width, height)
+                fit_df = self._filter_fit_results(
+                    fit_df, width, height, min_sigma=fit_min_sigma, max_sigma=fit_max_sigma
+                )
 
                 # Append to HDF5 (first chunk creates the file, subsequent chunks append)
                 self.io.write_h5_database(fit_df, fit_savename, append=(not first_save))
@@ -1645,6 +1697,8 @@ class SuperRes_Functions:
         use_elliptical: bool = False,
         use_circular: bool = False,
         combined_output: bool = False,
+        fit_min_sigma: float | None = None,
+        fit_max_sigma: float | None = None,
     ) -> None:
         """Single-molecule data fitting function.
 
@@ -1652,6 +1706,8 @@ class SuperRes_Functions:
         and fitting them with Gaussian models to extract precise positions and photon counts.
 
         Args:
+            fit_min_sigma, fit_max_sigma (float | None): Optional PSF sigma bounds in pixels
+                for keeping a fit (None = no bound; sigma must still be > 0). Default: none.
             image_folder (str): Path to folder containing image files
             smoothing_function (type): function to smooth data
             gain_map (np.2darray): 2darray of gain map
@@ -1692,6 +1748,7 @@ class SuperRes_Functions:
             image_type=image_type, use_variance_aware_demosaic=use_variance_aware_demosaic,
             use_elliptical=use_elliptical, use_circular=use_circular,
             accumulate_frame_numbers=combined_output, combined_output=combined_output,
+            fit_min_sigma=fit_min_sigma, fit_max_sigma=fit_max_sigma,
         )
 
     def _fit_files(
@@ -1716,10 +1773,14 @@ class SuperRes_Functions:
         use_circular: bool = False,
         accumulate_frame_numbers: bool = False,
         combined_output: bool = False,
+        fit_min_sigma: float | None = None,
+        fit_max_sigma: float | None = None,
     ) -> None:
         """Unified file-fitting pipeline shared by fit_SM_data and fit_imaging_data.
 
         Args:
+            fit_min_sigma, fit_max_sigma (float | None): Optional PSF sigma bounds in pixels
+                for keeping a fit (None = no bound; sigma must still be > 0). Default: none.
             accumulate_frame_numbers: If True, frame indices accumulate across files
                 (imaging mode). If False, each file resets to frame 0 (SM mode).
             combined_output: If True, all files append to one shared HDF5
@@ -1788,6 +1849,7 @@ class SuperRes_Functions:
             all_puncta_tofit = []
             all_smoothed_puncta_tofit = []
             all_masks_tofit = []
+            all_readnoise_tofit = []
             all_weights_tofit = []
             all_relative_coords = []
             all_planes = []
@@ -1835,6 +1897,7 @@ class SuperRes_Functions:
                     chunk_coords,
                     chunk_planes,
                     filtered_quality_metrics,
+                    chunk_readnoise,
                 ) = self._process_detected_puncta_batch(
                     raw_data,
                     detected_puncta,
@@ -1855,6 +1918,7 @@ class SuperRes_Functions:
                 all_puncta_tofit.extend(chunk_puncta)
                 all_smoothed_puncta_tofit.extend(chunk_smoothed)
                 all_masks_tofit.extend(chunk_masks)
+                all_readnoise_tofit.extend(chunk_readnoise)
                 all_weights_tofit.extend(chunk_weights)
                 all_relative_coords.extend(chunk_coords)
                 all_planes.extend(chunk_planes)
@@ -1890,6 +1954,7 @@ class SuperRes_Functions:
                 all_planes,
                 strategy,
                 masks=all_masks_tofit,
+                readnoise_maps=all_readnoise_tofit,
             )
 
             fit_results = self._postprocess_fit_results(
@@ -1900,6 +1965,8 @@ class SuperRes_Functions:
                 width,
                 height,
                 quality_metrics=combined_quality_metrics,
+                min_sigma=fit_min_sigma,
+                max_sigma=fit_max_sigma,
             )
 
             append = combined_output and FOVn > 0
@@ -1915,6 +1982,7 @@ class SuperRes_Functions:
                 all_puncta_tofit,
                 all_smoothed_puncta_tofit,
                 all_masks_tofit,
+                all_readnoise_tofit,
                 all_weights_tofit,
                 all_relative_coords,
                 all_planes,
@@ -1940,6 +2008,8 @@ class SuperRes_Functions:
         image_type: str = ".tif",
         use_variance_aware_demosaic: bool = True,
         use_elliptical: bool = True,
+        fit_min_sigma: float | None = None,
+        fit_max_sigma: float | None = None,
     ) -> None:
         """Single-molecule tracking data fitting function.
 
@@ -1952,6 +2022,8 @@ class SuperRes_Functions:
         motion during the camera exposure.
 
         Args:
+            fit_min_sigma, fit_max_sigma (float | None): Optional PSF sigma bounds in pixels
+                for keeping a fit (None = no bound; sigma must still be > 0). Default: none.
             image_folder (str): Path to folder containing image files.
             smoothing_function (callable): Function to smooth data.
             gain_map (np.ndarray): 2D gain map.
@@ -2025,6 +2097,7 @@ class SuperRes_Functions:
             all_puncta_tofit = []
             all_smoothed_puncta_tofit = []
             all_masks_tofit = []
+            all_readnoise_tofit = []
             all_weights_tofit = []
             all_relative_coords = []
             all_planes = []
@@ -2073,6 +2146,7 @@ class SuperRes_Functions:
                     chunk_coords,
                     chunk_planes,
                     filtered_quality_metrics,
+                    chunk_readnoise,
                 ) = self._process_detected_puncta_batch(
                     raw_data,
                     detected_puncta,
@@ -2093,6 +2167,7 @@ class SuperRes_Functions:
                 all_puncta_tofit.extend(chunk_puncta)
                 all_smoothed_puncta_tofit.extend(chunk_smoothed)
                 all_masks_tofit.extend(chunk_masks)
+                all_readnoise_tofit.extend(chunk_readnoise)
                 all_weights_tofit.extend(chunk_weights)
                 all_relative_coords.extend(chunk_coords)
                 all_planes.extend(chunk_planes)
@@ -2131,6 +2206,7 @@ class SuperRes_Functions:
                     all_planes,
                     strategy,
                     masks=all_masks_tofit,
+                    readnoise_maps=all_readnoise_tofit,
                 )
             )
 
@@ -2142,6 +2218,8 @@ class SuperRes_Functions:
                 width,
                 height,
                 quality_metrics=combined_quality_metrics,
+                min_sigma=fit_min_sigma,
+                max_sigma=fit_max_sigma,
             )
 
             self.io.write_h5_database(fit_results, fit_savename, append=False)
@@ -2152,6 +2230,7 @@ class SuperRes_Functions:
                 all_puncta_tofit,
                 all_smoothed_puncta_tofit,
                 all_masks_tofit,
+                all_readnoise_tofit,
                 all_weights_tofit,
                 all_relative_coords,
                 all_planes,
@@ -2386,6 +2465,8 @@ class SuperRes_Functions:
         use_variance_aware_demosaic: bool = True,
         use_elliptical: bool = False,
         use_circular: bool = False,
+        fit_min_sigma: float | None = None,
+        fit_max_sigma: float | None = None,
     ) -> None:
         """Cross-file imaging data fitting function.
 
@@ -2393,6 +2474,8 @@ class SuperRes_Functions:
         with Gaussian models, maintaining frame numbering consistency across files.
 
         Args:
+            fit_min_sigma, fit_max_sigma (float | None): Optional PSF sigma bounds in pixels
+                for keeping a fit (None = no bound; sigma must still be > 0). Default: none.
             image_folder (str): Path to folder containing image files
             smoothing_function (type): function to smooth data
             gain_map (np.2darray): 2darray of gain map
@@ -2428,4 +2511,5 @@ class SuperRes_Functions:
             image_type=image_type, use_variance_aware_demosaic=use_variance_aware_demosaic,
             use_elliptical=use_elliptical, use_circular=use_circular,
             accumulate_frame_numbers=True, combined_output=True,
+            fit_min_sigma=fit_min_sigma, fit_max_sigma=fit_max_sigma,
         )
