@@ -1,8 +1,12 @@
 # Claude files
 claude/
 
-# EBI upload folder — contains FTP credentials and large manifest files
-notebooks/EBI_Upload/
+# EBI upload: FTP credentials live outside the repo (~/.config/pyS3M/ebi_ftp_credentials.txt,
+# see notebooks/EBI_Upload/_ebi_credentials.py) -- never commit a copy, nor the manifests.
+*ebi_ftp_credentials*
+notebooks/EBI_Upload/*.tsv
+notebooks/EBI_Upload/*.json
+notebooks/EBI_Upload/*.txt
 *Old*
 DriftCorrection_Example.py
 DriftCorrection_README.md
