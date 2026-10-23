@@ -1100,7 +1100,7 @@ class SuperRes_Functions:
         for FOVn, file in enumerate(image_files):
             logger.info(f"\nFile {FOVn+1}/{len(image_files)}: {Path(file).name}")
 
-            fit_savename = file.split(".")[0] + ".h5"
+            fit_savename = str(Path(file).with_name(Path(file).name.split(".")[0] + ".h5"))
             total_frames = self.io.get_num_pages_in_TIF(file)
 
             # PHASE 1: Spot detection on summed frames
@@ -1452,7 +1452,7 @@ class SuperRes_Functions:
         for FOVn, file in enumerate(image_files):
             logger.info(f"\nProcessing file {FOVn+1}/{len(image_files)}: {Path(file).name}")
 
-            fit_savename = file.split(".")[0] + ".h5"
+            fit_savename = str(Path(file).with_name(Path(file).name.split(".")[0] + ".h5"))
             total_frames = self.io.get_num_pages_in_TIF(file)
 
             # PHASE 1: Spot detection on summed frames
@@ -1841,7 +1841,7 @@ class SuperRes_Functions:
         total_frames = 0
         for FOVn, file in enumerate(image_files):
             if not combined_output:
-                fit_savename = file.split(".")[0] + ".h5"
+                fit_savename = str(Path(file).with_name(Path(file).name.split(".")[0] + ".h5"))
 
             file_frames = self.io.get_num_pages_in_TIF(file)
 
@@ -2089,7 +2089,7 @@ class SuperRes_Functions:
         variance = cropped_maps["variance"]
 
         for FOVn, file in enumerate(image_files):
-            fit_savename = file.split(".")[0] + ".h5"
+            fit_savename = str(Path(file).with_name(Path(file).name.split(".")[0] + ".h5"))
 
             total_frames = self.io.get_num_pages_in_TIF(file)
 
