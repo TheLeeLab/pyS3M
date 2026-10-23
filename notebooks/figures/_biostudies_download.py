@@ -27,6 +27,9 @@ MAX_ATTEMPTS = 6
 # Ask for the raw bytes: with transfer compression, Content-Length (compressed) would never
 # match the decoded size written to disk, breaking the size checks and Range resume.
 HEADERS = {"Accept-Encoding": "identity"}
+# A connection dropped mid-body surfaces as ChunkedEncodingError, which is not a
+# ConnectionError subclass.
+RETRYABLE = (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError)
 
 
 def human_size(n_bytes: float) -> str:
@@ -51,7 +54,7 @@ def _retry(action, what: str, max_attempts: int = None, progress=None):
         attempt += 1
         try:
             return action()
-        except (requests.ConnectionError, requests.Timeout) as e:
+        except RETRYABLE as e:
             if progress is not None and progress() > last:
                 attempt, last = 1, progress()
             if attempt >= max_attempts:
