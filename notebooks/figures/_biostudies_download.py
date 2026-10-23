@@ -8,8 +8,10 @@ Deliberately plain `requests`, no new heavyweight dependency (e.g. `pooch`) --
 these are plain scoped file GETs, nothing a fuller download-manager buys much
 over.
 """
+import re
 import time
 from pathlib import Path
+from urllib.parse import unquote
 
 import requests
 
@@ -70,6 +72,11 @@ def download_file(remote_rel_path: str, dest_dir: Path, chunk_size: int = 1 << 2
     ``.part`` temp file first so an interrupted download can never look like
     a complete one. An existing ``.part`` file (from a dropped connection or a
     previous run) is resumed with an HTTP Range request rather than restarted.
+
+    The ``.part`` file lives in a sibling folder (see ``_partial_dir``), not in
+    *dest_dir*: ``Helper_Functions.file_search`` matches substrings recursively,
+    so ``x.ome.tif.part`` would be fitted as a TIFF and ``x_metadata.txt.part``
+    read as the metadata.
     """
     url = f"{BASE_URL}/{remote_rel_path}"
     dest_dir = Path(dest_dir)
@@ -88,7 +95,11 @@ def download_file(remote_rel_path: str, dest_dir: Path, chunk_size: int = 1 << 2
         return dest
 
     print(f"Downloading {remote_rel_path.rsplit('/', 1)[-1]} ({human_size(remote_size)}) ...")
-    tmp = dest.with_name(dest.name + ".part")
+    tmp = _partial_dir(dest_dir) / (dest.name + ".part")
+    tmp.parent.mkdir(exist_ok=True)
+    legacy_tmp = dest.with_name(dest.name + ".part")  # where earlier versions kept it
+    if legacy_tmp.exists() and not tmp.exists():
+        legacy_tmp.rename(tmp)
     try:
         from tqdm.notebook import tqdm
         has_tqdm = True
@@ -138,6 +149,88 @@ def download_file(remote_rel_path: str, dest_dir: Path, chunk_size: int = 1 << 2
     return dest
 
 
+def _partial_dir(dest_dir: Path) -> Path:
+    """Folder for in-progress ``.part`` files: a hidden sibling of *dest_dir*, outside it."""
+    dest_dir = Path(dest_dir).resolve()
+    return dest_dir.parent / f".{dest_dir.name}.partial"
+
+
 def download_files(remote_rel_paths: list, dest_dir: Path, **kwargs) -> list:
     """Download each path in *remote_rel_paths* (see ``download_file``)."""
     return [download_file(p, dest_dir, **kwargs) for p in remote_rel_paths]
+
+
+def _natural_key(name: str):
+    """Sort key putting ``x_2.ome.tif`` before ``x_10.ome.tif`` (cf. ``file_search``)."""
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"([0-9]+)", name)]
+
+
+def list_remote_folder(remote_rel_folder: str) -> list:
+    """Return the names of the files in one deposition folder (sub-folders excluded).
+
+    Parses the mirror's HTML directory index; the names come back naturally sorted.
+    """
+    url = f"{BASE_URL}/{remote_rel_folder.strip('/')}/"
+
+    def get():
+        with requests.get(url, timeout=TIMEOUT) as r:
+            r.raise_for_status()
+            return r.text
+
+    html = _retry(get, f"LIST {remote_rel_folder}")
+    names = {unquote(h) for h in re.findall(r'href="([^"]+)"', html)}
+    # Skip sort links (?C=N;O=D), the parent link (absolute path) and sub-folders (trailing /).
+    names = [n for n in names if not n.startswith(("?", "/")) and "/" not in n]
+    return sorted(names, key=_natural_key)
+
+
+def download_acquisition(remote_folder: str, dest_dir: Path, stem: str = None,
+                         first_file_only: bool = False,
+                         image_suffixes: tuple = (".tif", ".tiff")) -> dict:
+    """Download one MicroManager acquisition: its TIFFs *and* its ``*_metadata.txt``.
+
+    The metadata sidecar carries the camera ROI the acquisition was cropped to, which
+    ``fit_imaging_data`` needs to crop the calibration maps
+    (``Helper_Functions.load_metadata_roi`` looks for it beside the TIFFs), so it always
+    comes too, also with *first_file_only*. Downloads land flat in *dest_dir*, and
+    re-running skips what is already complete (see ``download_file``).
+
+    Args:
+        remote_folder: Folder path relative to the deposition's ``Files/`` root.
+        dest_dir: Local folder; keep one acquisition per folder, since the fitting
+            routines read every TIFF and the first metadata file they find in it.
+        stem: Only take files whose name starts with this (e.g.
+            ``"..._MMStack_Pos0"`` when one folder holds several positions).
+            Default: everything in the folder.
+        first_file_only: Download only the first TIFF of the series (``FAST_MODE``).
+        image_suffixes: Name endings counted as image files.
+
+    Returns:
+        ``{"images": [Path, ...], "metadata": [Path, ...]}`` of the local files.
+
+    Raises:
+        FileNotFoundError: if the folder has no matching TIFFs or no metadata file.
+    """
+    names = list_remote_folder(remote_folder)
+    if stem:
+        names = [n for n in names if n.startswith(stem)]
+    images = [n for n in names if n.lower().endswith(image_suffixes)]
+    metadata = [n for n in names if n.endswith("metadata.txt")]
+    if not images:
+        raise FileNotFoundError(f"No {image_suffixes} files in {remote_folder} (stem={stem!r})")
+    if not metadata:
+        raise FileNotFoundError(
+            f"No *metadata.txt in {remote_folder} (stem={stem!r}); without it the fit "
+            "can't find the acquisition's camera ROI")
+    if first_file_only:
+        images = images[:1]
+
+    total = len(images) + len(metadata)
+    print(f"{remote_folder}: {len(images)} image file(s) + {len(metadata)} metadata file(s)")
+    for i, name in enumerate(metadata + images, 1):
+        print(f"[{i}/{total}] ", end="")
+        download_file(f"{remote_folder.strip('/')}/{name}", dest_dir)
+
+    dest_dir = Path(dest_dir)
+    return {"images": [dest_dir / n for n in images],
+            "metadata": [dest_dir / n for n in metadata]}
