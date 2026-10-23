@@ -213,6 +213,7 @@ def download_acquisition(remote_folder: str, dest_dir: Path, stem: str = None,
 
     Raises:
         FileNotFoundError: if the folder has no matching TIFFs or no metadata file.
+        RuntimeError: if *dest_dir* already holds image files outside this selection.
     """
     names = list_remote_folder(remote_folder)
     if stem:
@@ -228,12 +229,23 @@ def download_acquisition(remote_folder: str, dest_dir: Path, stem: str = None,
     if first_file_only:
         images = images[:1]
 
+    # The fit reads every TIFF under the folder, so files from another acquisition, or the
+    # rest of this series left by a full run, would be fitted too.
+    dest_dir = Path(dest_dir)
+    extra = sorted(str(p.relative_to(dest_dir)) for p in dest_dir.rglob("*")
+                   if p.is_file() and p.name.lower().endswith(image_suffixes)
+                   and p.name not in images) if dest_dir.exists() else []
+    if extra:
+        raise RuntimeError(
+            f"{dest_dir} already holds {len(extra)} image file(s) outside this selection "
+            f"(e.g. {extra[0]}), which the fit would also read. Use a separate folder per "
+            "acquisition and per FAST_MODE setting, or move them out.")
+
     total = len(images) + len(metadata)
     print(f"{remote_folder}: {len(images)} image file(s) + {len(metadata)} metadata file(s)")
     for i, name in enumerate(metadata + images, 1):
         print(f"[{i}/{total}] ", end="")
         download_file(f"{remote_folder.strip('/')}/{name}", dest_dir)
 
-    dest_dir = Path(dest_dir)
     return {"images": [dest_dir / n for n in images],
             "metadata": [dest_dir / n for n in metadata]}
