@@ -36,7 +36,7 @@ class extract_SMs(HDBSCANMixin, DBSCANMixin, LinkedMixin, BatchMixin,
 
         # Dependency injection with sensible defaults
         self.io = (
-            io_functions if io_functions is not None else IOFunctions.IO_Functions()
+            io_functions if io_functions is not None else IOFunctions.IO_Functions(camera=camera)
         )
 
     def _load_localisation_files(self, loc_data, start_frame=0):
@@ -77,6 +77,8 @@ class extract_SMs(HDBSCANMixin, DBSCANMixin, LinkedMixin, BatchMixin,
         max_sigma_error=None, # px; None → FilteringConstants.MAX_SIGMA_ERROR_NM / self.pixel_size_nm
         min_photons=FilteringConstants.MIN_PHOTONS,
         max_photons=None,
+        min_photoelectrons=None,
+        max_photoelectrons=None,
         criteria: FilteringCriteria = None,
     ):
         """Apply quality filters to localisation data.
@@ -93,7 +95,10 @@ class extract_SMs(HDBSCANMixin, DBSCANMixin, LinkedMixin, BatchMixin,
             max_colour_error: Maximum amplitude error fraction.
             min_sigma, max_sigma, max_sigma_error: PSF sigma bounds (pixels);
                 ``None`` → derived from ``FilteringConstants`` / pixel size.
-            min_photons, max_photons: Photon count bounds.
+            min_photons, max_photons: Bounds on ``photons`` (A_B + A_G + A_R, which overcounts
+                the detected photoelectrons 2-4x; see ``IO_Functions.add_photoelectron_columns``).
+            min_photoelectrons, max_photoelectrons: Bounds on the detected ``photoelectrons``
+                (sum_p f_p * A_p); ``None`` → no cut. Applied in addition to the photon bounds.
             criteria: If provided, overrides all individual kwargs above.
 
         Returns:
@@ -108,6 +113,8 @@ class extract_SMs(HDBSCANMixin, DBSCANMixin, LinkedMixin, BatchMixin,
             max_sigma_error       = criteria.max_sigma_error
             min_photons           = criteria.min_photons
             max_photons           = criteria.max_photons
+            min_photoelectrons    = criteria.min_photoelectrons
+            max_photoelectrons    = criteria.max_photoelectrons
         # Resolve sigma bounds from camera pixel size if not explicitly provided
         pixel_size_nm = self.pixel_size * 1000  # µm → nm
         if min_sigma is None:
@@ -142,6 +149,13 @@ class extract_SMs(HDBSCANMixin, DBSCANMixin, LinkedMixin, BatchMixin,
         if max_photons is not None:
             filtered_data = filtered_data[filtered_data["photons"] < max_photons]
         filtered_data = filtered_data[filtered_data["photons"] > min_photons]
+        if min_photoelectrons is not None or max_photoelectrons is not None:
+            if "photoelectrons" not in filtered_data.columns:
+                filtered_data = self.io.add_photoelectron_columns(filtered_data)
+            if min_photoelectrons is not None:
+                filtered_data = filtered_data[filtered_data["photoelectrons"] > min_photoelectrons]
+            if max_photoelectrons is not None:
+                filtered_data = filtered_data[filtered_data["photoelectrons"] < max_photoelectrons]
 
         return filtered_data.reset_index(drop=True)
 

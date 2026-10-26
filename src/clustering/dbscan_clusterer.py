@@ -33,6 +33,8 @@ class DBSCANMixin:
         max_sigma_error: float | None = None,
         min_photons: float = FilteringConstants.MIN_PHOTONS,
         max_photons: float | None = None,
+        min_photoelectrons: float | None = None,
+        max_photoelectrons: float | None = None,
         epsilon_multiplier: float = 1.0,
         start_frame: int = 0,
         config: ClusteringConfig = None,
@@ -46,7 +48,8 @@ class DBSCANMixin:
             criteria (FilteringCriteria, optional): Quality filter bundle.
             chi_val: Quality filter parameters (chi_val, max_localisation_error,
                 max_colour_error, min_sigma, max_sigma, max_sigma_error,
-                min_photons, max_photons — see filter_quality_localisations).
+                min_photons, max_photons, min_photoelectrons, max_photoelectrons — see
+                filter_quality_localisations).
             epsilon_multiplier (float): Multiplier applied to the mean localisation
                 precision to derive the DBSCAN epsilon radius.
             start_frame (int): Discard localisations before this frame.
@@ -66,6 +69,7 @@ class DBSCANMixin:
             max_localisation_error, max_colour_error,
             min_sigma, max_sigma, max_sigma_error,
             min_photons, max_photons,
+            min_photoelectrons, max_photoelectrons,
         )
 
         if not self._check_min_locs(loc_data, min_cluster_size):

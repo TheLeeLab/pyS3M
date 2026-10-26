@@ -62,6 +62,8 @@ class BatchMixin:
         max_sigma_error: float | None = None,
         min_photons: float = FilteringConstants.MIN_PHOTONS,
         max_photons: float = 1e6,
+        min_photoelectrons: float | None = None,
+        max_photoelectrons: float | None = None,
         max_distance: float = 0.5,
         max_frames: int = 10,
         epsilon_multiplier: float = 1.0,
@@ -89,6 +91,8 @@ class BatchMixin:
             max_sigma_error (float, optional): Quality filter parameter.
             min_photons (float): Quality filter parameter.
             max_photons (float): Quality filter parameter.
+            min_photoelectrons, max_photoelectrons (float, optional): Bounds on the detected
+                photoelectrons (see filter_quality_localisations); None → no cut.
             max_distance (float): Maximum distance for linked method (pixels).
             max_frames (int): Maximum frame gap for linked method.
             epsilon_multiplier (float): DBSCAN epsilon multiplier.
@@ -146,6 +150,8 @@ class BatchMixin:
                     max_sigma_error=max_sigma_error,
                     min_photons=min_photons,
                     max_photons=max_photons,
+                    min_photoelectrons=min_photoelectrons,
+                    max_photoelectrons=max_photoelectrons,
                 )
             elif clustering_method.upper() == "DBSCAN":
                 sm_db, sf_db = self.extract_single_molecules_DBSCAN(
@@ -160,6 +166,8 @@ class BatchMixin:
                     max_sigma_error=max_sigma_error,
                     min_photons=min_photons,
                     max_photons=max_photons,
+                    min_photoelectrons=min_photoelectrons,
+                    max_photoelectrons=max_photoelectrons,
                     epsilon_multiplier=epsilon_multiplier,
                 )
             elif clustering_method.lower() == "linked":
@@ -176,6 +184,8 @@ class BatchMixin:
                     max_sigma_error=max_sigma_error,
                     min_photons=min_photons,
                     max_photons=max_photons,
+                    min_photoelectrons=min_photoelectrons,
+                    max_photoelectrons=max_photoelectrons,
                 )
             else:
                 raise ValueError(
@@ -389,6 +399,8 @@ class BatchMixin:
         max_sigma_error: float | None = None,
         min_photons: float = FilteringConstants.MIN_PHOTONS,
         max_photons: float = 1e6,
+        min_photoelectrons: float | None = None,
+        max_photoelectrons: float | None = None,
         max_distance: float = 0.5,
         max_frames: int = 10,
         epsilon_multiplier: float = 0.5,
@@ -413,6 +425,8 @@ class BatchMixin:
             max_sigma_error (float, optional): Quality filter parameter.
             min_photons (float): Quality filter parameter.
             max_photons (float): Quality filter parameter.
+            min_photoelectrons, max_photoelectrons (float, optional): Bounds on the detected
+                photoelectrons (see filter_quality_localisations); None → no cut.
             max_distance (float): Maximum distance for linked method (pixels).
             max_frames (int): Maximum frame gap for linked method.
             epsilon_multiplier (float): DBSCAN epsilon multiplier.
@@ -441,6 +455,8 @@ class BatchMixin:
             max_sigma_error=max_sigma_error,
             min_photons=min_photons,
             max_photons=max_photons,
+            min_photoelectrons=min_photoelectrons,
+            max_photoelectrons=max_photoelectrons,
             max_distance=max_distance,
             max_frames=max_frames,
             epsilon_multiplier=epsilon_multiplier,

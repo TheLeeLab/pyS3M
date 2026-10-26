@@ -7,10 +7,11 @@ the SI note "Calibrating Precision":
 * ``sigma_xy`` -- mean of the standard deviations of x and y about the bead's mean position (nm);
 * ``prec_X`` -- standard deviation / mean of ``A_X`` (X = B, G, R; the fraction of the signal on
   pixel 1, 2 or 3);
-* ``photons`` -- mean signal per frame, ``A_B + A_G + A_R`` before normalisation: detected
-  photoelectrons per frame (the camera's gain, offset and relative QE are calibrated out, so
-  this is not corrected for the camera's absolute QE); ``photons_X = photons * mean(A_X)`` is the
-  signal on pixel X.
+* ``photons`` -- mean of ``A_B + A_G + A_R`` per frame. This is NOT the detected photoelectrons:
+  each A_X is what pixel X would collect over the whole sensor, so the sum overcounts the
+  detected photoelectrons (``photoelectrons`` = A_B/4 + A_G/2 + A_R/4) 2-4x. The published
+  Fig. 2d axis used it; switching the axis to ``photoelectrons`` is pending.
+  ``photons_X = photons * mean(A_X)``.
 
 The Bayer mosaic has twice as many pixel-2 (green) pixels as pixel-1 or pixel-3 ones; the
 published plot scales the green colour precision by sqrt(2) to put it on a per-pixel footing
@@ -48,7 +49,7 @@ FIT_PARAMS = dict(pfa=1e-3, sigma=1.5, fraction_true=0.05, ROI_size=12, NA=1.49,
 # distance, 60 nm search radius (in pixels).
 DRIFT_PARAMS = dict(segmentation=10, intersect_d=20 / PIXEL_NM, roi_r=60 / PIXEL_NM)
 
-# Quality cuts as in the Methods (chi2 < 3, localisation error < 1 px, > 100 photons), except:
+# Quality cuts as in the Methods (chi2 < 3, localisation error < 1 px, > 50 detected photoelectrons), except:
 # * no cut on the colour error: a cut on a frame's own fitted error would select frames on the
 #   very quantity whose spread is being measured;
 # * PSF sigma 75-250 nm instead of the single-dye 75-160 nm: the beads' fitted sigma is ~145 nm
@@ -56,7 +57,7 @@ DRIFT_PARAMS = dict(segmentation=10, intersect_d=20 / PIXEL_NM, roi_r=60 / PIXEL
 CLUSTER_PARAMS = dict(clustering_method="HDBSCAN", min_cluster_size=10, chi_val=3,
                       max_localisation_error=1.0, max_colour_error=np.inf,
                       min_sigma=75 / PIXEL_NM, max_sigma=250 / PIXEL_NM,
-                      min_photons=100, max_photons=1e7)
+                      min_photons=0, max_photons=1e7, min_photoelectrons=50)
 
 # A bead must be found in at least this many of the 200 frames. Clusters with fewer are mostly
 # out-of-focus or transient spots; HDBSCAN also returns some of those as spread-out clusters.

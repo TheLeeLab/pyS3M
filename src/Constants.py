@@ -266,6 +266,8 @@ class FilteringCriteria:
     max_sigma_error: Optional[float] = None  # px; None → MAX_SIGMA_ERROR_NM / pixel_size_nm
     min_photons: int = FilteringConstants.MIN_PHOTONS
     max_photons: Optional[float] = None
+    min_photoelectrons: Optional[float] = None  # detected pe (sum_p f_p A_p); None → no cut
+    max_photoelectrons: Optional[float] = None
 
 
 @dataclass

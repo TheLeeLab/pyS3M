@@ -42,8 +42,9 @@ DRIFT_PARAMS = dict(segmentation=2, intersect_d=0.5, roi_r=3.0)
 # 1,093 molecules on Pos001_001, median 48 vs 45 frames). Brendan's QDotSampler instead
 # re-clustered the mixture with DBSCAN (min. 2 localisations): pass DBSCAN_MIX_PARAMS to
 # cluster_sample to reproduce that.
+# Quality cut: > 50 detected photoelectrons (Methods); `photons` (A_B + A_G + A_R) overcounts them 2-4x.
 CLUSTER_PARAMS = dict(clustering_method="HDBSCAN", min_cluster_size=10, chi_val=2,
-                      max_localisation_error=1.0, min_photons=100, max_photons=1e6)
+                      max_localisation_error=1.0, min_photons=0, max_photons=1e6, min_photoelectrons=50)
 # DBSCAN eps = epsilon_multiplier x mean localisation error; 1.0 matches QDotSampler's counts
 # (4,286 vs 4,677 molecules on Pos001_001); the function's default 0.5 splits single QDots.
 DBSCAN_MIX_PARAMS = dict(CLUSTER_PARAMS, clustering_method="DBSCAN", min_cluster_size=2,

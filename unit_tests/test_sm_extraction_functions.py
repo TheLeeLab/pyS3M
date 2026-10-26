@@ -108,6 +108,30 @@ class TestFilterQualityLocalisationsCriteriaAndFallback:
         assert len(filtered) > 0
 
 
+    def test_photoelectron_bounds_cut_on_detected_photoelectrons(self):
+        SM_E = SM_extractionfunctions.extract_SMs()
+        df = IOFunctions.IO_Functions()._add_photon_columns(_make_loc_df(40, with_photons=False))
+        df = df.drop(columns=["photoelectrons", "background_photoelectrons"])
+        pe = df["photons"] * (df["A_B"] / 4 + df["A_G"] / 2 + df["A_R"] / 4)
+        lo, hi = pe.quantile([0.25, 0.75])
+        filtered = SM_E.filter_quality_localisations(
+            df, criteria=FilteringCriteria(
+                chi_val=10.0, max_localisation_error=1.0, max_colour_error=1.0,
+                min_sigma=0.01, max_sigma=10.0, max_sigma_error=10.0,
+                min_photons=1.0, min_photoelectrons=lo, max_photoelectrons=hi),
+        )
+        np.testing.assert_allclose(np.sort(filtered["photoelectrons"]), np.sort(pe[(pe > lo) & (pe < hi)]))
+
+    def test_no_photoelectron_bounds_leaves_photon_cut_unchanged(self):
+        SM_E = SM_extractionfunctions.extract_SMs()
+        df = _make_loc_df(30)
+        kwargs = dict(chi_val=10.0, max_localisation_error=1.0, max_colour_error=1.0,
+                      min_sigma=0.01, max_sigma=10.0, max_sigma_error=10.0, min_photons=900.0)
+        filtered = SM_E.filter_quality_localisations(df, **kwargs)
+        assert len(filtered) == int((df["photons"] > 900.0).sum())
+        assert "photoelectrons" not in filtered.columns
+
+
 class TestAverageParametersBranches:
     def test_index_column_is_skipped_in_both_loops(self):
         SM_E = SM_extractionfunctions.extract_SMs()

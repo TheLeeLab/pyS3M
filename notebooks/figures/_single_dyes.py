@@ -50,8 +50,9 @@ DYES = {
 # emission peak (set per dye in the notebook).
 FIT_PARAMS = dict(pfa=1e-3, sigma=1.5, fraction_true=0.05, ROI_size=12, NA=1.49, pixel_size=0.069)
 # Molecules = HDBSCAN clusters of >= 10 localisations (paper's Methods).
+# Quality cut: > 50 detected photoelectrons (Methods); `photons` (A_B + A_G + A_R) overcounts them 2-4x.
 CLUSTER_PARAMS = dict(clustering_method="HDBSCAN", min_cluster_size=10, chi_val=2,
-                      max_localisation_error=1.0, min_photons=100, max_photons=1e6)
+                      max_localisation_error=1.0, min_photons=0, max_photons=1e6, min_photoelectrons=50)
 
 # Single-step photobleaching screen (SI_Single_Dye_Photobleaching).
 ROI_SIZE = 12        # px; square trace ROI centred on the molecule

@@ -57,6 +57,8 @@ class HDBSCANMixin:
         max_sigma_error: float | None = None,
         min_photons: float = FilteringConstants.MIN_PHOTONS,
         max_photons: float | None = None,
+        min_photoelectrons: float | None = None,
+        max_photoelectrons: float | None = None,
         start_frame: int = 0,
         config: ClusteringConfig = None,
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -75,6 +77,8 @@ class HDBSCANMixin:
             max_sigma_error (float, optional): Quality filter parameter (see filter_quality_localisations).
             min_photons (float): Quality filter parameter (see filter_quality_localisations).
             max_photons (float, optional): Quality filter parameter (see filter_quality_localisations).
+            min_photoelectrons, max_photoelectrons (float, optional): Bounds on the detected
+                photoelectrons (see filter_quality_localisations); None → no cut.
             start_frame (int): Discard localisations before this frame.
 
         Returns:
@@ -91,6 +95,7 @@ class HDBSCANMixin:
             max_localisation_error, max_colour_error,
             min_sigma, max_sigma, max_sigma_error,
             min_photons, max_photons,
+            min_photoelectrons, max_photoelectrons,
         )
 
         if not self._check_min_locs(loc_data, min_cluster_size):

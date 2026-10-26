@@ -30,6 +30,8 @@ class ClusteringBaseMixin:
         max_sigma_error: float | None,
         min_photons: float,
         max_photons: float | None,
+        min_photoelectrons: float | None = None,
+        max_photoelectrons: float | None = None,
     ) -> pd.DataFrame:
         """Load from file if needed, then quality-filter localisations."""
         loc_data = self._load_localisation_files(loc_data, start_frame=start_frame)
@@ -37,6 +39,7 @@ class ClusteringBaseMixin:
             loc_data=loc_data, criteria=criteria,
             chi_val=chi_val, max_localisation_error=max_localisation_error,
             min_photons=min_photons, max_photons=max_photons,
+            min_photoelectrons=min_photoelectrons, max_photoelectrons=max_photoelectrons,
             max_colour_error=max_colour_error,
             min_sigma=min_sigma, max_sigma=max_sigma,
             max_sigma_error=max_sigma_error,
