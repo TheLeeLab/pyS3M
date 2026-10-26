@@ -103,6 +103,62 @@ def literature_pe(values, emitters):
     return quartiles(values) * mean_qe, mean_qe
 
 
+# The TetraSpeck dye each laser mainly excites. The spectra database has no TetraSpeck green or dark
+# red, and its "TetraSpeck orange dye" is the FluoSpheres orange spectrum (peak 559 nm), not
+# TetraSpeck orange (580 nm). TetraSpeck beads use the FluoSpheres dyes, so each laser's spectrum is
+# the nearest FluoSpheres spectrum, shifted so its peak sits at the manufacturer's emission peak
+# (PEAK_UM; shifts of +1, +21 and -3 nm).
+TETRASPECK_SPECTRA = {"488": "FluoSpheres yellow-green fluorescent microspheres",
+                      "561": "TetraSpeck orange dye",
+                      "638": "FluoSpheres dark red fluorescent microspheres"}
+# Emission path for the bead acquisitions (SI imaging-conditions table).
+BEAD_FILTERS = ["semrock-di03-r405-488-561-635-t1-25x36", "semrock-nf03-405-488-561-635e",
+                "semrock-bsp01-785r", "semrock-blp01-488r"]
+
+
+def bead_effective_qe(laser, spectrum=None, peak_nm=None, filters=BEAD_FILTERS):
+    """Detected photoelectrons per photon reaching the Ximea from the bead dye ``laser`` excites.
+
+    The dye spectrum (shifted to ``peak_nm``, default the manufacturer peak) is multiplied by the
+    emission filters, normalised to the photons that reach the detector, and weighted by each pixel
+    type's QE and share of the sensor.
+
+    Returns:
+        tuple[float, dict]: ``sum_X f_X q_X`` and ``{X: q_X}``, q_X = int PDF(l) QE_X(l) dl.
+    """
+    from pyS3M.SpectralFunctions import Spectral_Funcs
+    sf = Spectral_Funcs()
+    qe_r, qe_g, qe_b, wl = sf.getpixelefficiency()
+    spec = sf.get_dye_or_filter_data(names=[spectrum or TETRASPECK_SPECTRA[laser]], wavelength=wl,
+                                     dye_or_filter=True)[0]
+    peak_nm = 1000 * PEAK_UM[laser] if peak_nm is None else peak_nm
+    spec = np.interp(wl - (peak_nm - wl[np.argmax(spec)]), wl, spec, left=0, right=0)
+    for name in filters:
+        t = sf.get_dye_or_filter_data(names=[name], wavelength=wl, dye_or_filter=False)[0]
+        spec = spec * (t / 100 if t.max() > 1.5 else t)
+    pdf = spec / np.trapz(spec, wl)
+    q = {c: float(np.trapz(pdf * qe, wl)) for c, qe in zip(CHANNELS, (qe_b, qe_g, qe_r))}
+    return sum(PIXEL_FRACTIONS[c] * q[c] for c in CHANNELS), q
+
+
+def power_law_at(x, y, n_eval, n_boot=1000, seed=0):
+    """``a / sqrt(N) + c`` fitted as in ``fit_power_law``, evaluated at ``n_eval``, with a 95 %
+    bootstrap interval over beads. Returns ``(value, lo, hi)``."""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    p, _ = fit_power_law(x, y, n_boot=0)
+    rng = np.random.default_rng(seed)
+    vals = []
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", OptimizeWarning)
+        for _ in range(n_boot):
+            i = rng.integers(0, len(x), len(x))
+            try:
+                vals.append(power_law(n_eval, *curve_fit(power_law, x[i], y[i], sigma=1 / x[i], p0=p)[0]))
+            except RuntimeError:
+                continue
+    return power_law(n_eval, *p), *np.percentile(vals, [2.5, 97.5])
+
+
 def bead_precision(sf_db, min_frames=MIN_FRAMES, pixel_nm=PIXEL_NM):
     """Per-bead position and colour precision from one acquisition's single-frame localisations.
 
