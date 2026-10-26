@@ -7,15 +7,14 @@ the SI note "Calibrating Precision":
 * ``sigma_xy`` -- mean of the standard deviations of x and y about the bead's mean position (nm);
 * ``prec_X`` -- standard deviation / mean of ``A_X`` (X = B, G, R; the fraction of the signal on
   pixel 1, 2 or 3);
-* ``photons`` -- mean of ``A_B + A_G + A_R`` per frame. This is NOT the detected photoelectrons:
-  each A_X is what pixel X would collect over the whole sensor, so the sum overcounts the
-  detected photoelectrons (``photoelectrons`` = A_B/4 + A_G/2 + A_R/4) 2-4x. The published
-  Fig. 2d axis used it; switching the axis to ``photoelectrons`` is pending.
-  ``photons_X = photons * mean(A_X)``.
+* ``pe`` -- mean detected photoelectrons per frame, ``photoelectrons`` = sum_X f_X * A_X (f_X: the
+  share of the sensor covered by pixel type X, from the mosaic; SI Eq. S18);
+* ``pe_X`` -- detected photoelectrons on pixel type X, ``f_X * A_X``.
 
-The Bayer mosaic has twice as many pixel-2 (green) pixels as pixel-1 or pixel-3 ones; the
-published plot scales the green colour precision by sqrt(2) to put it on a per-pixel footing
-with the other two (``GREEN_SCALE``).
+The published plot used ``photons`` = A_B + A_G + A_R, which overcounts the detected photoelectrons
+2-4x, and its signal on pixel X, A_X, ignored that pixel 2 (green) covers twice the area of pixel 1
+or 3; it scaled the green colour precision by sqrt(2) to make up for that. ``pe_X`` counts the
+photoelectrons pixel type X actually detected, so no such scaling is needed (``GREEN_SCALE = 1``).
 """
 
 import warnings
@@ -24,14 +23,17 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import OptimizeWarning, curve_fit
 
+from pyS3M.IOFunctions import IO_Functions
+
 BEAD_ROOT = "2026_Multicolour_Paper/Ximea/TetraspeckBeads"
 LASERS = ["488", "561", "638"]
 POWERS = ["1mW", "2mW", "3mW", "4mW", "6mW", "8mW", "10mW"]
 LASER_COLOURS = {"488": "#1f77b4", "561": "#2ca02c", "638": "#d62728"}
 CHANNELS = ["B", "G", "R"]   # pixels 1, 2, 3
 CHANNEL_COLOURS = {"B": "blue", "G": "darkgreen", "R": "red"}
-GREEN_SCALE = np.sqrt(2)
+GREEN_SCALE = 1.0   # the published sqrt(2) is built into pe_X (see module docstring)
 PIXEL_NM = 69.0
+PIXEL_FRACTIONS = IO_Functions(camera="ximea").pixel_fractions   # f_X, from the Ximea mosaic
 
 
 def remote_folder(laser, power):
@@ -63,18 +65,42 @@ CLUSTER_PARAMS = dict(clustering_method="HDBSCAN", min_cluster_size=10, chi_val=
 # out-of-focus or transient spots; HDBSCAN also returns some of those as spread-out clusters.
 MIN_FRAMES = 50
 
-# Published-plot cleaning: positions 0.01-20 nm, colour precision 0.5-50 %, < 2e4 photons per
-# frame, both for the scatter and for the fits.
+# Published-plot cleaning: positions 0.01-20 nm, colour precision 0.5-50 %, both for the scatter
+# and for the fits. The signal cap is also the plot's x limit; the published cap, < 2e4 "photons"
+# per frame, was ~7e3-9e3 detected photoelectrons, so MAX_PE keeps a round 1e4.
 LOC_RANGE_NM = (0.01, 20.0)
 COLOUR_RANGE_PCT = (0.5, 50.0)
-MAX_PHOTONS = 2e4
+MAX_PE = 1e4
 
-# Typical photons per localisation (detected photoelectrons), 25th-75th percentiles of the
-# literature values collected for the paper's Fig. 2d shading.
+# Typical photons per localisation, 25th-75th percentiles of the literature values collected for
+# the paper's Fig. 2d shading. They are photons, so ``literature_pe`` converts them to the
+# photoelectrons our camera would detect: x the effective QE of the Ximea, averaged over
+# representative emitters (organic dyes: ATTO 488 and ATTO 647N, spanning the visible; fluorescent
+# proteins: EGFP, EYFP, mCherry).
 FLUORESCENT_PROTEINS = [686, 550, 262, 1000, 1000, 1000, 675, 725, 313]
+ORGANIC_DYE_REFS = ["ATTO 488", "ATTO 647N"]
+FLUORESCENT_PROTEIN_REFS = ["EGFP", "EYFP", "mCherry"]
 ORGANIC_DYES = [1341, 1193, 1231, 1493, 6241, 4884, 11022, 4968, 19714, 5202, 5873, 4433, 6337,
                 2753, 2073, 2811, 2969, 3879, 23195, 11600, 2429, 1338, 7801, 17090, 23327,
                 18448, 8273, 12024, 10399, 12731, 14440, 10348]
+
+
+def effective_qe(emitter):
+    """Detected photoelectrons per photon reaching the Ximea: sum_p f_p * int PDF(l) QE_p(l) dl,
+    with f_p the share of the sensor covered by pixel type p (SI Eq. S18)."""
+    from pyS3M.SpectralFunctions import Spectral_Funcs
+    sf = Spectral_Funcs()
+    qe_r, qe_g, qe_b, wavelength = sf.getpixelefficiency()
+    _, qe = sf.get_pixel_fractions_dye_and_filters([emitter], [], wavelength,
+                                                   np.vstack([qe_b, qe_g, qe_r]), normalized=False)
+    return float(np.ravel(qe) @ [PIXEL_FRACTIONS[c] for c in CHANNELS])
+
+
+def literature_pe(values, emitters):
+    """25th-75th percentiles of literature photon counts, in the photoelectrons the Ximea would detect
+    (x the effective QE averaged over ``emitters``). Returns ``(quartiles, mean_qe)``."""
+    mean_qe = float(np.mean([effective_qe(e) for e in emitters]))
+    return quartiles(values) * mean_qe, mean_qe
 
 
 def bead_precision(sf_db, min_frames=MIN_FRAMES, pixel_nm=PIXEL_NM):
@@ -88,16 +114,19 @@ def bead_precision(sf_db, min_frames=MIN_FRAMES, pixel_nm=PIXEL_NM):
     ``min_frames`` such frames, otherwise ``sigma_xy_cm`` is NaN.
 
     Args:
-        sf_db: Single-frame database from ``cluster_sample`` (xc, yc in px; A_B/G/R; photons).
+        sf_db: Single-frame database from ``cluster_sample`` (xc, yc in px; normalised A_B/G/R;
+            photons; ``photoelectrons`` is added if missing).
         min_frames: Minimum number of localisations per bead.
         pixel_nm: Pixel size (nm).
 
     Returns:
-        pd.DataFrame: One row per bead: ``fov_name``, ``bead``, ``n``, ``photons``,
+        pd.DataFrame: One row per bead: ``fov_name``, ``bead``, ``n``, ``pe``,
         ``sigma_xy``, ``sigma_xy_cm`` (nm), and for X in B, G, R: ``A_X`` (mean),
-        ``prec_X`` (std / mean, fraction) and ``photons_X``.
+        ``prec_X`` (std / mean, fraction) and ``pe_X``.
     """
     d = sf_db.copy()
+    if "photoelectrons" not in d.columns:
+        d = IO_Functions(camera="ximea").add_photoelectron_columns(d)
     d["bead"] = d["molecular_index"]
     keys = ["fov_name", "bead"]
     d = d[d.groupby(keys)["xc"].transform("size") >= min_frames]
@@ -120,7 +149,7 @@ def bead_precision(sf_db, min_frames=MIN_FRAMES, pixel_nm=PIXEL_NM):
     g = d.groupby(keys)
     out = pd.DataFrame({
         "n": g.size(),
-        "photons": g["photons"].mean(),
+        "pe": g["photoelectrons"].mean(),
         "sigma_xy": (g["dxc"].std() + g["dyc"].std()) / 2,
         "sigma_xy_cm": ((g["dxc_cm"].std() + g["dyc_cm"].std()) / 2)
                        .where(g["dxc_cm"].count() >= min_frames),
@@ -129,28 +158,28 @@ def bead_precision(sf_db, min_frames=MIN_FRAMES, pixel_nm=PIXEL_NM):
         a = g["A_" + ch]
         out["A_" + ch] = a.mean()
         out["prec_" + ch] = a.std() / a.mean()
-        out["photons_" + ch] = out["photons"] * out["A_" + ch]
+        out["pe_" + ch] = PIXEL_FRACTIONS[ch] * g["photons"].mean() * out["A_" + ch]
     return out.reset_index()
 
 
 def colour_long(beads):
-    """One row per bead and pixel: ``photons`` on that pixel, ``prec_pct`` (green x sqrt 2)."""
+    """One row per bead and pixel: ``pe_px`` detected on that pixel type, ``prec_pct``."""
     rows = []
     for ch in CHANNELS:
         scale = GREEN_SCALE if ch == "G" else 1.0
-        rows.append(beads.assign(channel=ch, photons_px=beads["photons_" + ch],
+        rows.append(beads.assign(channel=ch, pe_px=beads["pe_" + ch],
                                  prec_pct=100 * scale * beads["prec_" + ch]))
     return pd.concat(rows, ignore_index=True)
 
 
 def clean_loc(beads, column="sigma_xy"):
-    m = beads[column].between(*LOC_RANGE_NM, inclusive="neither") & (beads["photons"] < MAX_PHOTONS)
+    m = beads[column].between(*LOC_RANGE_NM, inclusive="neither") & (beads["pe"] < MAX_PE)
     return beads[m]
 
 
 def clean_colour(long):
     m = (long["prec_pct"].between(*COLOUR_RANGE_PCT, inclusive="neither")
-         & (long["photons_px"] < MAX_PHOTONS))
+         & (long["pe_px"] < MAX_PE))
     return long[m]
 
 
@@ -194,7 +223,7 @@ def binned_medians(x, y, edges, min_count=5, n_boot=1000, seed=0):
             continue
         b = np.median(rng.choice(v, (n_boot, len(v))), axis=1)
         rows.append((np.sqrt(lo * hi), len(v), np.median(v), *np.percentile(b, [2.5, 97.5])))
-    return pd.DataFrame(rows, columns=["photons", "n", "median", "lo", "hi"])
+    return pd.DataFrame(rows, columns=["pe", "n", "median", "lo", "hi"])
 
 
 def quartiles(values):
