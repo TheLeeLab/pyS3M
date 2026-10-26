@@ -121,3 +121,26 @@ class TestGetStackedMasks:
         mf = Mask_Functions(mosaic_unit=custom)
         stacked = mf.get_stacked_masks(ROI_x_start=0, ROI_y_start=0, width=4, height=4)
         assert stacked.shape == (4, 4, 3)
+
+
+class TestPixelFractions:
+    @pytest.mark.parametrize("camera", ["ximea", "zwo"])
+    def test_bayer_fractions(self, camera):
+        assert Mask_Functions(camera=camera).pixel_fractions() == {"B": 0.25, "G": 0.5, "R": 0.25}
+
+    def test_keys_follow_get_masks_order(self):
+        mf = Mask_Functions(mosaic_unit=np.array([["R", "G"], ["G", "B"]]))
+        assert list(mf.pixel_fractions()) == list(mf.get_masks(4, 4))
+
+    def test_fractions_match_tiled_masks(self):
+        custom = np.array([["G", "B", "G"], ["R", "G", "R"], ["G", "B", "G"]])
+        mf = Mask_Functions(mosaic_unit=custom)
+        masks = mf.get_masks(3, 3)
+        fractions = mf.pixel_fractions()
+        for colour, mask in masks.items():
+            assert fractions[colour] == pytest.approx(mask.mean())
+        assert sum(fractions.values()) == pytest.approx(1.0)
+
+    def test_explicit_mosaic_unit_argument(self):
+        mf = Mask_Functions()
+        assert mf.pixel_fractions(np.array([["W", "W"], ["W", "W"]])) == {"W": 1.0}

@@ -33,9 +33,52 @@ class IO_Functions:
     used in single-molecule localization microscopy analysis.
     """
 
-    def __init__(self) -> None:
-        """Initialize IO_Functions class."""
-        pass
+    def __init__(self, camera: str = "ximea", mosaic_unit: NDArray | None = None) -> None:
+        """Initialize IO_Functions class.
+
+        Args:
+            camera: Camera model name; sets the mosaic used to convert fitted amplitudes
+                to detected photoelectrons. Overridden by an explicit *mosaic_unit*.
+            mosaic_unit: Mosaic pattern array. If ``None``, taken from *camera* defaults.
+        """
+        from pyS3M.MaskFunctions import Mask_Functions
+        self.pixel_fractions = Mask_Functions(camera=camera, mosaic_unit=mosaic_unit).pixel_fractions()
+
+    def _mask_weighted_sum(self, df, prefix):
+        """``sum_p fraction_p * df[prefix + p]`` over the mosaic's pixel types."""
+        return sum(f * df[f"{prefix}{p}"] for p, f in self.pixel_fractions.items())
+
+    def add_photoelectron_columns(self, df):
+        """Add detected photoelectrons to a database with normalised amplitudes.
+
+        ``photons`` (``A_B + A_G + A_R``) adds up what each pixel type would collect if it
+        covered the whole sensor, so it is not the signal detected. Weighting each
+        amplitude by its pixel type's share of the sensor (:meth:`Mask_Functions.pixel_fractions`)
+        gives:
+
+        * ``photoelectrons`` -- detected photoelectrons of the localisation,
+          ``photons * sum_p fraction_p * A_p``;
+        * ``background_photoelectrons`` -- mean background per pixel (photoelectrons),
+          ``background_photons * sum_p fraction_p * bg_p``.
+
+        Works on any database written by :meth:`write_h5_database`, so existing results need
+        no refit.
+
+        Args:
+            df (pd.DataFrame): Database with ``photons`` and normalised ``A_*`` (and/or
+                ``background_photons`` and normalised ``bg_*``) columns.
+
+        Returns:
+            pd.DataFrame: Copy of *df* with the columns added.
+        """
+        df = df.copy()
+        amplitudes = [f"A_{p}" for p in self.pixel_fractions]
+        backgrounds = [f"bg_{p}" for p in self.pixel_fractions]
+        if all(col in df.columns for col in ["photons", *amplitudes]):
+            df["photoelectrons"] = df["photons"] * self._mask_weighted_sum(df, "A_")
+        if all(col in df.columns for col in ["background_photons", *backgrounds]):
+            df["background_photoelectrons"] = df["background_photons"] * self._mask_weighted_sum(df, "bg_")
+        return df
 
     def _normalize_color_channels(self, df, total_col, color_cols, error_cols):
         """Normalize color channel values and errors by their total.
@@ -143,6 +186,10 @@ class IO_Functions:
         """
         Automatically add photon columns and optionally normalise amplitude/background data.
 
+        Also adds the detected ``photoelectrons`` and ``background_photoelectrons`` (per
+        pixel), weighting each pixel type by its share of the mosaic (see
+        :meth:`add_photoelectron_columns`).
+
         Args:
             df (pd.DataFrame): Input dataframe
             normalise (bool): Whether to normalise A_B/A_G/A_R and bg_B/bg_G/bg_R columns
@@ -155,6 +202,7 @@ class IO_Functions:
         # Add total photons column and normalise A_B, A_G, A_R if they exist
         if all(col in df.columns for col in ["A_B", "A_G", "A_R"]):
             df["photons"] = df["A_B"] + df["A_G"] + df["A_R"]
+            df["photoelectrons"] = self._mask_weighted_sum(df, "A_")
 
             if normalise:
                 df = self._normalize_color_channels(
@@ -167,6 +215,7 @@ class IO_Functions:
         # Add background photons column and normalise bg_B, bg_G, bg_R if they exist
         if all(col in df.columns for col in ["bg_B", "bg_G", "bg_R"]):
             df["background_photons"] = df["bg_B"] + df["bg_G"] + df["bg_R"]
+            df["background_photoelectrons"] = self._mask_weighted_sum(df, "bg_")
 
             if normalise:
                 df = self._normalize_color_channels(

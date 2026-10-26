@@ -99,6 +99,51 @@ class TestAddPhotonColumns:
         out = io._add_photon_columns(df)
         assert "photons" not in out.columns
         assert "background_photons" not in out.columns
+        assert "photoelectrons" not in out.columns
+
+    @pytest.mark.parametrize("normalise", [True, False])
+    def test_photoelectrons_weight_amplitudes_by_pixel_fraction(self, io, normalise):
+        df = _loc_df(4)
+        out = io._add_photon_columns(df, normalise=normalise)
+        expected = df["A_B"] / 4 + df["A_G"] / 2 + df["A_R"] / 4
+        np.testing.assert_allclose(out["photoelectrons"].to_numpy(), expected.to_numpy())
+        expected_bg = df["bg_B"] / 4 + df["bg_G"] / 2 + df["bg_R"] / 4
+        np.testing.assert_allclose(out["background_photoelectrons"].to_numpy(), expected_bg.to_numpy())
+
+
+class TestAddPhotoelectronColumns:
+    def test_matches_raw_amplitudes_after_normalisation(self, io):
+        df = _loc_df(4)
+        saved = io._add_photon_columns(df).drop(columns=["photoelectrons", "background_photoelectrons"])
+        out = io.add_photoelectron_columns(saved)
+        np.testing.assert_allclose(out["photoelectrons"].to_numpy(),
+                                   (df["A_B"] / 4 + df["A_G"] / 2 + df["A_R"] / 4).to_numpy())
+        np.testing.assert_allclose(out["background_photoelectrons"].to_numpy(),
+                                   (df["bg_B"] / 4 + df["bg_G"] / 2 + df["bg_R"] / 4).to_numpy())
+
+    def test_fractions_follow_mosaic_unit(self):
+        io = IO_Functions(mosaic_unit=np.array([["B", "B"], ["G", "R"]]))
+        df = pd.DataFrame({"photons": [100.0], "A_B": [0.2], "A_G": [0.3], "A_R": [0.5]})
+        out = io.add_photoelectron_columns(df)
+        assert out["photoelectrons"].iloc[0] == pytest.approx(100 * (0.2 / 2 + 0.3 / 4 + 0.5 / 4))
+
+    def test_equals_signal_collected_on_the_mosaic(self, io):
+        # A unit-integral spot of amplitude A_p on each pixel type: the image summed over the
+        # sensor is the detected signal, sum_p fraction_p * A_p.
+        from pyS3M.MaskFunctions import Mask_Functions
+        masks = Mask_Functions().get_stacked_masks(0, 0, 64, 64)
+        y, x = np.mgrid[:64, :64]
+        spot = np.exp(-((x - 31.7) ** 2 + (y - 32.2) ** 2) / (2 * 1.5 ** 2)) / (2 * np.pi * 1.5 ** 2)
+        amplitudes = np.array([300.0, 1200.0, 500.0])   # A_B, A_G, A_R
+        image = (masks * amplitudes).sum(axis=2) * spot
+        df = pd.DataFrame({f"A_{c}": [a] for c, a in zip("BGR", amplitudes)} | {f"A_{c}_err": [0.0] for c in "BGR"})
+        out = io._add_photon_columns(df)
+        assert out["photoelectrons"].iloc[0] == pytest.approx(image.sum(), rel=1e-3)
+        assert out["photons"].iloc[0] > 2 * image.sum()
+
+    def test_missing_columns_add_nothing(self, io):
+        out = io.add_photoelectron_columns(pd.DataFrame({"photons": [1.0]}))
+        assert list(out.columns) == ["photons"]
 
 
 # ======================================================================

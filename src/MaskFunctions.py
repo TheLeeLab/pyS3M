@@ -39,6 +39,25 @@ class Mask_Functions:
         config = CameraDefaults.get_camera_config(camera)
         self.mosaic_unit = mosaic_unit if mosaic_unit is not None else config.mosaic_unit
 
+    def pixel_fractions(self, mosaic_unit: NDArray | None = None) -> dict[str, float]:
+        """Fraction of the sensor area covered by each pixel type.
+
+        A localisation's fitted amplitude ``A_p`` is the signal pixel type *p* would collect
+        if it covered the whole plane, so the signal the sensor detects is
+        ``sum_p fraction_p * A_p`` (for a Bayer mosaic, ``A_B/4 + A_G/2 + A_R/4``).
+
+        Args:
+            mosaic_unit: Mosaic pattern. If ``None``, uses the instance default.
+
+        Returns:
+            Fraction of pixels of each type, keyed in the order of :meth:`get_masks` (and so
+            of the fitted amplitudes); the fractions sum to 1.
+        """
+        if mosaic_unit is None:
+            mosaic_unit = self.mosaic_unit
+        colours, counts = np.unique(mosaic_unit, return_counts=True)
+        return {str(c): n / mosaic_unit.size for c, n in zip(colours, counts)}
+
     def get_ROI_mask(
         self,
         ROI_x_start: int,
