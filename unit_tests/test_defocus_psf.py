@@ -60,6 +60,27 @@ class TestNormalisation:
         sums = stack.sum(axis=(-2, -1))
         np.testing.assert_allclose(sums, 1.0, rtol=1e-6)
 
+    def test_field_normalisation_keeps_energy_outside_patch(self, psf):
+        patch = psf.compute_psf_stack(Z_UM, WAVELENGTHS_UM)
+        field = psf.compute_psf_stack(Z_UM, WAVELENGTHS_UM, normalise="field")
+        sums = field.sum(axis=(-2, -1))
+        # Part of the energy (Airy tails, defocus rings) lies outside the 21-px patch
+        assert np.all(sums < 1.0) and np.all(sums > 0.5)
+        # Same shape, only the scale differs
+        np.testing.assert_allclose(field / sums[..., None, None], patch, rtol=1e-6, atol=1e-12)
+
+    def test_field_fraction_grows_with_patch_size(self):
+        kwargs = dict(NA=1.49, n_medium=1.33, n_immersion=1.515, pix_obj_um=0.069, N_pupil=128)
+        small = VectorialPSF(psf_size=11, **kwargs).compute_psf_stack([0.0], [0.6], normalise="field")
+        large = VectorialPSF(psf_size=41, **kwargs).compute_psf_stack([0.0], [0.6], normalise="field")
+        assert small.sum() < large.sum() <= 1.0
+
+    def test_bad_normalise_raises(self, psf):
+        with pytest.raises(ValueError, match="normalise"):
+            psf.compute_psf_stack(Z_UM, WAVELENGTHS_UM, normalise="peak")
+        with pytest.raises(ValueError, match="monochromatic"):
+            psf.compute_psf_stack(Z_UM, WAVELENGTHS_UM, spectral_weights=np.ones((3, 3)), normalise="field")
+
 
 # ---------------------------------------------------------------------------
 # Shape

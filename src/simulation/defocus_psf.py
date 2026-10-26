@@ -239,6 +239,7 @@ class VectorialPSF:
         y0_um: float = 0.0,
         distance_from_coverslip_um: float = 0.0,
         phase_mask: Optional[np.ndarray] = None,
+        normalise: str = "patch",
     ) -> np.ndarray:
         """Compute vectorial defocus PSF stack.
 
@@ -257,15 +258,24 @@ class VectorialPSF:
                 for Gibson-Lanni spherical aberration.  0 = at coverslip.
             phase_mask: Optional engineered phase mask in pupil plane,
                 shape (N_pupil, N_pupil).  None = standard (flat) PSF.
+            normalise: ``"patch"`` (default) scales each patch to unit sum.
+                ``"field"`` divides by the energy in the whole image plane
+                instead, so a patch sums to the fraction of the PSF's energy
+                that falls inside it (light in the tails beyond the patch is
+                not redistributed into it). Monochromatic output only.
 
         Returns:
             If spectral_weights is None:
                 shape (nz, n_lambda, psf_size, psf_size) — raw monochromatic
-                PSFs, each normalised to unit sum.  Useful for diagnostics.
+                PSFs, each normalised as set by ``normalise``.
             If spectral_weights given:
                 shape (nz, n_channels, psf_size, psf_size) — spectrally
                 integrated PSFs, each normalised to unit sum.
         """
+        if normalise not in ("patch", "field"):
+            raise ValueError(f"normalise must be 'patch' or 'field', not {normalise!r}")
+        if normalise == "field" and spectral_weights is not None:
+            raise ValueError("normalise='field' supports monochromatic output only")
         z_offsets_um = np.asarray(z_offsets_um, dtype=np.float64)
         wavelengths_um = np.asarray(wavelengths_um, dtype=np.float64)
         nz = len(z_offsets_um)
@@ -284,8 +294,8 @@ class VectorialPSF:
             I = self._propagate(E, pad)     # (nz, N_total, N_total)
             I_crop = self._crop_center(I)   # (nz, ps, ps)
 
-            # Normalise each z-plane to unit sum
-            norms = I_crop.sum(axis=(-2, -1), keepdims=True)
+            # Normalise each z-plane to unit sum, over the patch or the whole image plane
+            norms = (I_crop if normalise == "patch" else I).sum(axis=(-2, -1), keepdims=True)
             norms = np.where(norms > 0, norms, 1.0)
             psf_mono[i_lam] = I_crop / norms
 
