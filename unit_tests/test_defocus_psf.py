@@ -1,4 +1,4 @@
-"""Unit tests for VectorialPSF (src/simulation/defocus_psf.py).
+"""Unit tests for VectorialPSF and DipolePSF (src/simulation/defocus_psf.py).
 
 Tests cover:
   - PSF normalisation (unit sum per z-plane)
@@ -309,6 +309,156 @@ class TestComputePadding:
         # odd N_total_exact rounding, exercising the "+= 1" parity fix-up.
         pad = psf._compute_padding(0.400)
         assert pad == 61
+
+
+# ---------------------------------------------------------------------------
+# DipolePSF -- vectorial isotropic-dipole PSF (Fazel et al. 2024)
+# ---------------------------------------------------------------------------
+
+from scipy.integrate import quad
+from scipy.special import j1
+
+from pyS3M.simulation.defocus_psf import DipolePSF
+
+N_WATER, N_OIL = 1.33, 1.515
+
+
+def _fwhm(x, profile):
+    above = x[profile >= 0.5 * profile.max()]
+    return above.max() - above.min()
+
+
+def _fresnel_t(s1, n1=N_WATER, n2=N_OIL):
+    """Transmission (field) coefficients water -> glass at sample-side sin(theta) s1 (subcritical)."""
+    c1 = np.sqrt(1 - s1 ** 2)
+    c2 = np.sqrt(1 - (n1 * s1 / n2) ** 2)
+    return c1, c2, 2 * n1 * c1 / (n1 * c1 + n2 * c2), 2 * n1 * c1 / (n2 * c1 + n1 * c2)
+
+
+class TestDipolePSFFazelFig18:
+    """Fazel Fig. 18: NA 1.2 water objective, emitter in water, 500 nm, focal-plane x profiles."""
+
+    x = np.linspace(-0.8, 0.8, 1601)
+
+    @pytest.fixture(scope="class")
+    def profiles(self):
+        dpsf = DipolePSF(NA=1.2, n_medium=N_WATER, n_immersion=N_WATER, N_pupil=256)
+        prof = {o: dpsf.image(0.5, self.x, [0.0], orientation=o)[0] for o in ("iso", "x")}
+        v = 2 * np.pi * 1.2 * np.abs(self.x) / 0.5
+        prof["airy"] = np.where(v > 0, (2 * j1(v) / np.where(v > 0, v, 1)) ** 2, 1.0)  # Eq. 66
+        return prof
+
+    def test_width_ordering(self, profiles):
+        # random dipole widest, x dipole (along its own axis) next, scalar Airy narrowest
+        w = {k: _fwhm(self.x, p) for k, p in profiles.items()}
+        assert w["iso"] > w["x"] > w["airy"]
+        assert 1.05 < w["iso"] / w["airy"] < 1.12  # 232 vs 214 nm
+
+    def test_random_dipole_fills_first_minimum(self, profiles):
+        # the z dipole's doughnut fills the Airy zero at 0.61 lambda / NA = 0.254 um
+        i = np.argmin(np.abs(self.x - 0.254))
+        assert profiles["airy"][i] / profiles["airy"].max() < 0.002
+        assert 0.02 < profiles["iso"][i] / profiles["iso"].max() < 0.05
+
+
+class TestDipolePSFEnergy:
+    """Collected power against independent calculations that do not use the pupil grid."""
+
+    def test_homogeneous_matches_free_dipole(self):
+        # n_d = n: x dipole radiates 3/(8 pi) (1 - sin^2 cos^2 phi) per solid angle
+        NA, n = 1.2, N_WATER
+        th_max = np.arcsin(NA / n)
+        expected = quad(lambda t: 3 / (8 * np.pi) * np.pi * (1 + np.cos(t) ** 2) * np.sin(t), 0, th_max)[0]
+        got = DipolePSF(NA=NA, n_medium=n, n_immersion=n, N_pupil=512).collected_power("x")
+        np.testing.assert_allclose(got, expected, rtol=3e-3)
+
+    @pytest.mark.parametrize("orientation", ["x", "z"])
+    def test_subcritical_energy_conservation(self, orientation):
+        # Power into the glass = free dipole's power x Fresnel power transmittance T, per direction.
+        # All subcritical light (theta_glass < 61 deg) is inside NA 1.49.
+        def integrand(t1):
+            s1 = np.sin(t1)
+            c1, c2, t_s, t_p = _fresnel_t(s1)
+            T_s = N_OIL * c2 / (N_WATER * c1) * t_s ** 2
+            T_p = N_OIL * c2 / (N_WATER * c1) * t_p ** 2
+            if orientation == "z":
+                return 3 / (8 * np.pi) * T_p * s1 ** 2 * 2 * np.pi * s1
+            return 3 / (8 * np.pi) * np.pi * (T_p * c1 ** 2 + T_s) * s1
+
+        expected = quad(integrand, 0, np.pi / 2, limit=200)[0]
+        dpsf = DipolePSF(NA=1.49, n_medium=N_WATER, n_immersion=N_OIL, N_pupil=512, supercritical=False)
+        np.testing.assert_allclose(dpsf.collected_power(orientation), expected, rtol=3e-3)
+
+    @pytest.mark.parametrize("orientation", ["x", "z"])
+    def test_supercritical_power_matches_ldos(self, orientation):
+        # Total power of a dipole at the interface from its reflection coefficients (Novotny & Hecht
+        # Eqs. 10.26-27), minus the power back into the water and the subcritical power into the glass,
+        # leaves the supercritical power into the glass.
+        e1, e2, m = N_WATER ** 2, N_OIL ** 2, N_OIL / N_WATER
+        kz = lambda s, n: np.sqrt(complex((n / N_WATER) ** 2 - s ** 2))
+        rp = lambda s: (e2 * kz(s, N_WATER) - e1 * kz(s, N_OIL)) / (e2 * kz(s, N_WATER) + e1 * kz(s, N_OIL))
+        rs = lambda s: (kz(s, N_WATER) - kz(s, N_OIL)) / (kz(s, N_WATER) + kz(s, N_OIL))
+        if orientation == "z":
+            core = lambda s: 1.5 * s ** 3 * rp(s)
+        else:
+            core = lambda s: 0.75 * s * (rs(s) - kz(s, N_WATER) ** 2 * rp(s))
+        # 1/kz singularity at s = 1 removed: s = sin(a) below, s = sqrt(1 + t^2) above
+        total = 1 + quad(lambda a: core(np.sin(a)).real, 0, np.pi / 2, limit=200)[0] \
+            + quad(lambda t: (core(np.sqrt(1 + t ** 2)) / (1j * np.sqrt(1 + t ** 2))).real,
+                   0, np.sqrt(m ** 2 - 1), limit=200)[0]
+
+        def up(th):  # direct + reflected wave back into the water
+            s, c = np.sin(th), np.cos(th)
+            if orientation == "z":
+                return 3 / (8 * np.pi) * s ** 2 * abs(1 + rp(s)) ** 2 * 2 * np.pi * s
+            return 3 / (8 * np.pi) * np.pi * (c ** 2 * abs(1 - rp(s)) ** 2 + abs(1 + rs(s)) ** 2) * s
+
+        sub = DipolePSF(NA=1.49, n_medium=N_WATER, n_immersion=N_OIL, N_pupil=512,
+                        supercritical=False).collected_power(orientation)
+        expected = total - quad(up, 0, np.pi / 2, limit=200)[0] - sub
+        # NA just below n_oil, so the whole glass hemisphere is collected
+        dpsf = DipolePSF(NA=0.9999 * N_OIL, n_medium=N_WATER, n_immersion=N_OIL, N_pupil=1024)
+        np.testing.assert_allclose(dpsf.collected_power(orientation, supercritical_only=True), expected,
+                                   rtol=5e-3)
+
+    def test_supercritical_light_decays_with_height(self):
+        kw = dict(NA=1.49, n_medium=N_WATER, n_immersion=N_OIL, N_pupil=256)
+        p = [DipolePSF(z_dipole_um=z, **kw).collected_power(supercritical_only=True) for z in (0.0, 0.05, 0.2)]
+        # decays on a ~50-100 nm scale (slower just past the critical angle)
+        assert p[0] > p[1] > p[2] and p[2] < 0.3 * p[0]
+
+
+class TestDipolePSFPatches:
+    @pytest.fixture(scope="class")
+    def dpsf(self):
+        return DipolePSF(NA=1.49, n_medium=N_WATER, n_immersion=N_OIL, N_pupil=256)
+
+    def test_patch_is_a_probability_and_grows_with_size(self, dpsf):
+        small = dpsf.pixel_patches([0.6], 0.069, 15, oversample=3).sum()
+        large = dpsf.pixel_patches([0.6], 0.069, 61, oversample=3).sum()
+        assert 0.7 < small < large < 1.0
+        assert large > 0.9
+
+    def test_centred_and_symmetric(self, dpsf):
+        patch = dpsf.pixel_patches([0.6], 0.069, 21, oversample=5)[0]
+        assert np.unravel_index(np.argmax(patch), patch.shape) == (10, 10)
+        np.testing.assert_allclose(patch, patch.T, rtol=1e-6, atol=1e-12)
+        np.testing.assert_allclose(patch, patch[::-1, ::-1], rtol=1e-6, atol=1e-12)
+
+    def test_offset_shifts_the_image_exactly(self, dpsf):
+        # a whole-pixel offset equals the unshifted patch moved by one column (the image is evaluated
+        # on the shifted grid, so sub-pixel offsets are exact too)
+        base = dpsf.pixel_patches([0.6], 0.069, 21, oversample=5)[0]
+        shifted = dpsf.pixel_patches([0.6], 0.069, 21, oversample=5, x0_um=0.069)[0]
+        np.testing.assert_allclose(shifted[:, 1:], base[:, :-1], rtol=1e-9, atol=1e-15)
+        half = dpsf.pixel_patches([0.6], 0.069, 21, oversample=5, x0_um=0.5 * 0.069)[0]
+        np.testing.assert_allclose(half[:, 11], half[:, 10], rtol=1e-9)  # symmetric about the pixel edge
+
+    def test_bad_arguments_raise(self, dpsf):
+        with pytest.raises(ValueError, match="odd"):
+            dpsf.pixel_patches([0.6], 0.069, 21, oversample=4)
+        with pytest.raises(ValueError, match="orientation"):
+            dpsf.image(0.6, [0.0], [0.0], orientation="w")
 
 
 if __name__ == "__main__":

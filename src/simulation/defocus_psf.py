@@ -1,7 +1,9 @@
-"""Vectorial Debye PSF model for defocus simulation.
+"""High-NA PSF models: the scalar Debye model for defocus simulation, and a vectorial dipole model.
 
-Port of simulation-phasemask-psf-main (MATLAB) to Python/NumPy.
-Implements the vectorial Debye diffraction integral with:
+``VectorialPSF``: port of simulation-phasemask-psf-main (MATLAB) to Python/NumPy. Despite its name it
+is the *scalar* high-NA approximation (Fazel et al. 2024, Rev. Mod. Phys. 96, 025003, Eq. 63): one
+field component with aplanatic apodisation, no dipole projections or Fresnel coefficients, like the
+MATLAB original. It implements:
   - Exact defocus phase (not paraxial approximation)
   - Depth-induced spherical aberration (Gibson-Lanni model)
   - Richards-Wolf apodization
@@ -9,6 +11,10 @@ Implements the vectorial Debye diffraction integral with:
 
 At NA > n_sample (e.g. NA 1.49, n_water 1.33), only the propagating
 aperture (rho <= n_sample/NA) contributes to far-field SMLM PSFs.
+
+``DipolePSF``: the vectorial PSF of a freely rotating (isotropic) electric dipole in the sample
+medium, imaged through the coverslip interface (Fazel et al. 2024, Eqs. 41, 48, 59-62), including
+supercritical-angle light for an emitter at the interface. In focus only.
 """
 from __future__ import annotations
 
@@ -396,3 +402,188 @@ class VectorialPSF:
         # pixel_QYs: (n_channels, n_lambda) → weights: (n_lambda, n_channels)
         weights = system_weight[:, np.newaxis] * pixel_QYs.T
         return weights
+
+
+class DipolePSF:
+    """Vectorial in-focus PSF of a freely rotating electric dipole (Fazel et al. 2024, Sec. III.C-D).
+
+    The emitter sits in the sample medium (``n_medium``, e.g. water) a height ``z_dipole_um`` above
+    the coverslip and is imaged by an aplanatic objective (``NA``, ``n_immersion``) focused on it.
+    Its back-focal-plane field, sampled uniformly in the lateral wave vector q = n k0 sin(theta), is
+
+        E_pupil = A(theta) * w/w_d * [ t_s (p.e_s) e_s' + t_p (p.e_p) e_p' ] * exp(i k0 z_d (n_d cos th_d - n cos th))
+
+    with A = 1/sqrt(cos theta) the aplanatic factor (Eq. 41, image space n' = 1), t_s / t_p the
+    Fresnel transmission coefficients of the sample/immersion interface, e_s / e_p the s and p unit
+    vectors on the sample side (Eq. 61) rotated onto x / y in the pupil, and w/w_d =
+    n cos(theta) / (n_d cos(theta_d)) the ratio of axial wave vectors. Eq. 59 prints the immersion
+    medium's w in the Weyl integral; the dipole's own medium's w_d is needed for energy conservation
+    across the interface, and the two agree when n_d = n (as in Fazel's Fig. 18). Beyond the
+    critical angle cos(theta_d) is imaginary: that (supercritical-angle) light reaches the glass
+    from emitters within ~100 nm of it, and the z term above makes it decay with height. The
+    isotropic PSF is the mean of the x, y and z dipole images (Eq. 62), each |Ex|^2 + |Ey|^2.
+
+    The image is evaluated by a matrix DFT on any sample-space grid, so its sampling is exact and
+    independent of the pupil grid; the pupil grid is midpoint-sampled (symmetric, spacing
+    2 / N_pupil). Validated in unit_tests/test_defocus_psf.py against Fazel Fig. 18, energy
+    conservation through the interface, and the dipole's total power from the interface's
+    reflection coefficients (supercritical light).
+
+    Args:
+        NA: Numerical aperture of the objective.
+        n_medium: Refractive index of the medium the dipole is in (e.g. 1.33 for water).
+        n_immersion: Refractive index of the immersion medium (e.g. 1.515 for oil).
+        N_pupil: Pupil grid size (N_pupil x N_pupil).
+        supercritical: Collect supercritical-angle light (sin(theta_d) > 1). False clips the pupil
+            at the sample medium's critical angle, as VectorialPSF does.
+        z_dipole_um: Emitter height above the coverslip (um), focus on the emitter.
+    """
+
+    def __init__(
+        self,
+        NA: float,
+        n_medium: float,
+        n_immersion: float,
+        N_pupil: int = 512,
+        supercritical: bool = True,
+        z_dipole_um: float = 0.0,
+    ) -> None:
+        self.NA = NA
+        self.n_medium = n_medium
+        self.n_immersion = n_immersion
+        self.N_pupil = N_pupil
+        self.supercritical = supercritical
+        self.z_dipole_um = z_dipole_um
+
+        # Midpoint grid on [-1, 1] in units of the pupil edge (n_immersion sin theta = NA)
+        self._u = -1.0 + (np.arange(N_pupil) + 0.5) * 2.0 / N_pupil
+        UX, UY = np.meshgrid(self._u, self._u)
+        rho = np.hypot(UX, UY)
+        phi = np.arctan2(UY, UX)
+
+        sin_imm = rho * NA / n_immersion
+        self._cos_imm = np.sqrt(np.clip(1.0 - sin_imm ** 2, 0.0, None))
+        self._sin_med = rho * NA / n_medium  # Snell: n_d sin th_d = n sin th
+        self._cos_med = np.sqrt((1.0 - self._sin_med ** 2).astype(complex))  # imaginary if supercritical
+
+        aperture = (rho <= 1.0) & (sin_imm < 1.0)
+        if not supercritical:
+            aperture &= self._sin_med <= 1.0
+        self._aperture = aperture
+
+        # Static amplitude: aplanatic factor x w/w_d x Fresnel, per s / p component
+        c, cd, n, nd = self._cos_imm, self._cos_med, n_immersion, n_medium
+        safe_c = np.where(aperture, c, 1.0)
+        aplanatic = np.where(aperture, 1.0 / np.sqrt(safe_c), 0.0)
+        if np.isclose(n, nd):
+            weyl = np.ones_like(rho, dtype=complex)
+            t_s = t_p = np.ones_like(rho, dtype=complex)
+        else:
+            safe_cd = np.where(np.abs(cd) > 1e-12, cd, 1e-12)
+            weyl = (n * c) / (nd * safe_cd)
+            t_s = 2 * nd * cd / (nd * cd + n * c)
+            t_p = 2 * nd * cd / (n * cd + nd * c)
+        amp = np.where(aperture, aplanatic * weyl, 0.0)
+
+        # Pupil fields (Ex, Ey) for unit dipoles along x, y, z (sample-side s / p projections, Eq. 61)
+        cos_phi, sin_phi = np.cos(phi), np.sin(phi)
+        self._fields = []
+        for p in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
+            E_s = t_s * (-p[0] * sin_phi + p[1] * cos_phi)
+            E_p = t_p * (p[0] * cd * cos_phi + p[1] * cd * sin_phi - p[2] * self._sin_med)
+            Ex = amp * (E_p * cos_phi - E_s * sin_phi)
+            Ey = amp * (E_p * sin_phi + E_s * cos_phi)
+            self._fields.append((Ex, Ey))
+
+    def _height_phase(self, wavelength_um: float) -> np.ndarray:
+        """exp(i k0 z (n_d cos th_d - n cos th)): emitter height, focus on the emitter."""
+        if not self.z_dipole_um:
+            return 1.0
+        k0 = 2.0 * np.pi / wavelength_um
+        return np.exp(1j * k0 * self.z_dipole_um
+                      * (self.n_medium * self._cos_med - self.n_immersion * self._cos_imm))
+
+    def _orientations(self, orientation: str) -> list:
+        try:
+            return {"x": [0], "y": [1], "z": [2], "iso": [0, 1, 2]}[orientation]
+        except KeyError:
+            raise ValueError(f"orientation must be 'iso', 'x', 'y' or 'z', not {orientation!r}") from None
+
+    def image(
+        self,
+        wavelength_um: float,
+        x_um: np.ndarray,
+        y_um: np.ndarray,
+        x0_um: float = 0.0,
+        y0_um: float = 0.0,
+        orientation: str = "iso",
+    ) -> np.ndarray:
+        """PSF intensity density (per um^2 of sample space, integrating to the collected fraction 1 over
+        the whole image plane) at the grid points ``y_um`` (rows) x ``x_um`` (cols), emitter at (x0, y0).
+
+        Returns:
+            shape (len(y_um), len(x_um)).
+        """
+        k = 2.0 * np.pi * self.NA / wavelength_um  # lateral wave vector at the pupil edge
+        Fx = np.exp(1j * k * np.outer(np.asarray(x_um, dtype=float) - x0_um, self._u))
+        Fy = np.exp(1j * k * np.outer(np.asarray(y_um, dtype=float) - y0_um, self._u))
+        h = self._height_phase(wavelength_um)
+        idx = self._orientations(orientation)
+        intensity = 0.0
+        energy = 0.0
+        for i in idx:
+            for E in self._fields[i]:
+                Eh = E * h
+                intensity = intensity + np.abs(Fy @ Eh @ Fx.T) ** 2
+                energy = energy + np.sum(np.abs(Eh) ** 2)
+        # Parseval: the DFT image repeats with period L = 2 pi / (k du), and its integral over one
+        # period is L^2 sum |E_pupil|^2.
+        period = 2.0 * np.pi / (k * (self._u[1] - self._u[0]))
+        return intensity / (period ** 2 * energy)
+
+    def pixel_patches(
+        self,
+        wavelengths_um: np.ndarray,
+        pixel_um: float,
+        patch_px: int,
+        oversample: int = 5,
+        x0_um: float = 0.0,
+        y0_um: float = 0.0,
+        orientation: str = "iso",
+    ) -> np.ndarray:
+        """Pixel-integrated PSFs, one per wavelength: each camera pixel holds the probability that a
+        collected photon lands in it (patches sum to < 1: the rest lands outside the patch).
+
+        The emitter sits (x0, y0) from the centre of the patch's central pixel; each pixel is
+        integrated by ``oversample`` (odd) x ``oversample`` midpoint sub-samples.
+
+        Returns:
+            shape (n_wavelengths, patch_px, patch_px).
+        """
+        if oversample % 2 != 1 or patch_px % 2 != 1:
+            raise ValueError("oversample and patch_px must be odd, so the central sub-sample is the patch centre")
+        n_fine = patch_px * oversample
+        sub = pixel_um / oversample
+        coords = (np.arange(n_fine) - n_fine // 2) * sub
+        wavelengths_um = np.atleast_1d(np.asarray(wavelengths_um, dtype=float))
+        out = np.empty((len(wavelengths_um), patch_px, patch_px))
+        for i, lam in enumerate(wavelengths_um):
+            fine = self.image(lam, coords, coords, x0_um, y0_um, orientation) * sub ** 2
+            out[i] = fine.reshape(patch_px, oversample, patch_px, oversample).sum(axis=(1, 3))
+        return out
+
+    def collected_power(self, orientation: str = "iso", wavelength_um: float = 0.6,
+                        supercritical_only: bool = False) -> float:
+        """Collected power, in units of the dipole's total emission in a homogeneous sample medium
+        (P0; for the isotropic emitter, the mean over x, y, z dipoles of unit strength).
+        ``supercritical_only`` counts only light beyond the sample medium's critical angle."""
+        idx = self._orientations(orientation)
+        h = self._height_phase(wavelength_um)
+        mask = self._aperture & (self._sin_med > 1.0) if supercritical_only else self._aperture
+        du2 = (self._u[1] - self._u[0]) ** 2
+        # |E_pupil|^2 dA_pupil = |E0|^2 dOmega in units where the pupil coordinate is n sin th / NA:
+        # dA = (n / NA)^2 cos th dOmega, and A^2 = 1 / cos th. Power density in the immersion medium
+        # is n |E0|^2; a free dipole of unit strength in the sample medium emits n_d * 8 pi / 3.
+        conv = (self.NA / self.n_immersion) ** 2 * self.n_immersion / (self.n_medium * 8.0 * np.pi / 3.0)
+        power = sum(np.sum((np.abs(E * h) ** 2)[mask]) for i in idx for E in self._fields[i])
+        return float(power * du2 * conv / len(idx))
