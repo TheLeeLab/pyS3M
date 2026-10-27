@@ -274,6 +274,18 @@ class TestInitialSigma:
         np.testing.assert_allclose(jit_out, py_out)
         assert all(s > 0 for s in jit_out)
 
+    @pytest.mark.parametrize("fn", [gf._initial_sigma, gf._initial_sigma.py_func])
+    def test_off_centre_blob_is_symmetric(self, fn):
+        # Each axis' moment must be taken about its own centroid: for a round blob far off the
+        # diagonal (row 10, column 5 of 16) the two widths agree. Pairing them the wrong way
+        # round inflates both by the centroid separation.
+        size = 16
+        data = _positive_blob(size=size, x0=10.0, y0=5.0, background=0.0)
+        A, x_ig, y_ig = gf._sum_and_centre_of_mass(data, size)
+        s_row, s_col = fn(data, x_ig, y_ig, A, size)
+        assert s_row == pytest.approx(s_col, rel=1e-6)
+        assert s_row == pytest.approx(0.5 * 1.2, rel=1e-3)  # 0.5 x the blob's sigma
+
 
 class TestInitialTheta:
     def test_basic_and_py_func(self):
@@ -338,6 +350,34 @@ class TestInitialGuess:
         expected = [np.sqrt(raw[masks[:, :, c]].min()) for c in range(3)]
         assert min(expected) ** 2 >= gf._BG_GUESS_FLOOR
         np.testing.assert_allclose(out[4:7], expected)
+
+    @pytest.mark.parametrize("fn", [gf.initial_guess, gf.initial_guess.py_func])
+    def test_amplitude_guess_is_per_channel(self, fn):
+        # Data built from the model with distinct colour amplitudes and the guess's own
+        # position/width: each channel's amplitude guess recovers its own amplitude.
+        masks = _bayer_masks()
+        smoothed = _positive_blob(background=0.0)
+        amps = np.array([50.0, 400.0, 1500.0])
+        bgs = np.array([2.0, 3.0, 4.0])
+        guess = fn(smoothed, smoothed, masks)
+        params = guess.copy()
+        params[4:7] = np.sqrt(bgs)
+        params[7:10] = np.sqrt(amps)
+        raw = gf.WLS_model_nobounds(params, masks, _x(SIZE), np.zeros((SIZE, SIZE)))
+        out = fn(smoothed, raw, masks)
+        np.testing.assert_allclose(out[7:10] ** 2, amps, rtol=1e-6)
+
+    @pytest.mark.parametrize("fn", [gf.initial_guess, gf.initial_guess.py_func])
+    def test_empty_channel_amplitude_guess_is_floored(self, fn):
+        # A channel with no signal above its background must not get a 0 (or negative)
+        # amplitude guess: in sqrt space that has a zero gradient. See gf._AMP_GUESS_FLOOR.
+        masks = _bayer_masks()
+        smoothed = _positive_blob()
+        raw = _positive_blob(background=3.0)
+        raw[masks[:, :, 0]] = 3.0  # channel 0 is flat background only
+        out = fn(smoothed, raw, masks)
+        assert out[7] == pytest.approx(np.sqrt(gf._AMP_GUESS_FLOOR))
+        assert np.all(out[8:10] ** 2 > gf._AMP_GUESS_FLOOR)
 
 
 class TestInitialGuessElliptical:

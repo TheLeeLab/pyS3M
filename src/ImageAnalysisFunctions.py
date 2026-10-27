@@ -65,7 +65,12 @@ class FittingConstants:
 
     # Fitting tolerances
     DEFAULT_FTOL = 1e-2
-    DEFAULT_XTOL = 1e-2
+    # xtol is relative to the norm of the whole parameter vector, which the sqrt-space amplitudes
+    # dominate (~150 at 50k photons), so 1e-2 accepted steps of ~1.5 in sigma as "converged". At
+    # high photon counts that stopped ~5% of vectorial-PSF fits on a stalled wide branch (sigma
+    # +20%, chi^2 4-8x the true minimum) and doubled the sigma/fingerprint scatter of the rest.
+    # 1e-4 removes both at no measurable cost; 1e-3 already does, smaller values change nothing.
+    DEFAULT_XTOL = 1e-4
 
     # Amplitude SNR threshold (Wald t-statistic, replaces all three hard gates)
     AMPLITUDE_SNR_THRESHOLD = 2.0  # sigma; z = sum(|q_c|)/sqrt(sum(var(q_c))) >= this
