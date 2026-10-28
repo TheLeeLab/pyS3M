@@ -405,6 +405,26 @@ class FittingResultProcessor:
         return chi2_bg - chi2_fit
 
     @staticmethod
+    def _xy_permutation(strategy: FittingStrategy, length: int) -> np.ndarray:
+        """Index order taking a model's [row, col, ...] parameters to the output's [x, y, ...].
+
+        STANDARD-like and NOCOLOUR: [row, col, s_row, s_col, ...] -> [col, row, s_col, s_row, ...];
+        ELLIPTICAL: the same, theta stays at index 4; CIRCULAR: [row, col, s, ...] ->
+        [col, row, s, ...]. Strategies without a position (JUSTCOLOUR, RAWCOLOUR) are unchanged.
+        """
+        perm = np.arange(length)
+        if length < 2:
+            return perm
+        if strategy in (
+            FittingStrategy.STANDARD, FittingStrategy.STANDARD_ITER, FittingStrategy.STANDARD_DATA,
+            FittingStrategy.ELLIPTICAL, FittingStrategy.NOCOLOUR,
+        ) and length >= 4:
+            perm[:4] = [1, 0, 3, 2]
+        elif strategy == FittingStrategy.CIRCULAR:
+            perm[:2] = [1, 0]
+        return perm
+
+    @staticmethod
     def process_fit_results(
         pfit: np.ndarray,
         pcov: np.ndarray,
@@ -438,47 +458,23 @@ class FittingResultProcessor:
 
         # Chi-squared is now passed as parameter from the fitting processor
 
-        # Process parameters based on strategy
-        # For STANDARD: pfit has [x, y, sy, sx, bg_B, bg_G, bg_R, A_B, A_G, A_R] (10 parameters from gaussoptfuncs)
-        # But output needs [x, y, sx, sy, bg_B, bg_G, bg_R, A_B, A_G, A_R] (sx/sy order corrected)
-
+        # Axis convention (see Constants.ResultColumns): xc is the image column and yc the row,
+        # in full-frame pixels, so xc runs along the width and yc along the height. The models in
+        # gaussoptfuncs work on the ROI array instead, in [row, col] order: pfit[0] is the row
+        # centre and pfit[1] the column centre, then the row width before the column width.
+        # _xy_permutation reorders pfit into the output's [x, y, ...] order; the errors (in pcov's
+        # order, i.e. pfit's) take the same permutation below, and relative_coords is the ROI's
+        # (column, row) origin, added to (xc, yc).
         _standard_like = {FittingStrategy.STANDARD, FittingStrategy.STANDARD_ITER, FittingStrategy.STANDARD_DATA}
         _gated_strategies = _standard_like | {FittingStrategy.ELLIPTICAL, FittingStrategy.CIRCULAR}
 
-        if strategy in _standard_like:
-            # Dynamic n_ch: pfit layout is [x, y, sy, sx, bg_0,...,bg_{n-1}, A_0,...,A_{n-1}]
-            # Output layout:               [x, y, sx, sy, bg_0,...,bg_{n-1}, A_0,...,A_{n-1}]
-            n_ch = (len(pfit) - 4) // 2
-            pfit_processed = np.concatenate([
-                np.array([pfit[0], pfit[1], pfit[3], pfit[2]]),  # x, y, sx, sy (swap indices 2,3)
-                pfit[4:4 + n_ch],           # bg channels
-                pfit[4 + n_ch:4 + 2 * n_ch],  # A channels
-            ])
-        elif strategy == FittingStrategy.ELLIPTICAL:
-            # pfit: [x0, y0, sigma_x, sigma_y, theta, √bg_B, √bg_G, √bg_R, √A_B, √A_G, √A_R]
-            # output: [xc, yc, s_x, s_y, theta, bg_B, bg_G, bg_R, A_B, A_G, A_R]
-            pfit_processed = np.array(
-                [
-                    pfit[0],
-                    pfit[1],
-                    pfit[3],
-                    pfit[2],   # x, y, s_x (col sigma), s_y (row sigma)
-                    pfit[4],   # theta
-                    pfit[5],
-                    pfit[6],
-                    pfit[7],   # bg_B, bg_G, bg_R
-                    pfit[8],
-                    pfit[9],
-                    pfit[10],  # A_B, A_G, A_R
-                ]
-            )
-        elif strategy == FittingStrategy.CIRCULAR:
-            # pfit: [x, y, s, bg_0,...,bg_{n-1}, A_0,...,A_{n-1}] -- no sx/sy swap needed,
-            # there is only one width parameter, so this is used as-is.
-            pfit_processed = pfit.copy()
-        else:
-            # For other strategies, use as-is for now
-            pfit_processed = pfit.copy()
+        n_ch = (len(pfit) - 4) // 2   # standard-like strategies only
+        perm = FittingResultProcessor._xy_permutation(strategy, len(pfit))
+        pfit_processed = np.asarray(pfit, dtype=np.float64)[perm]
+        if strategy == FittingStrategy.ELLIPTICAL:
+            # theta rotates the model's (row, col) frame; in the output's (x, y) frame (y down the
+            # image) the s_x axis lies at -theta from +x towards +y.
+            pfit_processed[4] = -pfit_processed[4]
 
         # Position gate only applies to strategies where first params are x, y, sx, sy
         position_strategies = {
@@ -558,9 +554,11 @@ class FittingResultProcessor:
         # Calculate errors — pfit (raw, sqrt-space, pre-squaring) is required so
         # sqrt-space amplitude/background errors get delta-method propagated into
         # the same real-space units as the squared values stored above.
-        errors = FittingResultProcessor.calculate_errors(pcov, strategy, pfit)
+        errors = np.asarray(FittingResultProcessor.calculate_errors(pcov, strategy, pfit))
+        if len(errors) == len(perm):
+            errors = errors[perm]
 
-        return pfit_final, np.array(errors)
+        return pfit_final, errors
 
 
 class FittingProcessor(ABC):
@@ -750,12 +748,12 @@ class StandardIGFittingProcessor(StandardFittingProcessor):
     an accurate position rather than the centre-of-mass estimate, improving
     both colour accuracy and localisation precision.
 
-    WLS_model_nobounds parameter layout:
-        [x, y, sigma_y, sigma_x, sqrt(bg_B), sqrt(bg_G), sqrt(bg_R),
+    WLS_model_nobounds parameter layout, in the ROI's [row, col] order:
+        [y (row), x (column), sigma_y, sigma_x, sqrt(bg_B), sqrt(bg_G), sqrt(bg_R),
          sqrt(A_B), sqrt(A_G), sqrt(A_R)]
 
-    Note sigma_y precedes sigma_x — opposite of the NOCOLOUR convention —
-    so the seed swaps them at indices 2/3.
+    The seed is a processed (x-first) NOCOLOUR result, so it is reordered to y, x and
+    sigma_y, sigma_x.
     """
 
     def fit_single_punctum(
@@ -779,9 +777,9 @@ class StandardIGFittingProcessor(StandardFittingProcessor):
         b_ch = max(b / n_ch, 1e-6)
         A_ch = max(A / n_ch, 1e-6)
 
-        # sigma_y at index 2, sigma_x at index 3 (WLS_model_nobounds convention)
+        # model order: row, col, row width, col width (WLS_model_nobounds convention)
         initial_guess = np.concatenate([
-            [xc, yc, s_y, s_x],
+            [yc, xc, s_y, s_x],
             np.full(n_ch, np.sqrt(b_ch)),   # bg channels
             np.full(n_ch, np.sqrt(A_ch)),   # A channels
         ])
@@ -1612,13 +1610,19 @@ class PosthenColourFittingProcessor(FittingProcessor):
                 )
             )
 
-            # Extract location parameters for colour fitting
+            # Location parameters for the colour fit, back in the model's ROI frame: the
+            # no-colour result is [xc, yc, s_x, s_y, ...] in full-frame pixels (column, row),
+            # the model takes [row, col, s_row, s_col] within the ROI.
+            col0, row0 = (
+                (relative_coords[0], relative_coords[1])
+                if relative_coords is not None and len(relative_coords) >= 2 else (0.0, 0.0)
+            )
             locparams = np.array(
                 [
-                    pfit_pos_leastsq[0],
-                    pfit_pos_leastsq[1],
-                    pfit_pos_leastsq[2],
+                    pfit_pos_leastsq[1] - row0,
+                    pfit_pos_leastsq[0] - col0,
                     pfit_pos_leastsq[3],
+                    pfit_pos_leastsq[2],
                     pfit_pos_leastsq[4],
                     pfit_pos_leastsq[5],
                 ]

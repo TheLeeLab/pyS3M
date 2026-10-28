@@ -1935,7 +1935,7 @@ class MainWindow(QMainWindow):
         ax_frame, ax_gt = fig.subplots(1, 2)
 
         projection = np.max(bayer_stack, axis=0)
-        ax_frame.imshow(projection.T, cmap="gray", origin="upper")
+        ax_frame.imshow(projection, cmap="gray", origin="upper")   # [row, col] = [y, x]
         ax_frame.set_title("Max-intensity projection")
         ax_frame.set_xticks([])
         ax_frame.set_yticks([])

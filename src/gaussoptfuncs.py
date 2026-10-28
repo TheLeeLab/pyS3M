@@ -38,13 +38,18 @@ def gaussian_unscaled_model(
 ) -> np.ndarray:
     """gauss2d: Returns 2D gaussian
 
+    Works in the ROI array's own [row, col] frame: ``array_tofill[i, j]`` is row i, column j.
+    NB this is not the (x, y) order of the reported fits (Constants.ResultColumns: xc = column,
+    yc = row); ImageAnalysisFunctions.FittingResultProcessor reorders on output.
+
     Args:
         array_tofill (np.ndarray): array to be filled
-        x (np.1darray): x array
+        x (np.1darray): pixel coordinate array (the same for rows and columns)
         size (int): how big the array is
-        x0 (float): x-coordinate of the center of the gaussian
-        y0 (float): y-coordinate of the center of the gaussian
-        sigma (float): standard deviation of the gaussian
+        x0 (float): row centre of the gaussian
+        y0 (float): column centre of the gaussian
+        sigma_x (float): standard deviation along the rows (axis 0)
+        sigma_y (float): standard deviation along the columns (axis 1)
 
     Returns:
         signal (float): signal at particular (x, y) location"""
@@ -206,7 +211,7 @@ def WLS_model_nobounds(
     n_ch = masks.shape[-1]
     len_x = len(x)
 
-    # Build per-channel lookup tables from params layout: [x,y,sy,sx, bg0,...,bg_{n_ch-1}, A0,...,A_{n_ch-1}]
+    # params layout, in the ROI's [row, col] frame: [row, col, s_row, s_col, bg0..bg_{n-1}, A0..A_{n-1}]
     bg_lookup = np.zeros(n_ch)
     amp_lookup = np.zeros(n_ch)
     for i in range(n_ch):
@@ -409,10 +414,10 @@ def initial_guess(smoothed_data, raw_data, masks):
         raw_data (np.2darray): raw photoelectron data matrix
         masks (np.3darray): mask matrix
 
-    Returns:
-        x_ig (float): centroid guess in x.
-        y_ig (float): centroid guess in y.
-        sigma (float): sigma guess
+    Returns (in the models' [row, col] frame, see gaussian_unscaled_model):
+        x_ig (float): row centroid guess.
+        y_ig (float): column centroid guess.
+        sigma_y, sigma_x (float): row and column width guesses
         bB (float): background guess Blue (sqrt of actual background)
         bG (float): background guess Green (sqrt of actual background)
         bR (float): background guess Red (sqrt of actual background)
@@ -452,7 +457,7 @@ def initial_guess(smoothed_data, raw_data, masks):
     )
     flattened_gauss = gauss.ravel()
 
-    # Return array: [x, y, sigma_y, sigma_x, sqrt(bg_0), ..., sqrt(bg_{n_ch-1}), sqrt(A_0), ..., sqrt(A_{n_ch-1})]
+    # Return array: [row, col, s_row, s_col, sqrt(bg_0), ..., sqrt(bg_{n_ch-1}), sqrt(A_0), ..., sqrt(A_{n_ch-1})]
     # Model squares bg and A values; using sqrt prevents catastrophic errors at high photon counts.
     result = np.zeros(4 + 2 * n_ch)
     result[0] = x_ig

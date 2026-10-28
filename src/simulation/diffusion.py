@@ -961,7 +961,7 @@ class CameraAdapter:
 
         Returns:
             x0y0: Dict[dye_name, positions array (n_frames, 2, n_molecules)], ordered
-                (y, x): index 0 is row/y, index 1 is column/x, matching
+                (x, y): index 0 is column/x, index 1 is row/y, matching
                 gen_camera_image_stack's placement convention
             n_photons: Dict[dye_name, photon counts (n_frames, n_molecules)]
             spectral_profiles: Dict[dye_name, (A_R, A_G, A_B) arrays (n_molecules, 3)]
@@ -1006,9 +1006,9 @@ class CameraAdapter:
                 # Extract positions at requested frames
                 for frame_idx, traj_idx in enumerate(frame_indices):
                     if traj_idx < len(mol.trajectory):
-                        # gen_camera_image_stack expects (y, x) order in this axis.
-                        positions[frame_idx, 0, mol_idx] = mol.trajectory[traj_idx][1]  # y
-                        positions[frame_idx, 1, mol_idx] = mol.trajectory[traj_idx][0]  # x
+                        # gen_camera_image_stack expects (x, y) order in this axis.
+                        positions[frame_idx, 0, mol_idx] = mol.trajectory[traj_idx][0]  # x
+                        positions[frame_idx, 1, mol_idx] = mol.trajectory[traj_idx][1]  # y
 
                         # Sample photons for this frame
                         mean_photons = n_photons_per_dye[color]

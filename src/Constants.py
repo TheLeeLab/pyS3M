@@ -120,14 +120,23 @@ class ResultColumns:
 
     Defines standard column names for fitting results and their error estimates
     to ensure consistency across all fitting workflows.
+
+    Axis convention, used throughout pyS3M: images are numpy arrays indexed
+    ``[row, col]`` (``[y, x]``); ``xc`` is the column and ``yc`` the row, in full-frame
+    camera pixels with pixel centres at integers, so ``0 <= xc < Width`` and
+    ``0 <= yc < Height`` (as ImageJ/Micro-Manager ROIs, Picasso and ``render``). ``s_x``
+    and ``s_y`` are the PSF widths along x and y, every ``*_err`` belongs to its own
+    parameter, and the elliptical ``theta`` is the angle of the ``s_x`` axis from +x
+    towards +y (y pointing down the image). Simulations take positions in the same
+    (x, y) order (``gen_camera_image_stack``'s ``x0y0[..., 0, :]`` is x).
     """
 
     # Standard fit parameter columns
     STANDARD_FIT_PARAMS = [
-        "xc",  # X center coordinate
-        "yc",  # Y center coordinate
-        "s_x",  # X sigma (width)
-        "s_y",  # Y sigma (width)
+        "xc",  # x centre: image column (px)
+        "yc",  # y centre: image row (px)
+        "s_x",  # PSF sigma along x (px)
+        "s_y",  # PSF sigma along y (px)
         "bg_B",  # Background (Blue channel)
         "bg_G",  # Background (Green channel)
         "bg_R",  # Background (Red channel)
@@ -158,7 +167,7 @@ class ResultColumns:
         "yc",     # Y center coordinate
         "s_x",    # X sigma (width, rotated)
         "s_y",    # Y sigma (width, rotated)
-        "theta",  # Rotation angle (radians)
+        "theta",  # angle of the s_x axis from +x towards +y (radians)
         "bg_B",   # Background (Blue channel)
         "bg_G",   # Background (Green channel)
         "bg_R",   # Background (Red channel)

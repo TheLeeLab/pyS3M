@@ -1141,7 +1141,7 @@ def segment_locs_by_rendered_image(
             # Panel 1: Rendered super-resolved image
             im1 = plotter.create_image_plot(
                 axs[0],
-                rendered_image.T,
+                rendered_image,   # [y, x], as render.render returns it
                 cmap="inferno",
                 origin="lower",
             )
@@ -1152,7 +1152,7 @@ def segment_locs_by_rendered_image(
             # Panel 2: Binary thresholded image
             im2 = plotter.create_image_plot(
                 axs[1],
-                binary_image.T.astype(float),  # Convert boolean to float for plotting
+                binary_image.astype(float),  # Convert boolean to float for plotting
                 cmap="gray",
                 vmin=0,
                 vmax=1,
@@ -1177,7 +1177,7 @@ def segment_locs_by_rendered_image(
 
             im3 = plotter.create_image_plot(
                 axs[2],
-                display_image.T,
+                display_image,
                 cmap="Set1",
                 vmin=0,
                 vmax=3,

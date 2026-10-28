@@ -656,21 +656,22 @@ class MultiC_Sim_Funcs_Refactored:
             Tuple[np.ndarray, np.ndarray, Dict[str, Any]]: x0 positions, y0 positions,
                                                          and dictionary of setup parameters
         """
-        image_size = config.pixel_size * np.array(camera_params.gain.shape[-2:])
+        # gain is (height, width): x is the column (width) axis, y the row (height) axis
+        height_um, width_um = config.pixel_size * np.array(camera_params.gain.shape[-2:])
 
         # Generate random positions spanning one full unit cell so that every
         # pixel-type environment in the mosaic is sampled uniformly.
         if unit_cell_shape is not None:
-            uc_half_x = (unit_cell_shape[0] / 2) * config.pixel_size
-            uc_half_y = (unit_cell_shape[1] / 2) * config.pixel_size
+            uc_half_x = (unit_cell_shape[1] / 2) * config.pixel_size   # (rows, cols)
+            uc_half_y = (unit_cell_shape[0] / 2) * config.pixel_size
         else:
             uc_half_x = config.pixel_size
             uc_half_y = config.pixel_size
 
-        x0 = np.full(config.n_bootstrap, image_size[0] / 2) + np.random.uniform(
+        x0 = np.full(config.n_bootstrap, width_um / 2) + np.random.uniform(
             low=-uc_half_x, high=uc_half_x, size=config.n_bootstrap
         )
-        y0 = np.full(config.n_bootstrap, image_size[1] / 2) + np.random.uniform(
+        y0 = np.full(config.n_bootstrap, height_um / 2) + np.random.uniform(
             low=-uc_half_y, high=uc_half_y, size=config.n_bootstrap
         )
 
@@ -680,8 +681,8 @@ class MultiC_Sim_Funcs_Refactored:
 
         expected_parameters = np.array(
             [
-                camera_params.gain.shape[-2] / 2,  # xc in pixels
-                camera_params.gain.shape[-1] / 2,  # yc in pixels
+                camera_params.gain.shape[-1] / 2,  # xc (column) in pixels
+                camera_params.gain.shape[-2] / 2,  # yc (row) in pixels
                 sigma_PSF / config.pixel_size,  # s_x in pixels
                 sigma_PSF / config.pixel_size,  # s_y in pixels
             ]
@@ -1710,12 +1711,14 @@ class MultiC_Sim_Funcs_Refactored:
         Args:
             fn: Callable(x0_pixels, y0_pixels, n_photons_array) → (w, h) photon map.
                 Must accept x0/y0 as float arrays and return a float32 array.
-            x0_pixels: Emitter x positions in pixels (mid-exposure).
-            y0_pixels: Emitter y positions in pixels (mid-exposure).
+            x0_pixels: Emitter positions along the photon map's axis 0 (in
+                gen_camera_image_stack, the row), in pixels (mid-exposure).
+            y0_pixels: Emitter positions along axis 1 (the column), in pixels.
             n_photons_array: Photons per emitter (passed unchanged to fn).
             displacement_px: Total displacement during the exposure in pixels
                 (= velocity_nm_per_s × exposure_s / pixel_size_nm).
-            direction_rad: Motion direction in radians.
+            direction_rad: Motion direction in radians, from axis 0 towards axis 1
+                (gen_camera_image_stack converts its x-from-column angles to this).
             n_samples: Number of quadrature points along the trajectory.
 
         Returns:
@@ -1807,8 +1810,8 @@ class MultiC_Sim_Funcs_Refactored:
                 background QE, scaled by its max, to mimic a non-flat background spectrum.
                 None or [1, 1, 1] (default) is the flat spectrum.
             x0y0: Dict mapping each dye key to an (n_bootstrap, 2, n_molecules) position
-                array in nm, ordered (y, x): index 0 is the row/y coordinate, index 1 is
-                the column/x coordinate.
+                array in nm, ordered (x, y): index 0 is the column/x coordinate, index 1 is
+                the row/y coordinate (the fitted xc/yc follow the same convention).
             return_normal_image: If True, generate a normal (non-Bayer) image with flat QE
             return_photoelectrons: If True, return normal_image in photoelectrons instead of ADU
                                   (only applies when return_normal_image=True)
@@ -2080,7 +2083,9 @@ class MultiC_Sim_Funcs_Refactored:
                             n_photons_array = np.array([int(n_photons_this_frame)])
 
                         if _motion_displacement_px > 0.0:
-                            _angle = float(_motion_angles[frame])
+                            # _motion_angles are directions from +x (column) towards +y (row),
+                            # as the elliptical fit's theta; the PSF grid's axis 0 is the row.
+                            _angle = np.pi / 2 - float(_motion_angles[frame])
                             if _vpsf_patch is not None:
                                 _fn = lambda x0, y0, n, _p=_vpsf_patch, _q=_cal_frame(relative_QE, frame): \
                                     self._gen_photon_map_vectorial(_p, x0, y0, n, _q)
@@ -2254,7 +2259,9 @@ class MultiC_Sim_Funcs_Refactored:
                             n_photons_array = np.array([int(n_photons_this_frame)])
     
                         if _motion_displacement_px > 0.0:
-                            _angle = float(_motion_angles[frame])
+                            # _motion_angles are directions from +x (column) towards +y (row),
+                            # as the elliptical fit's theta; the PSF grid's axis 0 is the row.
+                            _angle = np.pi / 2 - float(_motion_angles[frame])
                             if _vpsf_patch is not None:
                                 _fn = lambda x0, y0, n, _p=_vpsf_patch, _q=_cal_frame(relative_QE, frame): \
                                     self._gen_photon_map_vectorial(_p, x0, y0, n, _q)
@@ -2563,10 +2570,9 @@ class MultiC_Sim_Funcs_Refactored:
             unit_cell_shape=unit_cell_shape,
         )
         x0y0 = {"dye": np.zeros([config.n_bootstrap, 2, 1])}
-        # gen_camera_image_stack places the first coordinate along the image array's row
-        # axis and the second along its column axis; fitted xc/yc follow row=y/col=x, so
-        # the row slot takes y0 and the column slot takes x0.
-        x0y0["dye"][:, :, :] = np.array([[y0, x0]]).T
+        # x0y0[..., 0, :] is x (column), x0y0[..., 1, :] is y (row): gen_camera_image_stack
+        # puts each on its own image axis, and the fitted xc/yc follow the same convention.
+        x0y0["dye"][:, :, :] = np.array([[x0, y0]]).T
 
         analysis_save_params = (
             ["xc", "yc", "s_x", "s_y"]
@@ -2962,10 +2968,9 @@ class MultiC_Sim_Funcs_Refactored:
 
         # Create position dictionary
         x0y0 = {"dye": np.zeros([config.n_bootstrap, 2, 1])}
-        # gen_camera_image_stack places the first coordinate along the image array's row
-        # axis and the second along its column axis; fitted xc/yc follow row=y/col=x, so
-        # the row slot takes y0 and the column slot takes x0.
-        x0y0["dye"][:, :, :] = np.array([[y0, x0]]).T
+        # x0y0[..., 0, :] is x (column), x0y0[..., 1, :] is y (row): gen_camera_image_stack
+        # puts each on its own image axis, and the fitted xc/yc follow the same convention.
+        x0y0["dye"][:, :, :] = np.array([[x0, y0]]).T
 
         # Define analysis parameters based on strategy.
         # For ELLIPTICAL the raw DataFrame also contains 'theta' and 'theta_err', but
@@ -3003,7 +3008,7 @@ class MultiC_Sim_Funcs_Refactored:
                 if len(gt_saved) == config.n_bootstrap:
                     x0 = gt_saved["x0"].to_numpy()
                     y0 = gt_saved["y0"].to_numpy()
-                    x0y0["dye"][:, :, :] = np.array([[y0, x0]]).T
+                    x0y0["dye"][:, :, :] = np.array([[x0, y0]]).T
                     setup_data["x0"] = x0
                     setup_data["y0"] = y0
                 else:

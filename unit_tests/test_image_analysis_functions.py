@@ -390,7 +390,8 @@ class TestProcessFitResults:
             pfit, pcov, SIZE, [0.0, 0.0], FittingStrategy.ELLIPTICAL,
         )
         assert not np.any(np.isnan(out))
-        assert out[4] == pytest.approx(0.4)  # theta not squared
+        # theta not squared; sign flipped from the model's (row, col) frame to the output's (x, y)
+        assert out[4] == pytest.approx(-0.4)
 
     def test_elliptical_position_out_of_bounds(self):
         pfit = np.array([-1.0, 4.0, 1.3, 1.3, 0.4, 4.5, 4.5, 4.5, 20.0, 20.0, 20.0])
@@ -665,8 +666,9 @@ class TestStandardDataFittingProcessor:
         fitted = pfit[7:10]
         assert not np.allclose(fitted, fitted[0])  # not stuck at equal amplitudes
         np.testing.assert_allclose(fitted / fitted.sum(), amps / amps.sum(), atol=0.03)
-        assert pfit[0] == pytest.approx(7.3, abs=0.2)
-        assert pfit[1] == pytest.approx(6.8, abs=0.2)
+        # model params are [row, col, ...]; the output is [xc = column, yc = row, ...]
+        assert pfit[0] == pytest.approx(6.8, abs=0.2)
+        assert pfit[1] == pytest.approx(7.3, abs=0.2)
 
     def test_stage1_failure_returns_nan(self, monkeypatch):
         punctum, masks = _synthetic_punctum()

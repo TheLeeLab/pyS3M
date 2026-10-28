@@ -125,12 +125,13 @@ class Mask_Functions:
         Assigns the appropriate masks based on the mosaic unit values.
 
         Args:
-            size_x (int): An integer saying how big the image is in the x direction.
-            size_y (int): An integer saying how big the image is in the y direction.
-            mosaic_unit (np.2darray): unit of mosaic on the camera
+            size_x (int): Number of rows (array axis 0, i.e. the image *height*). Legacy name:
+                the masks are indexed [row, col] like the images.
+            size_y (int): Number of columns (array axis 1, the image *width*).
+            mosaic_unit (np.2darray): unit of mosaic on the camera, indexed [row, col]
 
         Returns:
-            masks (dict): A dictionary containing the assigned masks.
+            masks (dict): A dictionary of (size_x, size_y) = (rows, cols) boolean masks.
         """
         if mosaic_unit is None:
             mosaic_unit = self.mosaic_unit
