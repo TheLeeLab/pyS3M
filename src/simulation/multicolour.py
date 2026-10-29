@@ -1844,7 +1844,7 @@ class MultiC_Sim_Funcs_Refactored:
                 averaged over a flat spectrum, independent of the dye).
             background_colour: Relative weight per pixel colour (pixel_order) on the
                 background QE, scaled by its max, to mimic a non-flat background spectrum.
-                None or [1, 1, 1] (default) is the flat spectrum.
+                None (default) or all-equal weights is the flat spectrum, for any number of colours.
             x0y0: Dict mapping each dye key to an (n_bootstrap, 2, n_molecules) position
                 array in nm, ordered (x, y): index 0 is the column/x coordinate, index 1 is
                 the row/y coordinate (the fitted xc/yc follow the same convention).
@@ -1865,9 +1865,6 @@ class MultiC_Sim_Funcs_Refactored:
             - smoothed_image: Smoothed bayer image in ADU
             - normal_image: Normal image in ADU (or photoelectrons if return_photoelectrons=True)
         """
-        if background_colour is None:
-            background_colour = [1, 1, 1]
-
         self._validate_inputs(
             wavelength, camera_calibration, dye_pixel_efficiency, x0y0
         )
