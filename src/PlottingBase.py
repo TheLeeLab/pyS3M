@@ -144,6 +144,57 @@ def plot_bayer_pattern(
     return ax
 
 
+BAYER_COLOURS = ("#5555ff", "#53b03b", "#ff5555")  # B, G, R: the pixel-colour convention of the figures
+
+
+def bayer_pixel_type(masks: Dict[str, np.ndarray], pixel_order=("B", "G", "R")) -> np.ndarray:
+    """Pixel type of every pixel, as an index into ``pixel_order`` (B=0, G=1, R=2 by default).
+
+    Args:
+        masks: Boolean mask per colour, each (H, W), as ``MaskFunctions.get_masks`` or a camera
+            calibration's ``"masks"``.
+        pixel_order: Colour of each index (a calibration's ``"pixel_order"``).
+
+    Returns:
+        (H, W) int array.
+    """
+    return np.argmax(np.stack([np.asarray(masks[c]) for c in pixel_order], axis=-1), axis=-1)
+
+
+def add_bayer_key(ax, pixel_type: np.ndarray, origin: str = "upper", n: int = 2,
+                  colours=BAYER_COLOURS):
+    """Show the colour filters under an image: cover its displayed top-left ``n`` x ``n`` pixels with
+    each pixel's filter colour, so a reader sees where the image sits on the Bayer grid.
+
+    Draw on an image shown with ``imshow`` without ``extent`` (pixel centres at integers), as
+    ``ImagePlotMixin.image_plot`` does.
+
+    Args:
+        ax: Axes holding the image.
+        pixel_type: (H, W) pixel type of every pixel of the image, an index into ``colours``
+            (see ``bayer_pixel_type``).
+        origin: The image's ``origin`` ("upper": row 0 at the top; "lower": at the bottom), so the
+            key always covers the corner displayed top left, with the filters actually there.
+        n: Side of the key in pixels.
+        colours: Colour of each pixel type (default: B, G, R as ``BAYER_COLOURS``).
+
+    Returns:
+        The axes.
+    """
+    from matplotlib.patches import Rectangle
+
+    if origin not in ("upper", "lower"):
+        raise ValueError(f"origin must be 'upper' or 'lower', not {origin!r}")
+    H = pixel_type.shape[0]
+    rows = range(n) if origin == "upper" else range(H - n, H)
+    for r in rows:
+        for c in range(n):
+            ax.add_patch(Rectangle((c - 0.5, r - 0.5), 1, 1, facecolor=colours[int(pixel_type[r, c])],
+                                   edgecolor="k", lw=0.3, zorder=5))
+    ax.add_patch(Rectangle((-0.5, min(rows) - 0.5), n, n, fill=False, edgecolor="white", lw=0.8, zorder=6))
+    return ax
+
+
 class PublicationConstants:
     """Constants for publication-quality plots following journal standards.
 
