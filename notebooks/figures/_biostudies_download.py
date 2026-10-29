@@ -31,6 +31,52 @@ HEADERS = {"Accept-Encoding": "identity"}
 # ConnectionError subclass.
 RETRYABLE = (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError)
 
+# Optional local copy of the deposition (see use_local_mirror): (local root, prefix to strip).
+_LOCAL_MIRROR = None
+
+
+def use_local_mirror(local_root, strip_prefix: str = "2026_Multicolour_Paper/") -> None:
+    """Read the deposition from a local copy instead of downloading it.
+
+    With a mirror set, ``list_remote_folder`` lists the local folder and ``download_file``
+    symlinks the local file into *dest_dir* instead of fetching it, so the fits land in
+    *dest_dir* and the copy itself is never written to. A deposition path
+    ``<strip_prefix><rest>`` maps to ``<local_root>/<rest>``.
+
+    Args:
+        local_root: Folder holding the deposition's tree (below *strip_prefix*), or None to
+            go back to downloading.
+        strip_prefix: Leading part of the deposition paths that the local tree lacks.
+    """
+    global _LOCAL_MIRROR
+    _LOCAL_MIRROR = None if local_root is None else (Path(local_root), strip_prefix)
+
+
+def _mirrored(remote_rel_path: str) -> Path:
+    """Local path of a deposition path under the mirror set by ``use_local_mirror``."""
+    root, prefix = _LOCAL_MIRROR
+    rel = remote_rel_path.strip("/")
+    if prefix and rel.startswith(prefix):
+        rel = rel[len(prefix):]
+    return root / rel
+
+
+def _link_from_mirror(remote_rel_path: str, dest_dir: Path) -> Path:
+    """Symlink one file of the local mirror into *dest_dir* (the mirror's ``download_file``)."""
+    src = _mirrored(remote_rel_path)
+    if not src.is_file():
+        raise FileNotFoundError(f"{src} (local copy of {remote_rel_path}) not found")
+    dest_dir = Path(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / src.name
+    if dest.is_symlink() and dest.resolve() == src.resolve():
+        return dest
+    if dest.exists() or dest.is_symlink():
+        raise FileExistsError(f"{dest} exists and is not a link to {src}; move it out first")
+    dest.symlink_to(src)
+    print(f"Linked {src}")
+    return dest
+
 
 def human_size(n_bytes: float) -> str:
     if n_bytes < 0:
@@ -80,7 +126,11 @@ def download_file(remote_rel_path: str, dest_dir: Path, chunk_size: int = 1 << 2
     *dest_dir*: ``Helper_Functions.file_search`` matches substrings recursively,
     so ``x.ome.tif.part`` would be fitted as a TIFF and ``x_metadata.txt.part``
     read as the metadata.
+
+    With a local mirror set (``use_local_mirror``), links the local file instead.
     """
+    if _LOCAL_MIRROR is not None:
+        return _link_from_mirror(remote_rel_path, dest_dir)
     url = f"{BASE_URL}/{remote_rel_path}"
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -171,8 +221,14 @@ def _natural_key(name: str):
 def list_remote_folder(remote_rel_folder: str) -> list:
     """Return the names of the files in one deposition folder (sub-folders excluded).
 
-    Parses the mirror's HTML directory index; the names come back naturally sorted.
+    Parses the mirror's HTML directory index (or lists the local copy set by
+    ``use_local_mirror``); the names come back naturally sorted.
     """
+    if _LOCAL_MIRROR is not None:
+        folder = _mirrored(remote_rel_folder)
+        if not folder.is_dir():
+            raise FileNotFoundError(f"{folder} (local copy of {remote_rel_folder}) not found")
+        return sorted((p.name for p in folder.iterdir() if p.is_file()), key=_natural_key)
     url = f"{BASE_URL}/{remote_rel_folder.strip('/')}/"
 
     def get():
