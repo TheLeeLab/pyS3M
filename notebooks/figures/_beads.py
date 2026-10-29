@@ -141,22 +141,42 @@ def bead_effective_qe(laser, spectrum=None, peak_nm=None, filters=BEAD_FILTERS):
     return sum(PIXEL_FRACTIONS[c] * q[c] for c in CHANNELS), q
 
 
-def power_law_at(x, y, n_eval, n_boot=1000, seed=0):
+# Huang et al., Nat. Methods 10, 653 (2013), Fig. 1d: MLE_sCMOS localisation uncertainty at 1,000
+# photons incident on the camera (ORCA-Flash 4.0, 75 % QE, 103 nm pixels, 133 nm PSF s.d.), for
+# backgrounds of 1, 5 and 20 *detected* photons per pixel. Digitised from the figure (+-0.2 nm).
+HUANG_PIXEL_NM = 103.0
+HUANG_QE = 0.75
+HUANG_BG = np.array([1.0, 5.0, 20.0])
+HUANG_SIGMA_AT_1000 = np.array([8.0, 9.0, 11.4])
+
+
+def huang_sigma_at_1000(bg):
+    """Huang et al.'s Fig. 1d precision at 1,000 incident photons, interpolated in log(bg).
+
+    ``bg`` is in detected photons per 103 nm pixel; values outside 1-20 are clipped (and flagged by
+    the caller), since the figure shows only those three backgrounds."""
+    return np.interp(np.log(np.clip(bg, HUANG_BG[0], HUANG_BG[-1])), np.log(HUANG_BG),
+                     HUANG_SIGMA_AT_1000)
+
+
+def power_law_at(x, y, n_eval, n_boot=1000, seed=0, return_samples=False):
     """``a / sqrt(N) + c`` fitted as in ``fit_power_law``, evaluated at ``n_eval``, with a 95 %
-    bootstrap interval over beads. Returns ``(value, lo, hi)``."""
+    bootstrap interval over beads. Returns ``(value, lo, hi)``, and with ``return_samples`` also
+    the ``n_boot`` bootstrap values (NaN where a refit failed), e.g. to combine lasers."""
     x, y = np.asarray(x, float), np.asarray(y, float)
     p, _ = fit_power_law(x, y, n_boot=0)
     rng = np.random.default_rng(seed)
-    vals = []
+    vals = np.full(n_boot, np.nan)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", OptimizeWarning)
-        for _ in range(n_boot):
+        for k in range(n_boot):
             i = rng.integers(0, len(x), len(x))
             try:
-                vals.append(power_law(n_eval, *curve_fit(power_law, x[i], y[i], sigma=1 / x[i], p0=p)[0]))
+                vals[k] = power_law(n_eval, *curve_fit(power_law, x[i], y[i], sigma=1 / x[i], p0=p)[0])
             except RuntimeError:
                 continue
-    return power_law(n_eval, *p), *np.percentile(vals, [2.5, 97.5])
+    out = (power_law(n_eval, *p), *np.nanpercentile(vals, [2.5, 97.5]))
+    return (*out, vals) if return_samples else out
 
 
 def bead_precision(sf_db, min_frames=MIN_FRAMES, pixel_nm=PIXEL_NM):
@@ -177,7 +197,8 @@ def bead_precision(sf_db, min_frames=MIN_FRAMES, pixel_nm=PIXEL_NM):
 
     Returns:
         pd.DataFrame: One row per bead: ``fov_name``, ``bead``, ``n``, ``pe``,
-        ``sigma_xy``, ``sigma_xy_cm`` (nm), and for X in B, G, R: ``A_X`` (mean),
+        ``sigma_xy``, ``sigma_xy_cm`` (nm), ``bg_pe`` (mean background per pixel, photoelectrons;
+        if the input has ``background_photoelectrons``), and for X in B, G, R: ``A_X`` (mean),
         ``prec_X`` (std / mean, fraction) and ``pe_X``.
     """
     d = sf_db.copy()
@@ -210,6 +231,8 @@ def bead_precision(sf_db, min_frames=MIN_FRAMES, pixel_nm=PIXEL_NM):
         "sigma_xy_cm": ((g["dxc_cm"].std() + g["dyc_cm"].std()) / 2)
                        .where(g["dxc_cm"].count() >= min_frames),
     })
+    if "background_photoelectrons" in d.columns:
+        out["bg_pe"] = g["background_photoelectrons"].mean()
     for ch in CHANNELS:
         a = g["A_" + ch]
         out["A_" + ch] = a.mean()
