@@ -2575,6 +2575,22 @@ class MultiC_Sim_Funcs_Refactored:
             n_medium=config.n_medium, n_immersion=config.n_immersion,
         )
 
+    @classmethod
+    def emission_spectra_for(
+        cls,
+        dyes,
+        filters: Optional[List[str]],
+        wavelength: np.ndarray,
+    ) -> Dict[str, np.ndarray]:
+        """``emission_spectra`` for ``gen_camera_image_stack``: each dye's filtered spectrum.
+
+        Args:
+            dyes: Dye names in the spectral database, or an ``x0y0``/``n_photons`` dict keyed by them.
+            filters: Filter names (None or []: no filters).
+            wavelength: Wavelength grid (nm).
+        """
+        return {dye: cls.filtered_emission_spectrum(dye, filters, wavelength) for dye in dyes}
+
     @staticmethod
     def filtered_emission_spectrum(
         dye: str,
