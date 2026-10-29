@@ -41,6 +41,18 @@ import pyS3M.HelperFunctions as HelperFunctions
 import pyS3M.FitGate as FitGate
 
 
+def _lm_stuck(pfit: np.ndarray, x0: np.ndarray) -> bool:
+    """True if leastsq handed back its starting point unchanged (no step accepted).
+
+    leastsq still reports success (ier 1-4) when no step reduces chi^2, so such fits used to
+    reach the database holding their initial guess -- with the old equal-split amplitude
+    guess, A_B = A_G = A_R = 1/3, which analyses filtered by value. Rejecting the
+    unmoved fit here works whatever the guess is. Apply it to the first LM call only: a
+    later stage that starts from a converged fit may legitimately not move.
+    """
+    return bool(np.array_equal(np.asarray(pfit), np.asarray(x0)))
+
+
 class FittingStrategy(Enum):
     """Enumeration for different fitting strategies.
 
@@ -698,7 +710,7 @@ class StandardFittingProcessor(FittingProcessor):
                 xtol=FittingConstants.DEFAULT_XTOL,
             )
 
-            if success not in np.array([1, 2, 3, 4]):
+            if success not in np.array([1, 2, 3, 4]) or _lm_stuck(pfit, initial_guess):
                 n_ch = (len(initial_guess) - 4) // 2
                 return (np.full(4 + 2 * n_ch + 2, np.nan), np.full(4 + 2 * n_ch, np.nan))
 
@@ -869,7 +881,7 @@ class StandardIterFittingProcessor(StandardFittingProcessor):
 
             # Stage 1: smoothing weights (passed in from SR_Functions / simulation)
             pfit1, _, ok1 = self._leastsq_step(ig, punctum, masks, weights, size)
-            if ok1 not in (1, 2, 3, 4):
+            if ok1 not in (1, 2, 3, 4) or _lm_stuck(pfit1, ig):
                 return nan_result
 
             # Stage 2: model weights from Stage 1 fit
@@ -968,7 +980,7 @@ class StandardDataFittingProcessor(StandardIterFittingProcessor):
 
             # Stage 1: smoothing weights (passed in from SR_Functions / simulation)
             pfit1, _, ok1 = self._leastsq_step(ig, punctum, masks, weights, size)
-            if ok1 not in (1, 2, 3, 4):
+            if ok1 not in (1, 2, 3, 4) or _lm_stuck(pfit1, ig):
                 return nan_result
 
             # Stage 2: model weights from Stage 1 fit
@@ -1097,7 +1109,7 @@ class CircularFittingProcessor(StandardDataFittingProcessor):
 
             # Stage 1: smoothing weights (passed in from SR_Functions / simulation)
             pfit1, _, ok1 = self._leastsq_step(ig, punctum, masks, weights, size)
-            if ok1 not in (1, 2, 3, 4):
+            if ok1 not in (1, 2, 3, 4) or _lm_stuck(pfit1, ig):
                 return nan_result
 
             # Stage 2: model weights from Stage 1 fit
@@ -1196,7 +1208,7 @@ class EllipticalFittingProcessor(FittingProcessor):
                 xtol=FittingConstants.DEFAULT_XTOL,
             )
 
-            if success not in np.array([1, 2, 3, 4]):
+            if success not in np.array([1, 2, 3, 4]) or _lm_stuck(pfit, initial_guess):
                 return (np.full(dims["fit"], np.nan), np.full(dims["error"], np.nan))
 
             residuals = gaussoptfuncs.WLS_chi_elliptical_nobounds(
