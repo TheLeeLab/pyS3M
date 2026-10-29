@@ -91,6 +91,7 @@ packages = [
     "pyS3M.simulation",
     "pyS3M.drift_correction",
     "pyS3M.clustering",
+    "pyS3M.diffusion",
     "pyS3M.gui",
     "pyS3M.gui.panels",
     "pyS3M.gui.widgets",
