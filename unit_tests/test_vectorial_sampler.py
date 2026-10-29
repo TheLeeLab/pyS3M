@@ -69,8 +69,10 @@ def test_sampled_radii_scale_with_wavelength(psf):
     assert r[0.7] / r[0.5] == pytest.approx(0.7 / 0.5, rel=0.01)
 
 
-def test_photon_by_photon_image_matches_expected_patch(psf):
-    """Mean of many mono-600 nm images = n_photons x pixel-integrated PSF x QE of each pixel type."""
+@pytest.mark.parametrize("land_in_image", [True, False])
+def test_photon_by_photon_image_matches_expected_patch(psf, land_in_image):
+    """Mean of many mono-600 nm images = n_photons x pixel-integrated PSF x QE of each pixel type;
+    the PSF renormalised over the image when n_photons counts the photons landing in it."""
     rng = np.random.default_rng(1)
     H = W = 21
     pixel_type = np.indices((H, W)).sum(axis=0) % 2      # a checkerboard of two pixel types
@@ -79,13 +81,45 @@ def test_photon_by_photon_image_matches_expected_patch(psf):
     qe = np.vstack([np.full(len(wl), 0.3), np.full(len(wl), 0.8)])
     n, reps, x0, y0 = 2e4, 400, 10.25, 9.6
     pe = photon_by_photon_photoelectrons(psf, spectrum, wl, qe, pixel_type, n,
-                                         np.full(reps, x0), np.full(reps, y0), PIXEL_UM * 1000, rng)
-    expected = (n * psf.pixel_patch(0.6, PIXEL_UM, 21, 7, (x0 - 10) * PIXEL_UM, (y0 - 10) * PIXEL_UM)
-                * np.where(pixel_type == 1, 0.8, 0.3))
+                                         np.full(reps, x0), np.full(reps, y0), PIXEL_UM * 1000, rng,
+                                         land_in_image=land_in_image)
+    patch = psf.pixel_patch(0.6, PIXEL_UM, 21, 7, (x0 - 10) * PIXEL_UM, (y0 - 10) * PIXEL_UM)
+    if land_in_image:
+        patch = patch / patch.sum()
+    expected = n * patch * np.where(pixel_type == 1, 0.8, 0.3)
     z = (pe.mean(axis=0) - expected) / np.sqrt(np.maximum(expected, 1e-9) / reps)
     bright = expected > 5
     assert np.mean(z[bright] ** 2) == pytest.approx(1.0, abs=0.3)
     assert np.abs(z[bright]).max() < 5
+
+
+def test_n_photons_counts_photons_landing_in_image(psf):
+    """With land_in_image and QE = 1, every one of the Poisson(N) photons is in the image."""
+    rng = np.random.default_rng(4)
+    wl = np.arange(400.0, 801.0)
+    pe = photon_by_photon_photoelectrons(psf, np.ones_like(wl), wl, np.ones((1, len(wl))), np.zeros((14, 14), int),
+                                         1000, np.full(2000, 7.0), np.full(2000, 7.0), PIXEL_UM * 1000, rng)
+    totals = pe.sum(axis=(1, 2))
+    assert totals.mean() == pytest.approx(1000, abs=3 * np.sqrt(1000 / 2000) * 2)
+    assert totals.var() == pytest.approx(1000, rel=0.1)       # Poisson(N), not N x (fraction inside)
+    with pytest.raises(ValueError):
+        photon_by_photon_photoelectrons(psf, np.ones_like(wl), wl, np.ones((1, len(wl))), np.zeros((14, 14), int),
+                                        10, np.full(2, 500.0), np.full(2, 500.0), PIXEL_UM * 1000, rng)
+
+
+def test_landed_photons_have_the_physical_spectrum(psf):
+    """Two emission lines, 500 and 750 nm, equally bright, on a 3 x 3 px image: far more of the
+    narrower 500 nm PSF lands in it, so photons landing in the image are mostly 500 nm, in the
+    ratio of the two fractions landing (only 500 nm photons are detected here)."""
+    rng = np.random.default_rng(5)
+    wl = np.arange(400.0, 801.0)
+    spectrum = ((wl == 500) | (wl == 750)).astype(float)
+    qe = (wl < 600).astype(float)[None, :]   # detects only the 500 nm line
+    reps, n = 4000, 500
+    pe = photon_by_photon_photoelectrons(psf, spectrum, wl, qe, np.zeros((3, 3), int), n,
+                                         np.full(reps, 1.0), np.full(reps, 1.0), PIXEL_UM * 1000, rng)
+    f500, f750 = (psf.pixel_patch(lam, PIXEL_UM, 3, 9).sum() for lam in (0.5, 0.75))
+    assert pe.sum() / (reps * n) == pytest.approx(f500 / (f500 + f750), abs=0.005)
 
 
 def test_wavelengths_follow_spectrum():

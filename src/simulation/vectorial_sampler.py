@@ -140,13 +140,22 @@ def photon_by_photon_photoelectrons(
     rng: np.random.Generator,
     rqe: Optional[np.ndarray] = None,
     poisson: bool = True,
+    land_in_image: bool = True,
 ) -> np.ndarray:
     """Detected signal photoelectrons per pixel, photon by photon, on any mosaic.
 
-    Each repeat emits Poisson(``n_photons``) collected photons (exactly ``n_photons`` if not
-    ``poisson``); each photon gets its own wavelength from ``spectrum``, lands at a position drawn
-    from the PSF at that wavelength, and is detected in the pixel it lands in with probability
-    ``QE_type(lambda) * rqe``. Photons landing outside the image are lost.
+    Each repeat has Poisson(``n_photons``) photons (exactly ``n_photons`` if not ``poisson``); each
+    photon gets its own wavelength from ``spectrum``, lands at a position drawn from the PSF at that
+    wavelength, and is detected in the pixel it lands in with probability ``QE_type(lambda) * rqe``.
+
+    With ``land_in_image`` (default), ``n_photons`` counts the photons landing in the image, as in
+    the production model: a photon drawn outside it is redrawn, wavelength and position, until one
+    lands inside. The landed photons then have exactly the physical distribution of photons in the
+    image: the PSF's shape inside the image is unchanged, and their spectrum is the emission
+    spectrum weighted by each wavelength's fraction landing in the image (slightly bluer, as the PSF
+    is narrower at short wavelengths). Otherwise
+    ``n_photons`` counts every collected photon and those landing outside the image (~30% for the
+    dipole PSF and a 14 x 14 px image) are lost.
 
     Coordinates follow the fitter's convention: x = column, y = row, pixel centres at integers.
 
@@ -163,6 +172,9 @@ def photon_by_photon_photoelectrons(
         rng: Random generator.
         rqe: (H, W) relative QE of every pixel (default 1).
         poisson: Draw the photon number per repeat from Poisson(n_photons).
+        land_in_image: ``n_photons`` counts photons landing in the image (redraw those outside,
+            wavelength and position);
+            False: it counts all collected photons, and those outside are lost.
 
     Returns:
         (n_repeats, H, W) int32 photoelectrons.
@@ -173,11 +185,24 @@ def photon_by_photon_photoelectrons(
     n_emit = rng.poisson(n_photons, n_rep) if poisson else np.full(n_rep, int(round(n_photons)))
     rep = np.repeat(np.arange(n_rep), n_emit)
     lam_nm = sample_wavelengths_nm(spectrum, wavelength_nm, rep.shape, rng)
-    dx, dy, inside = psf.sample_offsets(lam_nm / 1000.0, rng)
-    with np.errstate(invalid="ignore"):
-        col = np.round(x0_px[rep] + dx * 1000.0 / pixel_nm)
-        row = np.round(y0_px[rep] + dy * 1000.0 / pixel_nm)
-    on_chip = inside & (col >= 0) & (col < W) & (row >= 0) & (row < H)
+
+    def land(sel):
+        """Pixel (col, row) and on-chip flag of the photons ``sel``, from fresh PSF draws."""
+        dx, dy, inside = psf.sample_offsets(lam_nm[sel] / 1000.0, rng)
+        with np.errstate(invalid="ignore"):
+            c = np.round(x0_px[rep[sel]] + dx * 1000.0 / pixel_nm)
+            r = np.round(y0_px[rep[sel]] + dy * 1000.0 / pixel_nm)
+        return c, r, inside & (c >= 0) & (c < W) & (r >= 0) & (r < H)
+
+    col, row, on_chip = land(np.arange(len(rep)))
+    for _ in range(10_000):
+        if not land_in_image or on_chip.all():
+            break
+        miss = np.flatnonzero(~on_chip)
+        lam_nm[miss] = sample_wavelengths_nm(spectrum, wavelength_nm, len(miss), rng)
+        col[miss], row[miss], on_chip[miss] = land(miss)
+    else:
+        raise ValueError("photons keep landing outside the image: is the emitter far outside it?")
     rep, lam_nm, col, row = rep[on_chip], lam_nm[on_chip], col[on_chip].astype(np.int64), row[on_chip].astype(np.int64)
     ptype = pixel_type[row, col]
     p = np.empty(len(rep))
