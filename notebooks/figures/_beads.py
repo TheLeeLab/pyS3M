@@ -18,6 +18,7 @@ photoelectrons pixel type X actually detected, so no such scaling is needed (``G
 """
 
 import warnings
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -103,11 +104,17 @@ def literature_pe(values, emitters):
     return quartiles(values) * mean_qe, mean_qe
 
 
-# The TetraSpeck dye each laser mainly excites. The spectra database has no TetraSpeck green or dark
-# red, and its "TetraSpeck orange dye" is the FluoSpheres orange spectrum (peak 559 nm), not
-# TetraSpeck orange (580 nm). TetraSpeck beads use the FluoSpheres dyes, so each laser's spectrum is
-# the nearest FluoSpheres spectrum, shifted so its peak sits at the manufacturer's emission peak
-# (PEAK_UM; shifts of +1, +21 and -3 nm).
+# Measured emission of the beads at each laser (TetraSpeck in solution, spectrofluorometer,
+# instrument-corrected; 2026-10-29). Each laser excites every TetraSpeck dye it can, so these are the
+# beads' actual emission at that laser. Laser scatter is cut before the emission-filter edge after
+# each line; each column is scaled to its peak. Cleaned by TetraspeckSpectra.ipynb, kept with the data.
+MEASURED_SPECTRA = Path(__file__).with_name("tetraspeck_emission_spectra.csv")
+
+# Database spectra used before the measurement, kept for comparison: the TetraSpeck dye each laser
+# mainly excites. The spectra database has no TetraSpeck green or dark red, and its "TetraSpeck orange
+# dye" is the FluoSpheres orange spectrum (peak 559 nm), not TetraSpeck orange (580 nm). TetraSpeck
+# beads use the FluoSpheres dyes, so each laser's spectrum is the nearest FluoSpheres spectrum,
+# shifted so its peak sits at the manufacturer's emission peak (PEAK_UM; shifts of +1, +21, -3 nm).
 TETRASPECK_SPECTRA = {"488": "FluoSpheres yellow-green fluorescent microspheres",
                       "561": "TetraSpeck orange dye",
                       "638": "FluoSpheres dark red fluorescent microspheres"}
@@ -116,12 +123,19 @@ BEAD_FILTERS = ["semrock-di03-r405-488-561-635-t1-25x36", "semrock-nf03-405-488-
                 "semrock-bsp01-785r", "semrock-blp01-488r"]
 
 
-def bead_effective_qe(laser, spectrum=None, peak_nm=None, filters=BEAD_FILTERS):
-    """Detected photoelectrons per photon reaching the Ximea from the bead dye ``laser`` excites.
+def measured_spectrum(laser, wavelength):
+    """The beads' measured emission at ``laser`` (peak = 1) on ``wavelength`` (nm); 0 where not measured."""
+    d = pd.read_csv(MEASURED_SPECTRA, comment="#")
+    return np.interp(wavelength, d["wavelength_nm"], d[f"ex{laser}"], left=0, right=0)
 
-    The dye spectrum (shifted to ``peak_nm``, default the manufacturer peak) is multiplied by the
-    emission filters, normalised to the photons that reach the detector, and weighted by each pixel
-    type's QE and share of the sensor.
+
+def bead_effective_qe(laser, spectrum=None, peak_nm=None, filters=BEAD_FILTERS):
+    """Detected photoelectrons per photon reaching the Ximea from the beads under ``laser``.
+
+    The emission spectrum is multiplied by the emission filters, normalised to the photons that
+    reach the detector, and weighted by each pixel type's QE and share of the sensor. By default it
+    is the measured bead emission at ``laser`` (``MEASURED_SPECTRA``); with ``spectrum``, a database
+    dye spectrum shifted so its peak is at ``peak_nm`` (default the manufacturer peak, ``PEAK_UM``).
 
     Returns:
         tuple[float, dict]: ``sum_X f_X q_X`` and ``{X: q_X}``, q_X = int PDF(l) QE_X(l) dl.
@@ -129,10 +143,14 @@ def bead_effective_qe(laser, spectrum=None, peak_nm=None, filters=BEAD_FILTERS):
     from pyS3M.SpectralFunctions import Spectral_Funcs
     sf = Spectral_Funcs()
     qe_r, qe_g, qe_b, wl = sf.getpixelefficiency()
-    spec = sf.get_dye_or_filter_data(names=[spectrum or TETRASPECK_SPECTRA[laser]], wavelength=wl,
-                                     dye_or_filter=True)[0]
-    peak_nm = 1000 * PEAK_UM[laser] if peak_nm is None else peak_nm
-    spec = np.interp(wl - (peak_nm - wl[np.argmax(spec)]), wl, spec, left=0, right=0)
+    if spectrum is None:
+        if peak_nm is not None:
+            raise ValueError("peak_nm shifts a database spectrum; the measured spectra are not shifted")
+        spec = measured_spectrum(laser, wl)
+    else:
+        spec = sf.get_dye_or_filter_data(names=[spectrum], wavelength=wl, dye_or_filter=True)[0]
+        peak_nm = 1000 * PEAK_UM[laser] if peak_nm is None else peak_nm
+        spec = np.interp(wl - (peak_nm - wl[np.argmax(spec)]), wl, spec, left=0, right=0)
     for name in filters:
         t = sf.get_dye_or_filter_data(names=[name], wavelength=wl, dye_or_filter=False)[0]
         spec = spec * (t / 100 if t.max() > 1.5 else t)
