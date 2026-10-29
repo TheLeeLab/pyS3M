@@ -17,6 +17,11 @@ import requests
 
 ACCESSION = "S-BIAD3210"
 BASE_URL = f"https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/210/{ACCESSION}/Files"
+# BioStudies' file-list API: every file of the deposition with its exact size, paged (at most
+# 1,000 rows per request). One listing (~0.1 s per page) replaces a HEAD request per file on the
+# FTP mirror, each of which can spend 20-60 s on the TLS handshake.
+FILES_API = f"https://www.ebi.ac.uk/biostudies/api/v1/files/{ACCESSION}"
+FILES_API_PAGE = 1000
 
 # (connect, read) seconds. ftp.ebi.ac.uk's TLS handshake routinely takes 20-30 s, sometimes
 # over 60 s (measured 2026-10-22). urllib3 counts the handshake against the *connect* timeout
@@ -33,6 +38,44 @@ RETRYABLE = (requests.ConnectionError, requests.Timeout, requests.exceptions.Chu
 
 # Optional local copy of the deposition (see use_local_mirror): (local root, prefix to strip).
 _LOCAL_MIRROR = None
+# {path relative to Files/: size in bytes}, filled on first use by remote_manifest().
+_MANIFEST = None
+
+
+def remote_manifest(refresh: bool = False) -> dict:
+    """Every file in the deposition, ``{path relative to Files/: size in bytes}``.
+
+    Fetched once per session from the BioStudies file-list API and kept in memory, so checking
+    local copies against the deposition needs no request per file.
+    """
+    global _MANIFEST
+    if _MANIFEST is not None and not refresh:
+        return _MANIFEST
+
+    def page(start):
+        def get():
+            with requests.get(FILES_API, params={"start": start, "length": FILES_API_PAGE},
+                              timeout=TIMEOUT) as r:
+                r.raise_for_status()
+                return r.json()
+        return _retry(get, f"file list from {start}")
+
+    first = page(0)
+    rows = list(first["data"])
+    for start in range(FILES_API_PAGE, int(first["recordsTotal"]), FILES_API_PAGE):
+        rows += page(start)["data"]
+    if len(rows) != int(first["recordsTotal"]):
+        raise RuntimeError(f"file list incomplete: {len(rows)} of {first['recordsTotal']} files")
+    _MANIFEST = {r["path"]: int(r["size"]) for r in rows if r.get("type", "file") == "file"}
+    return _MANIFEST
+
+
+def _remote_size(remote_rel_path: str):
+    """Size from the file list, or None if the list is unavailable or lacks the file."""
+    try:
+        return remote_manifest().get(remote_rel_path.strip("/"))
+    except (*RETRYABLE, requests.HTTPError, RuntimeError, ValueError, KeyError):
+        return None
 
 
 def use_local_mirror(local_root, strip_prefix: str = "2026_Multicolour_Paper/") -> None:
@@ -111,7 +154,7 @@ def _retry(action, what: str, max_attempts: int = None, progress=None):
 
 
 def download_file(remote_rel_path: str, dest_dir: Path, chunk_size: int = 1 << 20,
-                   force: bool = False) -> Path:
+                   force: bool = False, remote_size: int = None) -> Path:
     """Download one file from the deposition to *dest_dir*, keeping only its
     basename (the deposition's own folder structure isn't reproduced locally).
 
@@ -127,6 +170,9 @@ def download_file(remote_rel_path: str, dest_dir: Path, chunk_size: int = 1 << 2
     so ``x.ome.tif.part`` would be fitted as a TIFF and ``x_metadata.txt.part``
     read as the metadata.
 
+    The remote size comes from *remote_size*, else from the file list (``remote_manifest``),
+    else from a HEAD request; a complete local copy then needs no request at all.
+
     With a local mirror set (``use_local_mirror``), links the local file instead.
     """
     if _LOCAL_MIRROR is not None:
@@ -141,7 +187,10 @@ def download_file(remote_rel_path: str, dest_dir: Path, chunk_size: int = 1 << 2
             r.raise_for_status()
             return int(r.headers.get("Content-Length", -1))
 
-    remote_size = _retry(head, f"HEAD {dest.name}")
+    if remote_size is None:
+        remote_size = _remote_size(remote_rel_path)
+    if remote_size is None:
+        remote_size = _retry(head, f"HEAD {dest.name}")
 
     if not force and dest.exists() and remote_size >= 0 and dest.stat().st_size == remote_size:
         print(f"Already downloaded: {dest.name} ({human_size(remote_size)})")
@@ -221,14 +270,23 @@ def _natural_key(name: str):
 def list_remote_folder(remote_rel_folder: str) -> list:
     """Return the names of the files in one deposition folder (sub-folders excluded).
 
-    Parses the mirror's HTML directory index (or lists the local copy set by
-    ``use_local_mirror``); the names come back naturally sorted.
+    Reads the deposition's file list (``remote_manifest``), falling back to the mirror's HTML
+    directory index (or lists the local copy set by ``use_local_mirror``); the names come
+    back naturally sorted.
     """
     if _LOCAL_MIRROR is not None:
         folder = _mirrored(remote_rel_folder)
         if not folder.is_dir():
             raise FileNotFoundError(f"{folder} (local copy of {remote_rel_folder}) not found")
         return sorted((p.name for p in folder.iterdir() if p.is_file()), key=_natural_key)
+    prefix = remote_rel_folder.strip("/") + "/"
+    try:
+        names = [p[len(prefix):] for p in remote_manifest() if p.startswith(prefix)
+                 and "/" not in p[len(prefix):]]
+    except (*RETRYABLE, requests.HTTPError, RuntimeError, ValueError, KeyError):
+        names = []
+    if names:
+        return sorted(names, key=_natural_key)
     url = f"{BASE_URL}/{remote_rel_folder.strip('/')}/"
 
     def get():
@@ -297,11 +355,18 @@ def download_acquisition(remote_folder: str, dest_dir: Path, stem: str = None,
             f"(e.g. {extra[0]}), which the fit would also read. Use a separate folder per "
             "acquisition and per FAST_MODE setting, or move them out.")
 
-    total = len(images) + len(metadata)
-    print(f"{remote_folder}: {len(images)} image file(s) + {len(metadata)} metadata file(s)")
-    for i, name in enumerate(metadata + images, 1):
-        print(f"[{i}/{total}] ", end="")
-        download_file(f"{remote_folder.strip('/')}/{name}", dest_dir)
+    # Check every local copy against the file list first; only then download what is missing.
+    folder = remote_folder.strip("/")
+    wanted = metadata + images
+    sizes = {n: _remote_size(f"{folder}/{n}") for n in wanted}
+    missing = [n for n in wanted if sizes[n] is None or not (dest_dir / n).exists()
+               or (dest_dir / n).stat().st_size != sizes[n]]
+    print(f"{remote_folder}: {len(images)} image file(s) + {len(metadata)} metadata file(s); "
+          f"{len(wanted) - len(missing)} already here"
+          + (f", downloading {len(missing)}" if missing else ""))
+    for i, name in enumerate(missing, 1):
+        print(f"[{i}/{len(missing)}] ", end="")
+        download_file(f"{folder}/{name}", dest_dir, remote_size=sizes[name])
 
     return {"images": [dest_dir / n for n in images],
             "metadata": [dest_dir / n for n in metadata]}
