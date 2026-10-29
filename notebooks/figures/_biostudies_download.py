@@ -355,9 +355,17 @@ def download_acquisition(remote_folder: str, dest_dir: Path, stem: str = None,
             f"(e.g. {extra[0]}), which the fit would also read. Use a separate folder per "
             "acquisition and per FAST_MODE setting, or move them out.")
 
-    # Check every local copy against the file list first; only then download what is missing.
     folder = remote_folder.strip("/")
     wanted = metadata + images
+    if _LOCAL_MIRROR is not None:   # local copy: link the files, never query EBI
+        print(f"{remote_folder}: {len(images)} image file(s) + {len(metadata)} metadata file(s), "
+              "from the local copy")
+        for name in wanted:
+            download_file(f"{folder}/{name}", dest_dir)
+        return {"images": [dest_dir / n for n in images],
+                "metadata": [dest_dir / n for n in metadata]}
+
+    # Check every local copy against the file list first; only then download what is missing.
     sizes = {n: _remote_size(f"{folder}/{n}") for n in wanted}
     missing = [n for n in wanted if sizes[n] is None or not (dest_dir / n).exists()
                or (dest_dir / n).stat().st_size != sizes[n]]
