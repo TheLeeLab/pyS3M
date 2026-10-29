@@ -67,12 +67,14 @@ class Calibration_Functions:
 
         # Dependency injection with sensible defaults
         self.io = (
-            io_functions if io_functions is not None else IOFunctions.IO_Functions()
+            io_functions
+            if io_functions is not None
+            else IOFunctions.IO_Functions(camera=camera, mosaic_unit=self.mosaic_unit)
         )
         self.Mask = (
             mask_functions
             if mask_functions is not None
-            else MaskFunctions.Mask_Functions()
+            else MaskFunctions.Mask_Functions(camera=camera, mosaic_unit=self.mosaic_unit)
         )
         self.helper = (
             helper_functions

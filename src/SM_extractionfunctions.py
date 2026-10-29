@@ -21,7 +21,7 @@ from pyS3M.channel_unmixing import ChannelUnmixingMixin
 class extract_SMs(HDBSCANMixin, DBSCANMixin, LinkedMixin, BatchMixin,
                   MixtureAnalysisMixin, ChannelUnmixingMixin,
                   ClusteringBaseMixin):
-    def __init__(self, camera: str = "ximea", pixel_size: float = None, io_functions=None) -> None:
+    def __init__(self, camera: str = "ximea", pixel_size: float = None, io_functions=None, mosaic_unit=None) -> None:
         """Single molecule extraction functions for clustering localizations into single molecules.
 
         Args:
@@ -29,6 +29,8 @@ class extract_SMs(HDBSCANMixin, DBSCANMixin, LinkedMixin, BatchMixin,
                 and therefore sigma bounds if not overridden explicitly.
             pixel_size: Physical pixel size in µm. If None, taken from camera defaults.
             io_functions: IO functions instance (default: creates new instance)
+            mosaic_unit: Mosaic pattern; sets the pixel fractions used for ``photoelectrons``.
+                If None, taken from camera defaults.
         """
         import pyS3M.CameraDefaults as CameraDefaults
         config = CameraDefaults.get_camera_config(camera)
@@ -36,7 +38,7 @@ class extract_SMs(HDBSCANMixin, DBSCANMixin, LinkedMixin, BatchMixin,
 
         # Dependency injection with sensible defaults
         self.io = (
-            io_functions if io_functions is not None else IOFunctions.IO_Functions(camera=camera)
+            io_functions if io_functions is not None else IOFunctions.IO_Functions(camera=camera, mosaic_unit=mosaic_unit)
         )
 
     def _load_localisation_files(self, loc_data, start_frame=0):

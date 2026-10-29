@@ -81,7 +81,9 @@ class SuperRes_Functions:
 
         # Dependency injection with sensible defaults
         self.io = (
-            io_functions if io_functions is not None else IOFunctions.IO_Functions()
+            io_functions
+            if io_functions is not None
+            else IOFunctions.IO_Functions(camera=camera, mosaic_unit=self.mosaic_unit)
         )
         self.helper = (
             helper_functions
@@ -91,7 +93,7 @@ class SuperRes_Functions:
         self.mask = (
             mask_functions
             if mask_functions is not None
-            else MaskFunctions.Mask_Functions()
+            else MaskFunctions.Mask_Functions(camera=camera, mosaic_unit=self.mosaic_unit)
         )
         self.image_analysis = (
             image_analysis_functions

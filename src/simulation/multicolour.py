@@ -546,7 +546,9 @@ class MultiC_Sim_Funcs_Refactored:
 
         # Dependency injection with sensible defaults
         self.io = (
-            io_functions if io_functions is not None else IOFunctions.IO_Functions()
+            io_functions
+            if io_functions is not None
+            else IOFunctions.IO_Functions(camera=camera, mosaic_unit=self.mosaic_unit)
         )
         self.psf = (
             psf_functions if psf_functions is not None else PSFFunctions.PSF_Functions()

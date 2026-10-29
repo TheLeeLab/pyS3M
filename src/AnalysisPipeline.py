@@ -95,6 +95,7 @@ class AnalysisPipeline:
         camera: str = "ximea",
         pixel_size: float | None = None,
         config: AnalysisConfig | None = None,
+        mosaic_unit: NDArray | None = None,
     ) -> None:
         """Initialise pipeline with camera defaults.
 
@@ -103,11 +104,15 @@ class AnalysisPipeline:
             pixel_size: Pixel size in µm.  ``None`` → from camera defaults.
             config: :class:`~Constants.AnalysisConfig` controlling display and
                 I/O behaviour.  Defaults to interactive mode with no auto-save.
+            mosaic_unit: Colour-filter mosaic unit cell.  ``None`` → from camera
+                defaults.  Passed to every sub-function, so masks and
+                ``photoelectrons`` follow it.
         """
         import pyS3M.CameraDefaults as CameraDefaults
         cam_cfg = CameraDefaults.get_camera_config(camera)
         self.camera = camera
         self.pixel_size = pixel_size if pixel_size is not None else cam_cfg.pixel_size
+        self.mosaic_unit = mosaic_unit if mosaic_unit is not None else cam_cfg.mosaic_unit
         self.config = config if config is not None else AnalysisConfig()
 
         # Lazy-initialised sub-function instances
@@ -140,6 +145,7 @@ class AnalysisPipeline:
             import pyS3M.SR_Functions as SR_Functions
             self._sr = SR_Functions.SuperRes_Functions(
                 camera=self.camera,
+                mosaic_unit=self.mosaic_unit,
                 pixel_size=self.pixel_size,
                 config=self.config,
             )
@@ -152,6 +158,7 @@ class AnalysisPipeline:
             import pyS3M.SM_extractionfunctions as SM_extractionfunctions
             self._sm = SM_extractionfunctions.extract_SMs(
                 camera=self.camera,
+                mosaic_unit=self.mosaic_unit,
                 pixel_size=self.pixel_size,
             )
         return self._sm
@@ -174,6 +181,7 @@ class AnalysisPipeline:
             import pyS3M.NileRedFunctions as NileRedFunctions
             self._nile_red = NileRedFunctions.NileRed_Functions(
                 camera=self.camera,
+                mosaic_unit=self.mosaic_unit,
                 pixel_size=self.pixel_size,
             )
         return self._nile_red
@@ -234,7 +242,7 @@ class AnalysisPipeline:
                 returns ``None``.
         """
         import pyS3M.CalibrationFunctions as CalibrationFunctions
-        cf = CalibrationFunctions.Calibration_Functions(camera=self.camera)
+        cf = CalibrationFunctions.Calibration_Functions(camera=self.camera, mosaic_unit=self.mosaic_unit)
         result = cf.calibrate_multicolour_camera(cal_dir, imtype=imtype, mode=mode)
         if result is None:
             raise RuntimeError(

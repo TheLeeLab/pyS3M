@@ -93,6 +93,7 @@ class NileRed_Functions:
         alpha: float = -1.56453968,
         wavelength_center_init: float = 617.6,
         config: AnalysisConfig = None,
+        mosaic_unit=None,
     ):
         """Initialize Nile Red model with spectral parameters.
 
@@ -104,10 +105,13 @@ class NileRed_Functions:
             alpha: Skewness parameter, default from fit
             wavelength_center_init: Initial guess for central wavelength (nm)
             config: AnalysisConfig controlling progress and logging callbacks.
+            mosaic_unit: Mosaic pattern. If None, taken from camera defaults.
         """
         import pyS3M.CameraDefaults as CameraDefaults
         _cam = CameraDefaults.get_camera_config(camera)
         self.pixel_size = pixel_size if pixel_size is not None else _cam.pixel_size
+        self.camera = camera
+        self.mosaic_unit = mosaic_unit if mosaic_unit is not None else _cam.mosaic_unit
         self.config = config if config is not None else AnalysisConfig()
 
         self.default_sigma_energy = sigma_energy
@@ -117,7 +121,7 @@ class NileRed_Functions:
         # Initialize SpectralFunctions, PSFFunctions, and IOFunctions
         self.spectral_funcs = SpectralFunctions.Spectral_Funcs(camera=camera)
         self.psf_funcs = PSFFunctions.PSF_Functions()
-        self.io = IOFunctions.IO_Functions()
+        self.io = IOFunctions.IO_Functions(camera=camera, mosaic_unit=self.mosaic_unit)
 
     def setup_optical_system(
         self, filter_names: list
@@ -938,7 +942,7 @@ class NileRed_Functions:
 
         # Setup default camera parameters if not provided
         if camera_parameters is None:
-            M_F = MaskFunctions.Mask_Functions()
+            M_F = MaskFunctions.Mask_Functions(camera=self.camera, mosaic_unit=self.mosaic_unit)
             masks = M_F.get_masks(size_x=image_size, size_y=image_size)
 
             # Use realistic camera parameters (median from calibrations)
