@@ -3789,60 +3789,24 @@ class MultiC_Sim_Funcs(MultiC_Sim_Funcs_Compatibility):
         x0 = np.random.uniform(center - position_range, center + position_range, n_simulations)
         y0 = np.random.uniform(center - position_range, center + position_range, n_simulations)
 
-        # STOCHASTIC PHOTON SAMPLING:
-        # Two levels of stochasticity for realistic shot noise:
-        # 1. Poisson photon count variation (each molecule emits different # photons)
-        # 2. Spectral sampling (which wavelengths are emitted for those photons)
-
-        rng = np.random.default_rng(42)  # Reproducible random state
-
-        # Step 1: Poisson photon count sampling (vectorized, single call)
-        # Each frame gets a different photon count drawn from Poisson distribution
-        photon_counts_per_frame = rng.poisson(expected_photons, size=n_simulations)
-
-        # Step 2: FAST spectral sampling using bulk bootstrap method
-        # Strategy: Use generate_bootstrap_colour_ratios() for expected photon count,
-        # which samples all photons at once (~N× faster than loop).
-        # The Poisson variation in photon counts is handled by gen_camera_image_stack.
-
+        # Shot noise: gen_camera_image_stack draws Poisson(expected_photons) photons per frame, each
+        # with its own wavelength from dye_at_detector (dipole model), so the mean is passed here.
+        # (Until 2026-10-29 Poisson-drawn counts were passed, drawing the photon number twice.)
         pixel_QYs = camera_parameters["pixel_QYs"]
-        pixel_order = camera_parameters["pixel_order"]
+        n_photons = {dye_name: np.full(n_simulations, float(expected_photons))}
+        # Mean wavelength and per-colour QE: only used for the (unused) normal image here
+        average_emission_wavelengths = float(wavelength @ dye_at_detector)
+        dye_pixel_efficiency = np.asarray(pixel_QYs, dtype=float) @ dye_at_detector
 
-        # Bulk sample wavelengths and color ratios (FAST: single call)
-        average_emission_wavelengths, bgr_ratios = self.spectral.generate_bootstrap_colour_ratios(
-            dye_at_detector,
-            wavelength,
-            pixel_QYs,
-            n_photons_per_image=int(expected_photons),
-            n_bootstrap=n_simulations,
-            pixel_order=pixel_order,
-            pixel_order_indices={'B': 0, 'G': 1, 'R': 2},
-            random_state=rng
-        )
-
-        # Note: We use expected_photons for spectral sampling, but actual
-        # photon_counts_per_frame for image generation. This is accurate because:
-        # 1. Spectral properties (wavelength, BGR ratios) depend on which photons
-        #    are emitted, not how many (central limit theorem applies)
-        # 2. Shot noise in color ratios scales as ~1/√N, accurately captured
-        # 3. Poisson variation in total count is applied in gen_camera_image_stack
-
-        # Prepare inputs for gen_camera_image_stack
-        n_photons = {dye_name: photon_counts_per_frame}  # Array of Poisson-sampled counts
         x0y0 = {dye_name: np.zeros([n_simulations, 2, 1])}
         x0y0[dye_name][:, 0, 0] = x0
         x0y0[dye_name][:, 1, 0] = y0
 
-        # Convert BGR ratios to pixel efficiencies (quantum efficiencies per channel)
-        # These represent the effective QE for each channel for this specific set of photons
-        dye_pixel_efficiency = bgr_ratios  # Shape: (n_simulations, 3)
-
-        # Generate images with per-frame wavelengths and color ratios
         data, _, _ = self.gen_camera_image_stack(
             camera_parameters,
             wavelength,
-            average_emission_wavelengths,  # Array: per-frame wavelengths
-            dye_pixel_efficiency,           # Array: per-frame BGR ratios
+            average_emission_wavelengths,
+            dye_pixel_efficiency,
             n_photons,
             x0y0,
             smoothing_function,
