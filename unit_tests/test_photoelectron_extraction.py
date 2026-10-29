@@ -91,6 +91,7 @@ def test_photoelectron_extraction():
         pixel_size=pixel_size,
         return_normal_image=True,
         return_photoelectrons=True,  # KEY PARAMETER
+        emission_spectra={'dye': np.exp(-0.5 * ((wavelength - average_emission_wavelength) / 20.0) ** 2)},
     )
 
     print(f"✓ Bayer image (ADU):      shape={bayer_adu.shape}, range=[{bayer_adu.min():.1f}, {bayer_adu.max():.1f}]")

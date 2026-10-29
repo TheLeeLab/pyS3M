@@ -242,6 +242,11 @@ class TestValidateInputs:
 # gen_camera_image_stack
 # ======================================================================
 
+def _spectra(x0y0, wl, peak_nm=660.0, width_nm=20.0):
+    """A Gaussian emission spectrum for every dye of ``x0y0`` (dipole PSF model)."""
+    return {dye: np.exp(-0.5 * ((wl - peak_nm) / width_nm) ** 2) for dye in x0y0}
+
+
 def _minimal_x0y0_photons(size=8, n_bootstrap=2):
     x0y0 = {"dye": np.zeros((n_bootstrap, 2, 1))}
     x0y0["dye"][:, 0, 0] = size / 2.0
@@ -258,6 +263,7 @@ class TestGenCameraImageStack:
             camera_parameters, wl, 660.0, np.array([0.2, 0.3, 0.5]),
             n_photons, x0y0, smoothing_function=smoothing_function,
             background_photons=5.0, use_vectorized_photoelectrons=False,
+            psf_model="gaussian",
         )
         assert bayer.shape == (2, 8, 8)
 
@@ -269,6 +275,7 @@ class TestGenCameraImageStack:
             n_photons, x0y0, smoothing_function=smoothing_function,
             background_photons=5.0, use_vectorized_photoelectrons=False,
             return_normal_image=True,
+            psf_model="gaussian",
         )
         assert normal.shape == (2, 8, 8)
 
@@ -280,6 +287,7 @@ class TestGenCameraImageStack:
             n_photons, x0y0, smoothing_function=smoothing_function,
             background_photons=5.0, use_vectorized_photoelectrons=False,
             return_normal_image=True, return_photoelectrons=True,
+            psf_model="gaussian",
         )
         assert normal.dtype in (np.int64, np.int32, np.float64)
 
@@ -299,7 +307,8 @@ class TestGenCameraImageStack:
         bayer, smoothed, _ = sim.gen_camera_image_stack(
             camera_parameters, wl, 660.0, np.array([0.2, 0.3, 0.5]),
             n_photons, x0y0, smoothing_function=smoothing_function,
-            background_photons=5.0, motion_velocity_nm_per_s=5e6, frame_exposure_ms=100.0,
+            background_photons=5.0, motion_velocity_nm_per_s=5e3, frame_exposure_ms=100.0,
+            emission_spectra=_spectra(x0y0, wl),
         )
         assert bayer.shape == (2, 8, 8)
 
@@ -311,6 +320,7 @@ class TestGenCameraImageStack:
             n_photons, x0y0, smoothing_function=smoothing_function,
             background_photons=5.0, motion_velocity_nm_per_s=5e6, frame_exposure_ms=100.0,
             use_vectorized_photoelectrons=False,
+            psf_model="gaussian",
         )
         assert bayer.shape == (2, 8, 8)
 
@@ -333,6 +343,7 @@ class TestGenCameraImageStack:
             camera_parameters, wl, 660.0, np.array([0.2, 0.3, 0.5]),
             n_photons, x0y0, smoothing_function=None,
             background_photons=5.0, return_photoelectrons_stack=True,
+            emission_spectra=_spectra(x0y0, wl),
         )
         assert pe.dtype == np.int32
         assert pe.shape == (2, 8, 8)
@@ -343,6 +354,7 @@ class TestGenCameraImageStack:
         bayer, smoothed, _ = sim.gen_camera_image_stack(
             camera_parameters, wl, 660.0, np.array([0.2, 0.3, 0.5]),
             n_photons, x0y0, smoothing_function=None, background_photons=5.0,
+            emission_spectra=_spectra(x0y0, wl),
         )
         # smoothed_image=None survives an np.squeeze() as a 0-d object array
         # wrapping None, not None itself.
@@ -356,6 +368,7 @@ class TestGenCameraImageStack:
         bayer, smoothed, _ = sim.gen_camera_image_stack(
             camera_parameters, wl, avg_wl, dpe,
             n_photons, x0y0, smoothing_function=smoothing_function, background_photons=5.0,
+            emission_spectra=_spectra(x0y0, wl),
         )
         assert bayer.shape == (2, 8, 8)
 
@@ -368,6 +381,7 @@ class TestGenCameraImageStack:
             camera_parameters, wl, avg_wl, dpe,
             n_photons, x0y0, smoothing_function=smoothing_function, background_photons=5.0,
             use_vectorized_photoelectrons=False,
+            psf_model="gaussian",
         )
         assert bayer.shape == (2, 8, 8)
 
@@ -380,6 +394,7 @@ class TestGenCameraImageStack:
         bayer, smoothed, _ = sim.gen_camera_image_stack(
             camera_parameters, wl, 660.0, np.array([0.2, 0.3, 0.5]),
             n_photons, x0y0, smoothing_function=smoothing_function, background_photons=5.0,
+            emission_spectra=_spectra(x0y0, wl),
         )
         assert bayer.dtype == np.float32
 
@@ -395,6 +410,7 @@ class TestGenCameraImageStack:
         bayer, smoothed, _ = sim.gen_camera_image_stack(
             cp, wl, 660.0, np.array([0.2, 0.3, 0.5]),
             n_photons, x0y0, smoothing_function=smoothing_function, background_photons=5.0,
+            emission_spectra=_spectra(x0y0, wl),
         )
         assert bayer.dtype in (np.uint16, np.uint8, np.float32)
 
@@ -410,6 +426,7 @@ class TestGenCameraImageStack:
         bayer, smoothed, _ = sim.gen_camera_image_stack(
             cp, wl, 660.0, np.array([0.2, 0.3, 0.5]),
             n_photons, x0y0, smoothing_function=smoothing_function, background_photons=5.0,
+            emission_spectra=_spectra(x0y0, wl),
         )
         assert bayer.shape == (2, 8, 8)
 
@@ -424,6 +441,7 @@ class TestGenCameraImageStack:
             cp, wl, 660.0, np.array([0.2, 0.3, 0.5]),
             n_photons, x0y0, smoothing_function=smoothing_function, background_photons=5.0,
             use_vectorized_photoelectrons=False,
+            psf_model="gaussian",
         )
         assert bayer.shape == (2, 8, 8)
 
@@ -947,6 +965,7 @@ class TestGenCameraImageStackEdgeCases:
         bayer, smoothed, _ = sim.gen_camera_image_stack(
             camera_parameters, wl, 660.0, np.float64(0.5),
             n_photons, x0y0, smoothing_function=smoothing_function, background_photons=5.0,
+            emission_spectra=_spectra(x0y0, wl),
         )
         # A 0-d n_photons array has no meaningful `.shape[0]`, forcing the
         # except-fallback `s = 1`; np.squeeze then drops that leading axis.
@@ -962,6 +981,7 @@ class TestGenCameraImageStackEdgeCases:
             camera_parameters, wl, 660.0, np.float64(0.5),
             n_photons, x0y0, smoothing_function=smoothing_function, background_photons=5.0,
             use_vectorized_photoelectrons=False,
+            psf_model="gaussian",
         )
         assert bayer.shape == (8, 8)
 
@@ -974,6 +994,7 @@ class TestGenCameraImageStackEdgeCases:
         bayer, smoothed, _ = sim.gen_camera_image_stack(
             camera_parameters, wl, 660.0, np.array([0.2, 0.3, 0.5]),
             n_photons, x0y0, smoothing_function=smoothing_function, background_photons=5.0,
+            emission_spectra=_spectra(x0y0, wl),
         )
         # n_photons["dye"] has a single frame, so s=1 and np.squeeze drops it.
         assert bayer.shape == (8, 8)
@@ -986,6 +1007,7 @@ class TestGenCameraImageStackEdgeCases:
             camera_parameters, wl, 660.0, np.array([0.2, 0.3, 0.5]),
             n_photons, x0y0, smoothing_function=smoothing_function, background_photons=5.0,
             use_vectorized_photoelectrons=False,
+            psf_model="gaussian",
         )
         assert bayer.shape == (8, 8)
 
@@ -998,6 +1020,7 @@ class TestGenCameraImageStackEdgeCases:
         bayer, smoothed, _ = sim.gen_camera_image_stack(
             camera_parameters, wl, 660.0, np.array([0.2, 0.3, 0.5]),
             n_photons, x0y0, smoothing_function=smoothing_function, background_photons=5.0,
+            emission_spectra=_spectra(x0y0, wl),
         )
         assert bayer.shape == (8, 8)
 
@@ -1011,6 +1034,7 @@ class TestGenCameraImageStackEdgeCases:
             camera_parameters, wl, 660.0, np.array([0.2, 0.3, 0.5]),
             n_photons, x0y0, smoothing_function=smoothing_function, background_photons=5.0,
             use_vectorized_photoelectrons=False,
+            psf_model="gaussian",
         )
         assert bayer.shape == (8, 8)
 
@@ -1042,6 +1066,7 @@ class TestGenCameraImageStackEdgeCases:
             cp, wl, 660.0, np.array([0.5, 0.5, 0.5]),
             n_photons, x0y0, smoothing_function=smoothing_function, background_photons=5.0,
             use_vectorized_photoelectrons=False,
+            psf_model="gaussian",
         )
         assert bayer.shape == (2, 8, 8)
 
@@ -1052,6 +1077,7 @@ class TestGenCameraImageStackEdgeCases:
             camera_parameters, wl, 660.0, np.array([0.2, 0.3, 0.5]),
             n_photons, x0y0, smoothing_function=smoothing_function, background_photons=5.0,
             return_normal_image=True, return_photoelectrons=False,
+            emission_spectra=_spectra(x0y0, wl),
         )
         assert normal.shape == (2, 8, 8)
 
@@ -1062,6 +1088,7 @@ class TestGenCameraImageStackEdgeCases:
             camera_parameters, wl, 660.0, np.array([0.2, 0.3, 0.5]),
             n_photons, x0y0, smoothing_function=smoothing_function, background_photons=5.0,
             return_normal_image=True, return_photoelectrons=True,
+            emission_spectra=_spectra(x0y0, wl),
         )
         assert normal.shape == (2, 8, 8)
 
@@ -1333,6 +1360,7 @@ class TestPerFrameCalibrationGeneration:
             cp, wl, 660.0, np.array([0.2, 0.3, 0.5]), n_photons, x0y0,
             smoothing_function=smoothing_function, background_photons=5.0,
             use_vectorized_photoelectrons=vectorized,
+            psf_model="gaussian",
         )
         assert bayer.shape == (2, 8, 8)
         assert bayer[1, 0, 0] >= 5000
@@ -1395,6 +1423,39 @@ class TestSimulationMethodFullChip:
             )
 
 
+class TestDipoleModel:
+    """The default image model: photon by photon with the vectorial dipole PSF."""
+
+    def test_missing_spectra_raise(self, sim, camera_parameters, wavelength_and_qys):
+        wl, _ = wavelength_and_qys
+        x0y0, n_photons = _minimal_x0y0_photons()
+        with pytest.raises(SimulationValidationError, match="emission_spectra"):
+            sim.gen_camera_image_stack(camera_parameters, wl, 660.0, np.array([0.2, 0.3, 0.5]),
+                                       n_photons, x0y0, return_photoelectrons_stack=True)
+
+    @pytest.mark.parametrize("chunk", [None, 700])
+    def test_frames_keep_their_own_calibration_when_chunked(self, sim, camera_parameters, wavelength_and_qys,
+                                                            monkeypatch, chunk):
+        """Every frame's photons use that frame's rqe, whether or not frames are sampled in chunks."""
+        if chunk is not None:
+            monkeypatch.setattr(type(sim), "PHOTONS_PER_CHUNK", chunk)
+        wl, pixel_QYs = wavelength_and_qys
+        n = 6
+        x0y0, n_photons = _minimal_x0y0_photons(n_bootstrap=n)
+        x0y0["dye"][:, :, 0] = 3.5 * 69.0  # centre of the 8 x 8 image (69 nm pixels)
+        cp = dict(camera_parameters)
+        cp["rqe"] = np.ones((n, 8, 8))
+        cp["rqe"][1::2] = 0.0  # odd frames detect nothing
+        pe = sim.gen_camera_image_stack(cp, wl, 660.0, np.array([0.2, 0.3, 0.5]), n_photons, x0y0,
+                                        background_photons=0.0, pixel_size=69.0, return_photoelectrons_stack=True,
+                                        emission_spectra=_spectra(x0y0, wl), motion_velocity_nm_per_s=1e3)
+        totals = pe.sum(axis=(1, 2))
+        assert np.all(totals[1::2] == 0)
+        spectrum = _spectra(x0y0, wl)["dye"]
+        mean_qe = (pixel_QYs @ spectrum / spectrum.sum()).mean()  # Bayer: B, G, G, R averaged ~ evenly
+        assert np.all(totals[0::2] > 0.5 * 2000 * mean_qe)
+
+
 class TestBackgroundDefinition:
     """background_photons = mean photons reaching each pixel, detected with the pixel's
     flat-spectrum background QE (SI Eqs. pe_generation, qe_background), whatever the dye."""
@@ -1405,6 +1466,7 @@ class TestBackgroundDefinition:
             camera_parameters, wl, 600.0, np.asarray(dpe), {"dye": np.full(n, n_photons)},
             x0y0, background_photons=5.0, background_colour=colour,
             return_photoelectrons_stack=True,
+            emission_spectra=_spectra(x0y0, wl),
         )
 
     def test_flat_spectrum_qe_is_qe_averaged_over_wavelength(self, sim):
@@ -1465,6 +1527,7 @@ class TestBackgroundDefinition:
         _, _, normal = sim.gen_camera_image_stack(
             camera_parameters, wl, 600.0, np.array([0.1, 0.5, 0.3]), {"dye": np.zeros(n)},
             x0y0, background_photons=5.0, return_normal_image=True, return_photoelectrons=True,
+            emission_spectra=_spectra(x0y0, wl),
         )
         expected = 5.0 * sim.background_pixel_efficiency(wl, qys).mean()
         assert normal.mean() == pytest.approx(expected, rel=0.04)
@@ -1494,7 +1557,8 @@ class TestStochasticPhotonColourStatistics:
         x0y0, _ = _minimal_x0y0_photons(n_bootstrap=n)
         np.random.seed(seed)
         pe = sim.gen_camera_image_stack(camera_parameters, wl, avg_wl, dpe, {"dye": np.full(n, float(N))}, x0y0,
-                                        background_photons=0.0, return_photoelectrons_stack=True).astype(float)
+                                        background_photons=0.0, return_photoelectrons_stack=True,
+                                        emission_spectra=_spectra(x0y0, wl),).astype(float)
         m = camera_parameters["masks"]
         return np.stack([pe[:, m[c]].sum(axis=1) for c in "BGR"], axis=1)
 

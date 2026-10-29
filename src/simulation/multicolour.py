@@ -28,6 +28,7 @@ import pyS3M.sCMOSFunctions as sCMOSFunctions
 import pyS3M.ImageAnalysisFunctions as ImageAnalysisFunctions
 import pyS3M.SpectralFunctions as SpectralFunctions
 import pyS3M.MaskFunctions as MaskFunctions
+from pyS3M.simulation.vectorial_sampler import photon_by_photon_photoelectrons, radial_dipole_psf
 from pyS3M.ImageAnalysisFunctions import FittingStrategy as IAF_FittingStrategy
 
 
@@ -190,6 +191,12 @@ class SimulationConfig:
             test whose threshold is calibrated so noise_rate of pure-noise fits pass),
             "amplitude_snr" (the previous gate, to reproduce earlier results) or None (no gate)
         noise_rate (float): For "delta_chi2", the fraction of pure-noise fits that pass (default 0.01)
+        psf_model (str): "dipole" (default): photon by photon with the vectorial dipole PSF, each
+            photon with its own wavelength (``gen_camera_image_stack``); "gaussian": the previous
+            Gaussian PSF at the mean wavelength. With "dipole", ``use_stochastic_photons`` has no
+            effect (every photon already has its own wavelength).
+        n_medium (float): Refractive index of the sample medium for the dipole PSF (default 1.33)
+        n_immersion (float): Refractive index of the immersion oil for the dipole PSF (default 1.515)
     """
 
     n_bootstrap: int = 100000
@@ -215,6 +222,9 @@ class SimulationConfig:
     chip_sampling_seed: int | None = None
     fit_gate: str | None = "delta_chi2"
     noise_rate: float = 0.01
+    psf_model: str = "dipole"
+    n_medium: float = 1.33
+    n_immersion: float = 1.515
 
     def __post_init__(self):
         """
@@ -511,6 +521,10 @@ class MultiC_Sim_Funcs_Refactored:
     It consolidates multiple fitting strategies into a unified interface while maintaining
     backward compatibility with the original implementation.
     """
+
+
+    # Photons per photon-by-photon sampler call in the dipole model (bounds the per-emitter arrays)
+    PHOTONS_PER_CHUNK = 50_000_000
 
     def __init__(
         self,
@@ -1800,10 +1814,30 @@ class MultiC_Sim_Funcs_Refactored:
         distance_from_coverslip_um: float = 0.0,
         motion_velocity_nm_per_s: float = 0.0,
         frame_exposure_ms: float = 100.0,
+        psf_model: str = "dipole",
+        emission_spectra: Optional[Dict[str, np.ndarray]] = None,
+        n_medium: float = 1.33,
+        n_immersion: float = 1.515,
     ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
         """Generate camera image stack with optional vectorized photoelectron generation.
 
+        The signal is simulated photon by photon with the vectorial dipole PSF (``psf_model=
+        "dipole"``, the default): each of Poisson(n_photons) photons landing in the image gets
+        its own wavelength from the dye's emission spectrum, its own position from the dipole
+        PSF at that wavelength, and is detected in the pixel it lands in with that pixel's QE
+        (``pixel_QYs``) at that wavelength, times ``rqe`` (``vectorial_sampler``). The QE comes
+        from ``pixel_QYs`` and ``emission_spectra``, so ``dye_pixel_efficiency`` and
+        ``average_emission_wavelengths`` only set the normal image. With ``defocus_z_um`` the
+        defocused vectorial PSF at the mean wavelength is used, as before. ``psf_model=
+        "gaussian"`` is the previous model: a Gaussian PSF at the mean wavelength, with the
+        dye's mean QE per pixel colour.
+
         Args:
+            psf_model: "dipole" (default) or "gaussian".
+            emission_spectra: Dict mapping each dye key to the spectrum of its photons reaching
+                the camera (emission x filters) on ``wavelength``; required for "dipole".
+            n_medium, n_immersion: Refractive indices of the sample and immersion media for the
+                dipole PSF.
             background_photons: Mean background photons reaching each pixel per frame
                 (Poisson, the same for every pixel), before detection. Each is detected with
                 the pixel's background QE (``background_pixel_efficiency``: its QE curve
@@ -1846,6 +1880,18 @@ class MultiC_Sim_Funcs_Refactored:
             pixel_size = self.pixel_size * 1000  # µm → nm
 
         relative_QE = camera_calibration["rqe"]
+
+        if psf_model not in ("dipole", "gaussian"):
+            raise SimulationValidationError(f"psf_model must be 'dipole' or 'gaussian'; got {psf_model!r}")
+        use_dipole = psf_model == "dipole" and defocus_z_um == 0.0
+        if use_dipole:
+            missing = [d for d in dye_names if emission_spectra is None or d not in emission_spectra]
+            if missing:
+                raise SimulationValidationError(
+                    f"psf_model='dipole' needs emission_spectra for {missing} (emission x filters "
+                    "on `wavelength`); pass them, or psf_model='gaussian' for the Gaussian model"
+                )
+            use_vectorized_photoelectrons = True
 
         # Calculate sigma in nm, then convert to pixels for PSF generation
         # Handle both scalar wavelengths (deterministic) and per-frame wavelengths (stochastic)
@@ -2047,7 +2093,7 @@ class MultiC_Sim_Funcs_Refactored:
                     except (IndexError, TypeError):
                         n_photons_this_frame = n_photons[dye]
 
-                    if n_photons_this_frame > 0:
+                    if n_photons_this_frame > 0 and not use_dipole:
                         try:
                             # x0y0[dye][..., 0, :] / [..., 1, :] hold the true
                             # (x=column, y=row) emitter position. `gain.shape`
@@ -2119,11 +2165,19 @@ class MultiC_Sim_Funcs_Refactored:
                 n_photons_hitting_detector_all[frame, :, :, :] = n_photons_hitting_detector
 
             # PHASE 2: ⚡ VECTORIZED photoelectron generation across ALL frames
-            n_photoelectrons_all = self.psf.gen_photoelectrons_vectorized_frames(
-                n_photons_hitting_detector_all,
-                QE_per_channel_all,
-                mask_stack,
-            )
+            if use_dipole:
+                n_photoelectrons_all = self._dipole_photoelectrons(
+                    camera_calibration, wavelength, emission_spectra, n_photons, x0y0,
+                    mask_stack, relative_QE, pixel_size, NA, n_medium, n_immersion, s,
+                    _motion_displacement_px, _motion_angles,
+                    n_photons_hitting_detector_all if return_normal_image else None,
+                )
+            else:
+                n_photoelectrons_all = self.psf.gen_photoelectrons_vectorized_frames(
+                    n_photons_hitting_detector_all,
+                    QE_per_channel_all,
+                    mask_stack,
+                )
 
             # Signal photoelectrons summed over dyes, plus background photoelectrons
             n_photoelectrons_total = np.sum(n_photoelectrons_all, axis=-1) + np.random.binomial(
@@ -2388,6 +2442,82 @@ class MultiC_Sim_Funcs_Refactored:
         else:
             return np.squeeze(bayer_image), np.squeeze(smoothed_image), None
 
+    @staticmethod
+    def _dipole_photoelectrons(
+        camera_calibration: Dict[str, Any],
+        wavelength: np.ndarray,
+        emission_spectra: Dict[str, np.ndarray],
+        n_photons: Dict[str, Union[int, np.ndarray]],
+        x0y0: Dict[str, np.ndarray],
+        mask_stack: np.ndarray,
+        relative_QE: np.ndarray,
+        pixel_size: float,
+        NA: float,
+        n_medium: float,
+        n_immersion: float,
+        s: int,
+        motion_displacement_px: float,
+        motion_angles: Optional[np.ndarray],
+        landed_out: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        """Signal photoelectrons per dye, photon by photon with the dipole PSF (``gen_camera_image_stack``).
+
+        Every molecule of every frame is one emitter of ``photon_by_photon_photoelectrons``;
+        the random generator is seeded from ``np.random``, so ``np.random.seed`` still makes a
+        run reproducible.
+
+        Returns:
+            (s, H, W, n_dyes) int photoelectrons. If ``landed_out`` (s, H, W, n_dyes) is given,
+            the photons landing in each pixel are written into it (for the normal image).
+        """
+        psf = radial_dipole_psf(float(NA), float(n_medium), float(n_immersion))
+        rng = np.random.default_rng(np.random.randint(0, 2**31 - 1, size=4))
+        pixel_type = np.argmax(mask_stack, axis=-1)  # (H, W) or (s, H, W), index into pixel_QYs
+        qe_curves = np.atleast_2d(np.asarray(camera_calibration["pixel_QYs"], dtype=float))
+        rqe = np.asarray(relative_QE, dtype=float)
+        H, W = pixel_type.shape[-2:]
+        dye_names = list(x0y0.keys())
+        out = np.zeros([s, H, W, len(dye_names)], dtype=np.int64)
+        for j, dye in enumerate(dye_names):
+            pos = np.asarray(x0y0[dye], dtype=float)
+            if pos.ndim == 1:
+                pos = pos.reshape(1, 2, 1)
+            elif pos.ndim == 2:
+                pos = pos[..., np.newaxis]
+            pos = np.broadcast_to(pos[:s], (s, 2, pos.shape[-1]))  # (s, 2, m), (x, y) nm
+            m = pos.shape[-1]
+            n_frame = np.broadcast_to(np.asarray(n_photons[dye], dtype=float).reshape(-1), (s,))
+            motion = None
+            if motion_displacement_px > 0.0:
+                # Angles from +x (column) towards +y (row), one per frame
+                motion = np.repeat(
+                    motion_displacement_px
+                    * np.stack([np.cos(motion_angles), np.sin(motion_angles)], axis=-1),
+                    m, axis=0,
+                )
+            n_em = np.repeat(np.maximum(n_frame, 0.0), m)
+            x_px, y_px = pos[:, 0, :].ravel() / pixel_size, pos[:, 1, :].ravel() / pixel_size
+            # Frames in chunks of ~PHOTONS_PER_CHUNK photons
+            per_frame = max(float(n_em.sum()) / s, 1.0)
+            step = max(1, int(MultiC_Sim_Funcs_Refactored.PHOTONS_PER_CHUNK // per_frame))
+            for f0 in range(0, s, step):
+                f1 = min(s, f0 + step)
+                e = slice(f0 * m, f1 * m)
+                result = photon_by_photon_photoelectrons(
+                    psf, emission_spectra[dye], wavelength, qe_curves,
+                    pixel_type[f0:f1] if pixel_type.ndim == 3 else pixel_type,
+                    n_em[e], x_px[e], y_px[e], pixel_size, rng,
+                    rqe=rqe[f0:f1] if rqe.ndim == 3 else rqe,
+                    frame_index=np.repeat(np.arange(f1 - f0), m), n_frames=f1 - f0,
+                    motion_px=None if motion is None else motion[e],
+                    return_landed=landed_out is not None,
+                )
+                if landed_out is not None:
+                    out[f0:f1, ..., j], landed_out[f0:f1, ..., j] = result
+                else:
+                    out[f0:f1, ..., j] = result
+        return out
+
     def _generate_photoelectron_batch(
         self,
         camera_parameters: Dict[str, Any],
@@ -2397,6 +2527,7 @@ class MultiC_Sim_Funcs_Refactored:
         n_photons: Dict[str, np.ndarray],
         x0y0: Dict[str, np.ndarray],
         config: "SimulationConfig",
+        emission_spectra: Optional[Dict[str, np.ndarray]] = None,
     ) -> np.ndarray:
         """Run Phases 1+2 only, returning summed photoelectrons before read noise.
 
@@ -2409,7 +2540,8 @@ class MultiC_Sim_Funcs_Refactored:
             n_photons: Dict mapping dye key to photon count array (n_bootstrap,).
             x0y0: Position dict as used by gen_camera_image_stack — the size-2 axis is
                 ordered (y, x): index 0 is row/y, index 1 is column/x.
-            config: SimulationConfig (NA, pixel_size, background parameters).
+            config: SimulationConfig (NA, pixel_size, background parameters, PSF model).
+            emission_spectra: Dict mapping dye key to its filtered emission spectrum (dipole PSF).
 
         Returns:
             pe_batch: (n_bootstrap, H, W) int32 photoelectron array, summed across all dyes.
@@ -2432,7 +2564,42 @@ class MultiC_Sim_Funcs_Refactored:
             distance_from_coverslip_um=config.distance_from_coverslip_um,
             motion_velocity_nm_per_s=config.motion_velocity_nm_per_s,
             frame_exposure_ms=config.frame_exposure_ms,
+            **self._psf_kwargs(config, emission_spectra),
         )
+
+    @staticmethod
+    def _psf_kwargs(config: "SimulationConfig", emission_spectra: Optional[Dict[str, np.ndarray]]) -> Dict[str, Any]:
+        """PSF-model keyword arguments of ``gen_camera_image_stack`` from ``config``."""
+        return dict(
+            psf_model=config.psf_model, emission_spectra=emission_spectra,
+            n_medium=config.n_medium, n_immersion=config.n_immersion,
+        )
+
+    @staticmethod
+    def filtered_emission_spectrum(
+        dye: str,
+        filters: Optional[List[str]],
+        wavelength: np.ndarray,
+        single_dye_spectrum: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        """Spectrum of the dye's photons reaching the camera: emission x every filter, on ``wavelength``.
+
+        Args:
+            dye: Dye name in the spectral database (ignored if ``single_dye_spectrum`` is given).
+            filters: Filter names (None: no filters).
+            wavelength: Wavelength grid (nm).
+            single_dye_spectrum: Emission spectrum on ``wavelength`` to use instead of the database.
+        """
+        S_F = SpectralFunctions.Spectral_Funcs()
+        if single_dye_spectrum is None:
+            spectrum = S_F.get_dye_or_filter_data(names=[dye], wavelength=wavelength, dye_or_filter=True)[0]
+        else:
+            spectrum = np.asarray(single_dye_spectrum, dtype=float)
+        if filters:
+            spectrum = spectrum * np.prod(
+                S_F.get_dye_or_filter_data(names=filters, wavelength=wavelength, dye_or_filter=False), axis=0
+            )
+        return spectrum
 
     def _apply_read_noise_batch(
         self,
@@ -2588,16 +2755,9 @@ class MultiC_Sim_Funcs_Refactored:
         offset = camera_params_base.offset
         qy_max = float(np.max(peak_qy_space))
 
-        # Pre-compute spectrum template for stochastic mode
-        full_spectrum_template = None
-        if config.use_stochastic_photons:
-            dye_spectrum = S_F.get_dye_or_filter_data(
-                names=[dye], wavelength=wavelength, dye_or_filter=True
-            )
-            filter_spectra = S_F.get_dye_or_filter_data(
-                names=filters, wavelength=wavelength, dye_or_filter=False
-            )
-            full_spectrum_template = dye_spectrum[0] * np.prod(filter_spectra, axis=0)
+        # Spectrum of the photons reaching the camera (dipole PSF and stochastic mode)
+        full_spectrum_template = self.filtered_emission_spectrum(dye, filters, wavelength)
+        emission_spectra = {"dye": full_spectrum_template}
 
         start_total = time.time()
         total_combinations = len(n_photon_space) * len(peak_qy_space) * len(read_noise_space)
@@ -2617,12 +2777,14 @@ class MultiC_Sim_Funcs_Refactored:
                     cam_params_qy = dict(_base_cam_dict)
                     cam_params_qy["pixel_QYs"] = pixel_QYs_max
 
-                    if config.use_stochastic_photons:
+                    if config.use_stochastic_photons or config.psf_model == "dipole":
                         mean_wl, colour_ratios = S_F.generate_bootstrap_colour_ratios(
                             full_spectrum_template,
                             wavelength,
                             pixel_QYs_max,
-                            n_photons_per_image=int(n_photon),
+                            # Dipole: photon wavelengths are drawn in the simulator; only the
+                            # (deterministic) colour ratios are used here
+                            n_photons_per_image=1 if config.psf_model == "dipole" else int(n_photon),
                             n_bootstrap=config.n_bootstrap,
                             pixel_order=camera_params_base.pixel_order,
                             pixel_order_indices=camera_params_base.pixel_order_indices,
@@ -2667,6 +2829,7 @@ class MultiC_Sim_Funcs_Refactored:
                         n_photons,
                         x0y0,
                         config,
+                        emission_spectra=emission_spectra,
                     )
                     pe_batch = pe_base
                 else:
@@ -3071,22 +3234,12 @@ class MultiC_Sim_Funcs_Refactored:
 
         start = time.time()
 
-        # OPTIMIZATION: Pre-compute full spectrum outside loop (constant across photon levels)
-        # This avoids repeated database queries and array operations (200× per simulation)
-        if config.use_stochastic_photons:
-            if single_dye_spectrum is not None:
-                # Use provided spectrum (already filtered)
-                full_spectrum_template = filtered_spectrum
-            else:
-                # Get spectrum from database ONCE
-                dye_spectrum = S_F.get_dye_or_filter_data(
-                    names=[dye], wavelength=wavelength, dye_or_filter=True
-                )
-                filter_spectra = S_F.get_dye_or_filter_data(
-                    names=filters, wavelength=wavelength, dye_or_filter=False
-                )
-                total_filter_transmission = np.prod(filter_spectra, axis=0)
-                full_spectrum_template = dye_spectrum[0] * total_filter_transmission
+        # Spectrum of the photons reaching the camera, once (constant across photon levels)
+        if single_dye_spectrum is not None:
+            full_spectrum_template = filtered_spectrum
+        else:
+            full_spectrum_template = self.filtered_emission_spectrum(dye, filters, wavelength)
+        emission_spectra = {"dye": full_spectrum_template}
 
         # Process each photon count
         for i, n_photon in enumerate(n_photon_space):
@@ -3097,8 +3250,9 @@ class MultiC_Sim_Funcs_Refactored:
 
             n_photons = {"dye": np.full(config.n_bootstrap, n_photon)}
 
-            # Stochastic photon sampling for realistic shot noise
-            if config.use_stochastic_photons:
+            # Stochastic photon sampling for realistic shot noise (Gaussian PSF only: the dipole
+            # model draws every photon's wavelength itself)
+            if config.use_stochastic_photons and config.psf_model != "dipole":
                 # Use pre-computed spectrum
                 full_spectrum = full_spectrum_template
 
@@ -3150,6 +3304,7 @@ class MultiC_Sim_Funcs_Refactored:
                 distance_from_coverslip_um=config.distance_from_coverslip_um,
                 motion_velocity_nm_per_s=config.motion_velocity_nm_per_s,
                 frame_exposure_ms=config.frame_exposure_ms,
+                **self._psf_kwargs(config, emission_spectra),
             )
 
             # Save raw images if requested
@@ -3695,6 +3850,7 @@ class MultiC_Sim_Funcs(MultiC_Sim_Funcs_Compatibility):
             NA=NA,
             pixel_size=pixel_size,
             return_normal_image=False,
+            emission_spectra={dye_name: dye_at_detector},
         )
 
         # Extract color coordinates (A_R, A_G, A_B) using actual fitting pipeline

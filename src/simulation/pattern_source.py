@@ -1088,7 +1088,7 @@ def simulate_acquisition(
 
     nile_red_functions = None  # lazily constructed only if a NileRedEnvironment is used
 
-    x0y0, n_photons = {}, {}
+    x0y0, n_photons, emission_spectra = {}, {}, {}
     dye_efficiency_rows, avg_wavelengths, gt_rows = [], [], []
     for dye, colours_for_dye in dye_to_colours.items():
         dye_label = dye.label if isinstance(dye, (Scatterer, NileRedEnvironment, SimulatedDye)) else dye
@@ -1169,6 +1169,9 @@ def simulate_acquisition(
             avg_wl, fracs = spectral.get_pixel_fractions_dye_and_filters(
                 dyes=[dye], filters=filter_names, wavelength=wl, pixel_QYs=pixel_QYs, normalized=True,
             )
+            spectrum = MultiC_Sim_Funcs_Refactored.filtered_emission_spectrum(dye, filter_names, wl)
+        # Each photon's wavelength is drawn from this spectrum (dipole PSF)
+        emission_spectra[dye] = spectrum
         dye_efficiency_rows.append(fracs)
         avg_wavelengths.append(float(avg_wl))
 
@@ -1200,6 +1203,7 @@ def simulate_acquisition(
             x0y0=x0y0_arg,
             background_photons=background_photons,
             NA=na,
+            emission_spectra=emission_spectra,
         )
 
     if frame_chunk_size is None or frame_chunk_size >= n_frames:

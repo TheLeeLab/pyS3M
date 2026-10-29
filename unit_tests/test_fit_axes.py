@@ -172,6 +172,7 @@ class TestSimulationRoundTrip:
         _, _, pe = sim.gen_camera_image_stack(
             cam, wl, 600.0, np.array([0.3, 0.3, 0.4]), {"dye": np.array([1e6])}, x0y0,
             smoothing_function=sf, return_normal_image=True, return_photoelectrons=True,
+            emission_spectra={"dye": np.exp(-0.5 * ((wl - 600.0) / 20.0) ** 2)},
         )
         img = np.asarray(pe, dtype=np.float32).reshape(height, width)
         roi = img[0:14, 6:20]   # square ROI at column 6, row 0

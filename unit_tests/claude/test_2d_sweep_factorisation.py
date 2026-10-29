@@ -98,12 +98,14 @@ class TestGeneratePhotoelectronBatch:
         self.avg_wl, self.dpe, self.x0y0 = _get_deterministic_spectral(
             self.camera_params, self.wavelength, self.config.n_bootstrap
         )
+        # Emission spectrum for the default dipole model, centred on avg_wl
+        self.spectra = {"dye": np.exp(-0.5 * ((self.wavelength - self.avg_wl) / 20.0) ** 2)}
 
     def test_output_shape(self):
         n_photons = {"dye": np.full(self.config.n_bootstrap, self.n_photon)}
         pe = self.msf._generate_photoelectron_batch(
             self.camera_params, self.wavelength, self.avg_wl, self.dpe,
-            n_photons, self.x0y0, self.config
+            n_photons, self.x0y0, self.config, emission_spectra=self.spectra,
         )
         H, W = self.camera_params["gain"].shape
         assert pe.shape == (self.config.n_bootstrap, H, W), \
@@ -113,7 +115,7 @@ class TestGeneratePhotoelectronBatch:
         n_photons = {"dye": np.full(self.config.n_bootstrap, self.n_photon)}
         pe = self.msf._generate_photoelectron_batch(
             self.camera_params, self.wavelength, self.avg_wl, self.dpe,
-            n_photons, self.x0y0, self.config
+            n_photons, self.x0y0, self.config, emission_spectra=self.spectra,
         )
         assert pe.min() >= 0, "Photoelectron counts must be non-negative"
 
@@ -121,7 +123,7 @@ class TestGeneratePhotoelectronBatch:
         n_photons = {"dye": np.full(self.config.n_bootstrap, self.n_photon)}
         pe = self.msf._generate_photoelectron_batch(
             self.camera_params, self.wavelength, self.avg_wl, self.dpe,
-            n_photons, self.x0y0, self.config
+            n_photons, self.x0y0, self.config, emission_spectra=self.spectra,
         )
         assert np.issubdtype(pe.dtype, np.integer), f"Expected integer dtype, got {pe.dtype}"
 
@@ -130,7 +132,7 @@ class TestGeneratePhotoelectronBatch:
         n_photons = {"dye": np.full(self.config.n_bootstrap, self.n_photon)}
         pe = self.msf._generate_photoelectron_batch(
             self.camera_params, self.wavelength, self.avg_wl, self.dpe,
-            n_photons, self.x0y0, self.config
+            n_photons, self.x0y0, self.config, emission_spectra=self.spectra,
         )
         mean_total = pe.sum(axis=(1, 2)).mean()
         assert mean_total < self.n_photon, \
@@ -146,7 +148,7 @@ class TestGeneratePhotoelectronBatch:
         n_photons = {"dye": np.full(self.config.n_bootstrap, self.n_photon)}
         pe1 = self.msf._generate_photoelectron_batch(
             self.camera_params, self.wavelength, self.avg_wl, self.dpe,
-            n_photons, self.x0y0, self.config
+            n_photons, self.x0y0, self.config, emission_spectra=self.spectra,
         )
         pe2 = self.msf.gen_camera_image_stack(
             self.camera_params, self.wavelength, self.avg_wl, self.dpe,
@@ -158,6 +160,7 @@ class TestGeneratePhotoelectronBatch:
             pixel_size=self.config.pixel_size,
             return_normal_image=False,
             return_photoelectrons_stack=True,
+            emission_spectra=self.spectra,
         )
         # Same shape and dtype
         assert pe1.shape == pe2.shape

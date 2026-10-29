@@ -102,9 +102,37 @@ def test_n_photons_counts_photons_landing_in_image(psf):
     totals = pe.sum(axis=(1, 2))
     assert totals.mean() == pytest.approx(1000, abs=3 * np.sqrt(1000 / 2000) * 2)
     assert totals.var() == pytest.approx(1000, rel=0.1)       # Poisson(N), not N x (fraction inside)
-    with pytest.raises(ValueError):
-        photon_by_photon_photoelectrons(psf, np.ones_like(wl), wl, np.ones((1, len(wl))), np.zeros((14, 14), int),
-                                        10, np.full(2, 500.0), np.full(2, 500.0), PIXEL_UM * 1000, rng)
+    # An emitter centred off the image keeps only what lands in it: nothing, when far away
+    far = photon_by_photon_photoelectrons(psf, np.ones_like(wl), wl, np.ones((1, len(wl))), np.zeros((14, 14), int),
+                                          1000, np.full(2, 500.0), np.full(2, 500.0), PIXEL_UM * 1000, rng)
+    assert far.sum() == 0
+
+
+def test_frames_motion_and_landed_photons(psf):
+    """Emitters sharing a frame are summed; motion spreads a spot along its direction; landed >= detected."""
+    rng = np.random.default_rng(5)
+    wl = np.arange(400.0, 801.0)
+    qe = np.full((1, len(wl)), 0.5)
+    pe, landed = photon_by_photon_photoelectrons(
+        psf, np.ones_like(wl), wl, qe, np.zeros((3, 14, 14), int), np.array([1000.0, 1000.0, 2000.0]),
+        np.array([4.0, 9.0, 7.0]), np.array([7.0, 7.0, 7.0]), PIXEL_UM * 1000, rng,
+        frame_index=np.array([0, 0, 2]), n_frames=3, return_landed=True)
+    assert pe.shape == landed.shape == (3, 14, 14) and np.all(landed >= pe)
+    assert landed[1].sum() == 0 and landed[0].sum() == pytest.approx(2000, abs=200)
+    assert pe[2].sum() == pytest.approx(1000, abs=150)
+    # 8 px of motion along +x (centred at mid-exposure) is the spot smeared uniformly along x
+    kw = dict(spectrum=np.ones_like(wl), wavelength_nm=wl, qe_curves=np.ones((1, len(wl))),
+              pixel_type=np.zeros((40, 40), int), pixel_nm=PIXEL_UM * 1000, rng=rng)
+    moving = photon_by_photon_photoelectrons(psf, n_photons=100_000, x0_px=np.array([19.5]), y0_px=np.array([19.5]),
+                                             motion_px=np.array([[8.0, 0.0]]), **kw)[0]
+    n = 10_000
+    smeared = photon_by_photon_photoelectrons(psf, n_photons=10, x0_px=19.5 + rng.uniform(-4, 4, n),
+                                              y0_px=np.full(n, 19.5), frame_index=np.zeros(n, int), **kw)[0]
+    for ax in (0, 1):
+        a, b = moving.sum(axis=ax) / moving.sum(), smeared.sum(axis=ax) / smeared.sum()
+        assert np.abs(a - b).sum() < 0.02
+    central = slice(17, 23)                                    # the smear is along x (columns), not y
+    assert moving.sum(axis=0)[central].sum() < 0.8 * moving.sum(axis=1)[central].sum()
 
 
 def test_landed_photons_have_the_physical_spectrum(psf):

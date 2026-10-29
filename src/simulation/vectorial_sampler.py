@@ -22,9 +22,11 @@ Both identities (scaling and symmetry) are checked against the full 2D ``DipoleP
 """
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Optional, Tuple
 
 import numpy as np
+from numba import njit, prange
 
 from .defocus_psf import DipolePSF
 
@@ -72,6 +74,11 @@ class RadialDipolePSF:
         ring = 2.0 * np.pi * self.r_um * self.density_um2
         self.cdf = np.concatenate([[0.0], np.cumsum(0.5 * (ring[1:] + ring[:-1]) * np.diff(self.r_um))])
         self.enclosed = float(self.cdf[-1])
+        # Inverse CDF tabulated uniformly in u, so a radius is a direct lookup rather than a binary
+        # search (4x faster); it differs from interpolating the CDF itself by < 0.005 nm
+        # (the radii are tabulated every 0.5 nm). The CDF increases strictly, so r(u) is continuous.
+        self._n_u = 2 ** 20
+        self._r_of_u = np.interp(np.linspace(0.0, self.enclosed, self._n_u + 1), self.cdf, self.r_um)
 
     def density(self, r_um: np.ndarray, wavelength_um: float) -> np.ndarray:
         """PSF intensity density (per um^2) at radius ``r_um`` for ``wavelength_um``, by rescaling."""
@@ -90,8 +97,10 @@ class RadialDipolePSF:
         wavelengths_um = np.asarray(wavelengths_um, dtype=float)
         u = rng.random(wavelengths_um.shape)
         inside = u < self.enclosed
-        r = np.interp(u, self.cdf, self.r_um) * (wavelengths_um / self.ref_wavelength_um)
-        r = np.where(inside, r, np.nan)
+        x = np.minimum(u, self.enclosed) * (self._n_u / self.enclosed)
+        i = np.minimum(x.astype(np.int64), self._n_u - 1)
+        r = self._r_of_u[i] + (x - i) * (self._r_of_u[i + 1] - self._r_of_u[i])
+        r = np.where(inside, r * (wavelengths_um / self.ref_wavelength_um), np.nan)
         phi = rng.random(wavelengths_um.shape) * (2.0 * np.pi)
         return r * np.cos(phi), r * np.sin(phi), inside
 
@@ -114,6 +123,27 @@ class RadialDipolePSF:
         return fine.reshape(patch_px, oversample, patch_px, oversample).sum(axis=(1, 3))
 
 
+@lru_cache(maxsize=8)
+def radial_dipole_psf(NA: float = 1.49, n_medium: float = 1.33, n_immersion: float = 1.515) -> RadialDipolePSF:
+    """``RadialDipolePSF`` with the default sampling, built once per (NA, n_medium, n_immersion)."""
+    return RadialDipolePSF(NA=NA, n_medium=n_medium, n_immersion=n_immersion)
+
+
+def _interp_rows(x: np.ndarray, rows: np.ndarray, xp: np.ndarray, fp: np.ndarray) -> np.ndarray:
+    """``np.interp(x[k], xp, fp[rows[k]])`` for every k; by direct indexing when ``xp`` is uniform."""
+    d = np.diff(xp)
+    if len(xp) < 2 or not np.allclose(d, d[0]):
+        out = np.empty(len(x))
+        for t in range(fp.shape[0]):
+            sel = rows == t
+            out[sel] = np.interp(x[sel], xp, fp[t])
+        return out
+    pos = np.clip((x - xp[0]) / d[0], 0.0, len(xp) - 1)
+    i = np.minimum(pos.astype(np.int64), len(xp) - 2)
+    lo = fp[rows, i]
+    return lo + (pos - i) * (fp[rows, i + 1] - lo)
+
+
 def sample_wavelengths_nm(spectrum: np.ndarray, wavelength_nm: np.ndarray, shape, rng: np.random.Generator
                           ) -> np.ndarray:
     """Photon wavelengths (nm) drawn from an emission spectrum by inverse CDF (trapezoid CDF, linear
@@ -133,7 +163,7 @@ def photon_by_photon_photoelectrons(
     wavelength_nm: np.ndarray,
     qe_curves: np.ndarray,
     pixel_type: np.ndarray,
-    n_photons: float,
+    n_photons,
     x0_px: np.ndarray,
     y0_px: np.ndarray,
     pixel_nm: float,
@@ -141,79 +171,172 @@ def photon_by_photon_photoelectrons(
     rqe: Optional[np.ndarray] = None,
     poisson: bool = True,
     land_in_image: bool = True,
-) -> np.ndarray:
+    frame_index: Optional[np.ndarray] = None,
+    n_frames: Optional[int] = None,
+    motion_px: Optional[np.ndarray] = None,
+    return_landed: bool = False,
+):
     """Detected signal photoelectrons per pixel, photon by photon, on any mosaic.
 
-    Each repeat has Poisson(``n_photons``) photons (exactly ``n_photons`` if not ``poisson``); each
+    Each emitter has Poisson(``n_photons``) photons (exactly ``n_photons`` if not ``poisson``); each
     photon gets its own wavelength from ``spectrum``, lands at a position drawn from the PSF at that
     wavelength, and is detected in the pixel it lands in with probability ``QE_type(lambda) * rqe``.
 
     With ``land_in_image`` (default), ``n_photons`` counts the photons landing in the image, as in
     the production model: a photon drawn outside it is redrawn, wavelength and position, until one
-    lands inside. The landed photons then have exactly the physical distribution of photons in the
+    lands inside. This applies to emitters centred on the image (at mid-exposure); one centred off
+    it (e.g. a blinking emitter moved off the field while dark) keeps only its photons that land in
+    the image, so a distant emitter contributes nothing. The landed photons then have exactly the physical distribution of photons in the
     image: the PSF's shape inside the image is unchanged, and their spectrum is the emission
     spectrum weighted by each wavelength's fraction landing in the image (slightly bluer, as the PSF
-    is narrower at short wavelengths). Otherwise
-    ``n_photons`` counts every collected photon and those landing outside the image (~30% for the
-    dipole PSF and a 14 x 14 px image) are lost.
+    is narrower at short wavelengths). Otherwise ``n_photons`` counts every collected photon and
+    those landing outside the image (~30% for the dipole PSF and a 14 x 14 px image) are lost.
+
+    With ``motion_px``, an emitter moves at constant velocity during the exposure, centred on
+    (x0, y0) at mid-exposure (as ``MultiC_Sim_Funcs._apply_motion_blur``): each photon is emitted at
+    a uniformly random time, so the motion blur is exact rather than sampled.
 
     Coordinates follow the fitter's convention: x = column, y = row, pixel centres at integers.
 
     Args:
         psf: The radial PSF.
-        spectrum: Emission spectrum on ``wavelength_nm``.
+        spectrum: Emission spectrum (of the photons reaching the camera) on ``wavelength_nm``.
         wavelength_nm: Wavelength grid (nm) of ``spectrum`` and ``qe_curves``.
         qe_curves: (n_types, n_wavelengths) QE of each pixel type.
         pixel_type: (H, W) integer pixel type of every pixel (index into ``qe_curves``), i.e. the
-            mosaic; any pattern.
-        n_photons: Mean number of collected photons per repeat.
-        x0_px, y0_px: Emitter position per repeat (px; shape (n_repeats,)).
+            mosaic, any pattern; or (n_frames, H, W), one per frame.
+        n_photons: Mean number of photons per emitter, scalar or (n_emitters,).
+        x0_px, y0_px: Emitter positions (px; shape (n_emitters,)).
         pixel_nm: Pixel size (nm).
         rng: Random generator.
-        rqe: (H, W) relative QE of every pixel (default 1).
-        poisson: Draw the photon number per repeat from Poisson(n_photons).
-        land_in_image: ``n_photons`` counts photons landing in the image (redraw those outside,
-            wavelength and position);
-            False: it counts all collected photons, and those outside are lost.
+        rqe: Relative QE of every pixel, (H, W) or (n_frames, H, W) (default 1).
+        poisson: Draw each emitter's photon number from Poisson(n_photons).
+        land_in_image: ``n_photons`` counts photons landing in the image for emitters centred on
+            it (redraw those outside, wavelength and position); False: it counts all collected
+            photons, and those outside are lost.
+        frame_index: Frame of each emitter (default: one frame per emitter); emitters in the same
+            frame are summed.
+        n_frames: Number of frames (default: ``frame_index.max() + 1``).
+        motion_px: (n_emitters, 2) displacement (dx, dy) of each emitter over the exposure (px).
+        return_landed: Also return the photons landing in each pixel, before detection.
 
     Returns:
-        (n_repeats, H, W) int32 photoelectrons.
+        (n_frames, H, W) int32 photoelectrons; with ``return_landed``, also the landed photons.
     """
     x0_px, y0_px = np.atleast_1d(x0_px).astype(float), np.atleast_1d(y0_px).astype(float)
-    n_rep = len(x0_px)
-    H, W = pixel_type.shape
-    n_emit = rng.poisson(n_photons, n_rep) if poisson else np.full(n_rep, int(round(n_photons)))
-    rep = np.repeat(np.arange(n_rep), n_emit)
-    lam_nm = sample_wavelengths_nm(spectrum, wavelength_nm, rep.shape, rng)
+    n_em = len(x0_px)
+    frame_index = np.arange(n_em) if frame_index is None else np.asarray(frame_index, dtype=np.int64)
+    n_frames = int(frame_index.max()) + 1 if n_frames is None else int(n_frames)
+    H, W = pixel_type.shape[-2:]
+    n_photons = np.broadcast_to(np.asarray(n_photons, dtype=float), (n_em,))
+    n_emit = rng.poisson(n_photons) if poisson else np.round(n_photons).astype(np.int64)
 
-    def land(sel):
-        """Pixel (col, row) and on-chip flag of the photons ``sel``, from fresh PSF draws."""
-        dx, dy, inside = psf.sample_offsets(lam_nm[sel] / 1000.0, rng)
-        with np.errstate(invalid="ignore"):
-            c = np.round(x0_px[rep[sel]] + dx * 1000.0 / pixel_nm)
-            r = np.round(y0_px[rep[sel]] + dy * 1000.0 / pixel_nm)
-        return c, r, inside & (c >= 0) & (c < W) & (r >= 0) & (r < H)
+    # Wavelength inverse CDF (trapezoid CDF, as sample_wavelengths_nm); a monochromatic spectrum
+    # is a single wavelength
+    wavelength_nm = np.asarray(wavelength_nm, dtype=float)
+    pdf = np.maximum(np.asarray(spectrum, dtype=float), 0.0)
+    mono = np.count_nonzero(pdf) == 1
+    cdf = np.concatenate([[0.0], np.cumsum(0.5 * (pdf[1:] + pdf[:-1]) * np.diff(wavelength_nm))])
+    cdf = cdf / cdf[-1] if not mono else cdf
+    d = np.diff(wavelength_nm)
+    uniform = bool(np.allclose(d, d[0]))
+    pixel_type = np.ascontiguousarray(pixel_type, dtype=np.int64)
+    pixel_type = pixel_type if pixel_type.ndim == 3 else pixel_type[np.newaxis]
+    rqe = np.ones((1, 1, 1)) if rqe is None else np.ascontiguousarray(rqe, dtype=float)
+    rqe = rqe if rqe.ndim == 3 else rqe[np.newaxis]
+    motion = np.zeros((n_em, 2)) if motion_px is None else np.ascontiguousarray(motion_px, dtype=float)
+    centred = (np.abs(x0_px - (W - 1) / 2) <= W / 2) & (np.abs(y0_px - (H - 1) / 2) <= H / 2)
 
-    col, row, on_chip = land(np.arange(len(rep)))
-    for _ in range(10_000):
-        if not land_in_image or on_chip.all():
-            break
-        miss = np.flatnonzero(~on_chip)
-        lam_nm[miss] = sample_wavelengths_nm(spectrum, wavelength_nm, len(miss), rng)
-        col[miss], row[miss], on_chip[miss] = land(miss)
-    else:
-        raise ValueError("photons keep landing outside the image: is the emitter far outside it?")
-    rep, lam_nm, col, row = rep[on_chip], lam_nm[on_chip], col[on_chip].astype(np.int64), row[on_chip].astype(np.int64)
-    ptype = pixel_type[row, col]
-    p = np.empty(len(rep))
-    for t in range(qe_curves.shape[0]):
-        sel = ptype == t
-        p[sel] = np.interp(lam_nm[sel], wavelength_nm, qe_curves[t])
-    if rqe is not None:
-        p *= rqe[row, col]
-    hit = rng.random(len(rep)) < p
-    counts = np.bincount((rep[hit] * H + row[hit]) * W + col[hit], minlength=n_rep * H * W)
-    return counts.reshape(n_rep, H, W).astype(np.int32)
+    counts = np.zeros((n_frames, H, W), dtype=np.int32)
+    landed = np.zeros((n_frames, H, W), dtype=np.int32)
+    # Emitters grouped by frame: frames run in parallel, each with its own seeded random stream,
+    # so the result does not depend on the number of threads
+    order = np.argsort(frame_index, kind="stable")
+    frame_start = np.concatenate([[0], np.cumsum(np.bincount(frame_index, minlength=n_frames))])
+    failed = _photon_kernel(
+        int(rng.integers(0, 2**31 - 1)), frame_start, n_emit[order].astype(np.int64), x0_px[order], y0_px[order],
+        motion[order], motion_px is not None, (centred & land_in_image)[order],
+        cdf, wavelength_nm, mono, float(wavelength_nm[np.argmax(pdf)]),
+        psf._r_of_u, psf._n_u, psf.enclosed, psf.ref_wavelength_um, 1000.0 / pixel_nm,
+        np.ascontiguousarray(qe_curves, dtype=float), uniform,
+        pixel_type, rqe, rqe.shape[1] > 1, counts, landed,
+    )
+    if failed:
+        raise ValueError(f"{failed} photons kept landing outside the image")
+    return (counts, landed) if return_landed else counts
+
+
+@njit(cache=True, parallel=True)
+def _photon_kernel(seed, frame_start, n_emit, x0, y0, motion, has_motion, redraw,
+                   cdf, wl, mono, mono_wl, r_of_u, n_u, enclosed, ref_wl_um, px_per_um,
+                   qe_curves, uniform, pixel_type, rqe, has_rqe, counts, landed):
+    """Every photon of ``photon_by_photon_photoelectrons``, in one pass: wavelength, landing pixel
+    (redrawn, wavelength and position, while it misses the image if ``redraw``), detection.
+
+    Emitters are sorted by frame, frame f's being ``frame_start[f]:frame_start[f + 1]``. Frames run
+    in parallel, each seeding its own random stream (numba keeps one generator per thread).
+
+    Returns:
+        The number of photons that missed the image 100,000 times in a row (0 normally).
+    """
+    n_frames, H, W = counts.shape
+    n_wl = wl.shape[0]
+    failed = np.zeros(n_frames, dtype=np.int64)
+    for f in prange(n_frames):
+        np.random.seed((seed * 1_000_003 + f * 7919) % 4_294_967_296)
+        fp = np.int64(min(f, pixel_type.shape[0] - 1))  # per-frame or shared mosaic
+        fr = np.int64(min(f, rqe.shape[0] - 1))
+        for e in range(frame_start[f], frame_start[f + 1]):
+            for _ in range(n_emit[e]):
+                c = -1
+                r_ = -1
+                lam = mono_wl
+                for attempt in range(100_000):
+                    # Wavelength: inverse CDF, exactly as np.interp(u, cdf, wl)
+                    if not mono:
+                        u = np.random.random()
+                        j = min(max(np.searchsorted(cdf, u, side="right") - 1, 0), n_wl - 2)
+                        span = cdf[j + 1] - cdf[j]
+                        lam = wl[j] + (wl[j + 1] - wl[j]) * ((u - cdf[j]) / span if span > 0 else 0.0)
+                    # Radius from the tabulated inverse CDF, rescaled to this wavelength; uniform azimuth
+                    u = np.random.random()
+                    if u < enclosed:
+                        x = u * (n_u / enclosed)
+                        i = min(int(x), n_u - 1)
+                        rad = (r_of_u[i] + (x - i) * (r_of_u[i + 1] - r_of_u[i])) * (lam / 1000.0 / ref_wl_um)
+                        phi = 2.0 * np.pi * np.random.random()
+                        cx = x0[e]
+                        cy = y0[e]
+                        if has_motion:
+                            t = np.random.random() - 0.5
+                            cx += t * motion[e, 0]
+                            cy += t * motion[e, 1]
+                        c = int(np.rint(cx + rad * np.cos(phi) * px_per_um))
+                        r_ = int(np.rint(cy + rad * np.sin(phi) * px_per_um))
+                    else:
+                        c = -1
+                    if (0 <= c < W and 0 <= r_ < H) or not redraw[e]:
+                        break
+                else:
+                    failed[f] += 1
+                    continue
+                if not (0 <= c < W and 0 <= r_ < H):
+                    continue
+                landed[f, r_, c] += 1
+                # Detection with this pixel type's QE at this wavelength (as np.interp), times rqe
+                row = qe_curves[pixel_type[fp, r_, c]]
+                if uniform:
+                    pos = min(max((lam - wl[0]) / (wl[1] - wl[0]), 0.0), n_wl - 1.0)
+                    k = min(int(pos), n_wl - 2)
+                else:
+                    k = min(max(np.searchsorted(wl, lam, side="right") - 1, 0), n_wl - 2)
+                    pos = k + min(max((lam - wl[k]) / (wl[k + 1] - wl[k]), 0.0), 1.0)
+                q = row[k] + (pos - k) * (row[k + 1] - row[k])
+                if has_rqe:
+                    q *= rqe[fr, r_, c]
+                if np.random.random() < q:
+                    counts[f, r_, c] += 1
+    return failed.sum()
 
 
 def background_photoelectrons(background_photons: float, background_qe: np.ndarray, n_repeats: int,
