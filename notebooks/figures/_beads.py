@@ -104,11 +104,10 @@ def literature_pe(values, emitters):
     return quartiles(values) * mean_qe, mean_qe
 
 
-# The TetraSpeck dye each laser mainly excites. The spectra database has no TetraSpeck green or dark
-# red, and its "TetraSpeck orange dye" is the FluoSpheres orange spectrum (peak 559 nm), not
-# TetraSpeck orange (580 nm). TetraSpeck beads use the FluoSpheres dyes, so each laser's spectrum is
-# the nearest FluoSpheres spectrum, shifted so its peak sits at the manufacturer's emission peak
-# (PEAK_UM; shifts of +1, +21 and -3 nm).
+# The TetraSpeck dye each laser mainly excites, as FPbase spectra. TetraSpeck beads use the FluoSpheres
+# dyes; the database has no TetraSpeck green or dark red, and its "TetraSpeck orange dye" is the
+# FluoSpheres orange spectrum. The spectra are used as they are, not shifted to the manufacturer's
+# TetraSpeck emission peaks (PEAK_UM; that would move them by +1, +21 and -3 nm).
 TETRASPECK_SPECTRA = {"488": "FluoSpheres yellow-green fluorescent microspheres",
                       "561": "TetraSpeck orange dye",
                       "638": "FluoSpheres dark red fluorescent microspheres"}
@@ -132,9 +131,9 @@ def measured_spectrum(laser, wavelength):
 def bead_effective_qe(laser, spectrum=None, peak_nm=None, filters=BEAD_FILTERS):
     """Detected photoelectrons per photon reaching the Ximea from the bead dye ``laser`` excites.
 
-    The dye spectrum (``spectrum``, default ``TETRASPECK_SPECTRA[laser]``, shifted to ``peak_nm``,
-    default the manufacturer peak) is multiplied by the emission filters, normalised to the photons
-    that reach the detector, and weighted by each pixel type's QE and share of the sensor.
+    The dye spectrum (``spectrum``, default ``TETRASPECK_SPECTRA[laser]``; shifted so its peak is at
+    ``peak_nm`` if given) is multiplied by the emission filters, normalised to the photons that reach
+    the detector, and weighted by each pixel type's QE and share of the sensor.
     ``spectrum="measured"`` uses the measured bead emission at ``laser`` instead (not shifted).
 
     Returns:
@@ -150,8 +149,8 @@ def bead_effective_qe(laser, spectrum=None, peak_nm=None, filters=BEAD_FILTERS):
     else:
         spec = sf.get_dye_or_filter_data(names=[spectrum or TETRASPECK_SPECTRA[laser]], wavelength=wl,
                                          dye_or_filter=True)[0]
-        peak_nm = 1000 * PEAK_UM[laser] if peak_nm is None else peak_nm
-        spec = np.interp(wl - (peak_nm - wl[np.argmax(spec)]), wl, spec, left=0, right=0)
+        if peak_nm is not None:
+            spec = np.interp(wl - (peak_nm - wl[np.argmax(spec)]), wl, spec, left=0, right=0)
     for name in filters:
         t = sf.get_dye_or_filter_data(names=[name], wavelength=wl, dye_or_filter=False)[0]
         spec = spec * (t / 100 if t.max() > 1.5 else t)
