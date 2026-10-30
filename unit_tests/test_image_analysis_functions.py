@@ -23,7 +23,6 @@ from pyS3M.ImageAnalysisFunctions import (
     FittingValidationError,
     FittingResultProcessor,
     StandardFittingProcessor,
-    StandardIterFittingProcessor,
     StandardDataFittingProcessor,
     EllipticalFittingProcessor,
     CircularFittingProcessor,
@@ -258,7 +257,6 @@ class TestFractionErrors:
 class TestSqrtSpaceSlice:
     def test_standard_like(self):
         assert FittingResultProcessor._sqrt_space_slice(FittingStrategy.STANDARD, 10) == slice(4, 10)
-        assert FittingResultProcessor._sqrt_space_slice(FittingStrategy.STANDARD_ITER, 10) == slice(4, 10)
         assert FittingResultProcessor._sqrt_space_slice(FittingStrategy.STANDARD_DATA, 10) == slice(4, 10)
 
     def test_elliptical(self):
@@ -546,38 +544,20 @@ class TestStandardFittingProcessor:
 
 
 # ======================================================================
-# StandardIterFittingProcessor / StandardDataFittingProcessor
+# StandardDataFittingProcessor
 # ======================================================================
 
-class TestStandardIterFittingProcessor:
-    def test_masks_none_raises(self):
-        punctum, masks = _synthetic_punctum()
-        with pytest.raises(FittingValidationError, match="requires masks"):
-            StandardIterFittingProcessor().fit_single_punctum(punctum, punctum, _weights(), [0.0, 0.0], masks=None)
-
-    def test_all_nonpositive_smoothed_returns_nan(self):
-        punctum, masks = _synthetic_punctum()
-        smoothed = np.zeros((SIZE, SIZE), dtype=np.float32)
-        pfit, err = StandardIterFittingProcessor().fit_single_punctum(punctum, smoothed, _weights(), [0.0, 0.0], masks=masks)
-        assert np.all(np.isnan(pfit))
-
-    def test_normal_fit_all_three_stages(self):
-        punctum, masks = _synthetic_punctum(x0=4.0, y0=4.0)
-        pfit, err = StandardIterFittingProcessor(readnoise=1.5).fit_single_punctum(
-            punctum, punctum, _weights(), [0.0, 0.0], masks=masks,
-        )
-        assert pfit[0] == pytest.approx(4.0, abs=1.0)
-
+class TestStandardDataStages:
     def test_stage1_failure_returns_nan(self, monkeypatch):
         punctum, masks = _synthetic_punctum()
-        proc = StandardIterFittingProcessor()
+        proc = StandardDataFittingProcessor()
         monkeypatch.setattr(proc, "_leastsq_step", lambda *a, **kw: (a[0], None, 5))
         pfit, err = proc.fit_single_punctum(punctum, punctum, _weights(), [0.0, 0.0], masks=masks)
         assert np.all(np.isnan(pfit))
 
     def test_stage2_failure_returns_nan(self, monkeypatch):
         punctum, masks = _synthetic_punctum()
-        proc = StandardIterFittingProcessor()
+        proc = StandardDataFittingProcessor()
         real_step = proc._leastsq_step
         calls = {"n": 0}
 
@@ -593,7 +573,7 @@ class TestStandardIterFittingProcessor:
 
     def test_stage3_failure_returns_nan(self, monkeypatch):
         punctum, masks = _synthetic_punctum()
-        proc = StandardIterFittingProcessor()
+        proc = StandardDataFittingProcessor()
         real_step = proc._leastsq_step
         calls = {"n": 0}
 
@@ -609,7 +589,7 @@ class TestStandardIterFittingProcessor:
 
     def test_exception_path_returns_nan(self, monkeypatch):
         punctum, masks = _synthetic_punctum()
-        proc = StandardIterFittingProcessor()
+        proc = StandardDataFittingProcessor()
 
         def _raise(*a, **kw):
             raise RuntimeError("forced failure")
@@ -1080,7 +1060,7 @@ class TestReadnoiseMaps:
         w = p._raw_data_weights(punctum, p._readnoise_sq(rn))
         np.testing.assert_allclose(w, 1.0 / (np.maximum(punctum, 0) + 1.0 + rn ** 2), rtol=1e-6)
 
-    @pytest.mark.parametrize("proc_cls", [StandardIterFittingProcessor, StandardDataFittingProcessor])
+    @pytest.mark.parametrize("proc_cls", [StandardDataFittingProcessor])
     def test_uniform_map_gives_the_scalar_fit(self, proc_cls):
         punctum, masks = _noisy_punctum(seed=1)
         p = proc_cls(readnoise=2.0)

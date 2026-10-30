@@ -61,7 +61,6 @@ class FittingStrategy(Enum):
     """
 
     STANDARD = "standard"  # Full colour fitting with all channels
-    STANDARD_ITER = "standard_iter"  # STANDARD with 2 IRLS model-weight iterations
     STANDARD_DATA = "standard_data"  # smooth → model → raw-data weights (unbiased final pass)
     CIRCULAR = "circular"  # STANDARD_DATA with a single shared PSF width (no sx/sy split)
     ELLIPTICAL = "elliptical"  # Rotated elliptical Gaussian (11 params; for tracking)
@@ -91,7 +90,6 @@ class FittingConstants:
     # Array dimensions for different strategies
     PARAM_DIMENSIONS = {
         FittingStrategy.STANDARD: {"fit": 12, "error": 10},
-        FittingStrategy.STANDARD_ITER: {"fit": 12, "error": 10},
         FittingStrategy.STANDARD_DATA: {"fit": 12, "error": 10},
         FittingStrategy.CIRCULAR: {"fit": 11, "error": 9},
         FittingStrategy.ELLIPTICAL: {"fit": 13, "error": 11},
@@ -152,7 +150,6 @@ class FittingParameters:
         # Check masks requirement for colour strategies
         colour_strategies = {
             FittingStrategy.STANDARD,
-            FittingStrategy.STANDARD_ITER,
             FittingStrategy.STANDARD_DATA,
             FittingStrategy.CIRCULAR,
             FittingStrategy.ELLIPTICAL,
@@ -188,7 +185,7 @@ class FittingResultProcessor:
         drift out of sync.
         """
         standard_like = {
-            FittingStrategy.STANDARD, FittingStrategy.STANDARD_ITER, FittingStrategy.STANDARD_DATA,
+            FittingStrategy.STANDARD, FittingStrategy.STANDARD_DATA,
         }
         if strategy in standard_like:
             n_ch = (length - 4) // 2
@@ -455,7 +452,7 @@ class FittingResultProcessor:
         if length < 2:
             return perm
         if strategy in (
-            FittingStrategy.STANDARD, FittingStrategy.STANDARD_ITER, FittingStrategy.STANDARD_DATA,
+            FittingStrategy.STANDARD, FittingStrategy.STANDARD_DATA,
             FittingStrategy.ELLIPTICAL, FittingStrategy.NOCOLOUR,
         ) and length >= 4:
             perm[:4] = [1, 0, 3, 2]
@@ -504,7 +501,7 @@ class FittingResultProcessor:
         # _xy_permutation reorders pfit into the output's [x, y, ...] order; the errors (in pcov's
         # order, i.e. pfit's) take the same permutation below, and relative_coords is the ROI's
         # (column, row) origin, added to (xc, yc).
-        _standard_like = {FittingStrategy.STANDARD, FittingStrategy.STANDARD_ITER, FittingStrategy.STANDARD_DATA}
+        _standard_like = {FittingStrategy.STANDARD, FittingStrategy.STANDARD_DATA}
         _gated_strategies = _standard_like | {FittingStrategy.ELLIPTICAL, FittingStrategy.CIRCULAR}
 
         n_ch = (len(pfit) - 4) // 2   # standard-like strategies only
@@ -517,7 +514,7 @@ class FittingResultProcessor:
 
         # Position gate only applies to strategies where first params are x, y, sx, sy
         position_strategies = {
-            FittingStrategy.STANDARD, FittingStrategy.STANDARD_ITER, FittingStrategy.STANDARD_DATA,
+            FittingStrategy.STANDARD, FittingStrategy.STANDARD_DATA,
             FittingStrategy.ELLIPTICAL,
             FittingStrategy.NOCOLOUR,
         }
@@ -780,21 +777,25 @@ class StandardFittingProcessor(FittingProcessor):
             return (np.full(4 + 2 * n_ch + 2, np.nan), np.full(4 + 2 * n_ch, np.nan))
 
 
-class StandardIterFittingProcessor(StandardFittingProcessor):
-    """STANDARD fitting with two IRLS model-weight update iterations.
+class StandardDataFittingProcessor(StandardFittingProcessor):
+    """STANDARD fitting with raw-data weights in the final pass (S4 strategy).
 
     Workflow:
-    - Stage 1: Fit with smoothing-based weights (same as STANDARD — basin finding).
-    - Stage 2: Recompute weights from Stage 1 model, refit from warm start.
-    - Stage 3: Recompute weights from Stage 2 model, refit from warm start.
+    - Stage 1: Fit with smoothing-based weights (basin finding).
+    - Stage 2: Recompute weights from Stage 1 model, refit (warm start).
+    - Stage 3: Recompute weights from raw observed data, refit (warm start).
 
-    The model-based weight formula matches production IOFunctions.generate_weights:
-        w = 1 / (max(model_pe, 0) + 1 + readnoise_e²)
+    Stage 3 weight formula:
+        w = 1 / (max(data_pe, 0) + 1 + readnoise²)
 
-    The smoothing-based Stage 1 weights over-estimate variance at PSF flank pixels
-    (Gaussian smoothing spreads signal outward), causing chi² < 1 at high photon
-    counts and a systematic upward bias in fitted sigma.  Replacing them with
-    model-derived weights removes this bias and converges chi² closer to 1.
+    Stage 2 weight formula (model-based, as IOFunctions.generate_weights):
+        w = 1 / (max(model_pe, 0) + 1 + readnoise²)
+
+    The smoothing-based Stage 1 weights over-estimate the variance at PSF flank pixels
+    (smoothing spreads signal outward); Stage 2 replaces them with the model's. A final
+    pass with model weights would couple the weights to the amplitude being fitted
+    (inflating both); since E[1/(data + 1 + rn²)] ≈ 1/(true_signal + 1 + rn²), raw-data
+    weights in Stage 3 decouple them.
 
     Args:
         readnoise: Camera read noise in electrons (default 1.5 e-).
@@ -834,92 +835,6 @@ class StandardIterFittingProcessor(StandardFittingProcessor):
         )
         return pfit, pcov, ok
 
-    def fit_single_punctum(
-        self,
-        punctum: np.ndarray,
-        smoothed_punctum: np.ndarray,
-        weights: np.ndarray,
-        relative_coords,
-        masks: Optional[np.ndarray] = None,
-        readnoise_map: Optional[np.ndarray] = None,
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        if masks is None:
-            raise FittingValidationError("Standard-ITER fitting requires masks")
-
-        n_ch = masks.shape[-1]
-        nan_result = (np.full(4 + 2 * n_ch + 2, np.nan), np.full(4 + 2 * n_ch, np.nan))
-
-        if np.max(smoothed_punctum) <= 0:
-            return nan_result
-
-        size = int(punctum.shape[0])
-        rn2 = self._readnoise_sq(readnoise_map)
-        ravelsize = size * size
-
-        try:
-            ig = self._generate_initial_guess(smoothed_punctum, punctum, masks)
-
-            # Stage 1: smoothing weights (passed in from SR_Functions / simulation)
-            pfit1, _, ok1 = self._leastsq_step(ig, punctum, masks, weights, size)
-            if ok1 not in (1, 2, 3, 4) or _lm_stuck(pfit1, ig):
-                return nan_result
-
-            # Stage 2: model weights from Stage 1 fit
-            w2 = self._model_based_weights(pfit1, masks, size, rn2)
-            pfit2, _, ok2 = self._leastsq_step(pfit1, punctum, masks, w2, size)
-            if ok2 not in (1, 2, 3, 4):
-                return nan_result
-
-            # Stage 3: model weights from Stage 2 fit (final)
-            w3 = self._model_based_weights(pfit2, masks, size, rn2)
-            pfit3, pcov3, ok3 = self._leastsq_step(pfit2, punctum, masks, w3, size)
-            if ok3 not in (1, 2, 3, 4):
-                return nan_result
-
-            # Chi² and covariance from Stage 3 weights
-            residuals = gaussoptfuncs.WLS_chi_nobounds(
-                pfit3.astype(np.float32), punctum, masks, w3, size, ravelsize
-            )
-            chisqr = FittingResultProcessor.calculate_reduced_chisquared(
-                residuals, ravelsize, len(ig)
-            )
-            pcov3 = FittingResultProcessor.process_covariance(
-                pcov3, chisqr, ravelsize, len(ig)
-            )
-
-            delta_chi2 = FittingResultProcessor.delta_chi_squared(residuals, punctum, masks, w3)
-            return FittingResultProcessor.process_fit_results(
-                pfit3, pcov3, size, relative_coords, FittingStrategy.STANDARD_ITER, chisqr,
-                delta_chi2=delta_chi2, gate=self.gate,
-            )
-
-        except Exception as e:
-            import traceback
-            logging.warning(f"STANDARD_ITER fitting failed: {e}")
-            logging.warning(
-                f"Full traceback:\n{''.join(traceback.format_tb(e.__traceback__))}"
-            )
-            return nan_result
-
-
-class StandardDataFittingProcessor(StandardIterFittingProcessor):
-    """STANDARD fitting with raw-data weights in the final pass (S4 strategy).
-
-    Workflow:
-    - Stage 1: Fit with smoothing-based weights (basin finding).
-    - Stage 2: Recompute weights from Stage 1 model, refit (warm start).
-    - Stage 3: Recompute weights from raw observed data, refit (warm start).
-
-    Stage 3 weight formula:
-        w = 1 / (max(data_pe, 0) + 1 + readnoise²)
-
-    Because E[1/(data + 1 + rn²)] ≈ 1/(true_signal + 1 + rn²), the weight
-    denominator is decoupled from the current amplitude estimate, breaking the
-    double-inflation coupling that biases STANDARD_ITER amplitudes.
-
-    Args:
-        readnoise: Camera read noise in electrons (default 1.5 e-).
-    """
 
     def _raw_data_weights(self, punctum: np.ndarray, rn2=None) -> np.ndarray:
         """Compute per-pixel weights from the observed raw data.
@@ -1032,7 +947,7 @@ class CircularFittingProcessor(StandardDataFittingProcessor):
     def _model_based_weights(
         self, pfit: np.ndarray, masks: np.ndarray, size: int, rn2=None
     ) -> np.ndarray:
-        """Same as StandardIterFittingProcessor._model_based_weights, but pfit carries
+        """Same as StandardDataFittingProcessor._model_based_weights, but pfit carries
         one shared width -- expand to [x, y, s, s, bg..., A...] before evaluating the
         (unchanged) coloured-Gaussian model.
         """
@@ -1378,10 +1293,10 @@ class Image_Analysis_Functions:
 
         Args:
             helper_functions: Helper functions instance (default: creates new instance)
-            readnoise: Camera read noise in electrons, used by STANDARD_ITER for
-                model-based weight updates (default 1.5 e-).
+            readnoise: Camera read noise in electrons, used by STANDARD_DATA and CIRCULAR
+                for their weight updates (default 1.5 e-).
             fit_gate: Fit-acceptance gate for the colour Gaussian strategies (STANDARD,
-                STANDARD_ITER, STANDARD_DATA, CIRCULAR, ELLIPTICAL): "delta_chi2" (default,
+                STANDARD_DATA, CIRCULAR, ELLIPTICAL): "delta_chi2" (default,
                 a likelihood-ratio test calibrated to noise_rate), "amplitude_snr" (the
                 previous Wald test), None (no gate), or a FitGate gate object.
             noise_rate: For "delta_chi2", the fraction of pure-noise ROIs that should pass
@@ -1390,7 +1305,6 @@ class Image_Analysis_Functions:
         # Initialize strategy processors
         self.processors = {
             FittingStrategy.STANDARD: StandardFittingProcessor(),
-            FittingStrategy.STANDARD_ITER: StandardIterFittingProcessor(readnoise=readnoise),
             FittingStrategy.STANDARD_DATA: StandardDataFittingProcessor(readnoise=readnoise),
             FittingStrategy.CIRCULAR: CircularFittingProcessor(readnoise=readnoise),
             FittingStrategy.ELLIPTICAL: EllipticalFittingProcessor(),
@@ -1414,7 +1328,7 @@ class Image_Analysis_Functions:
     _WORKER_STATE_ATTRS = ("readnoise", "gate")
 
     _GATED_STRATEGIES = (
-        FittingStrategy.STANDARD, FittingStrategy.STANDARD_ITER, FittingStrategy.STANDARD_DATA,
+        FittingStrategy.STANDARD, FittingStrategy.STANDARD_DATA,
         FittingStrategy.CIRCULAR, FittingStrategy.ELLIPTICAL,
     )
 
@@ -1515,7 +1429,7 @@ class Image_Analysis_Functions:
         # This makes the allocations correct for cameras with more than 3 colour channels.
         _colour_strategies = {
             FittingStrategy.STANDARD,
-            FittingStrategy.STANDARD_ITER, FittingStrategy.STANDARD_DATA,
+            FittingStrategy.STANDARD_DATA,
         }
         if strategy in _colour_strategies and masks is not None and len(masks) > 0:
             n_ch = masks[0].shape[-1]
@@ -1765,7 +1679,7 @@ def _fit_puncta_method_standalone(
         n_puncta = len(puncta)
         _colour_strategies = {
             FittingStrategy.STANDARD,
-            FittingStrategy.STANDARD_ITER, FittingStrategy.STANDARD_DATA,
+            FittingStrategy.STANDARD_DATA,
         }
         if strategy in _colour_strategies and masks is not None and len(masks) > 0:
             n_ch = masks[0].shape[-1]

@@ -11,7 +11,7 @@ test_motion_blur.py/test_photoelectron_extraction.py/
 test_pygmmis_integration.py). This file targets the large gaps those leave:
 the non-vectorized gen_camera_image_stack path, defocus/motion-blur/per-frame
 -mask branches, the full test_simulation_method strategy dispatch (which
-exercises _fit_standard/_fit_elliptical/_fit_standard_iter/_fit_standard_data/
+exercises _fit_standard/_fit_elliptical/_fit_standard_data/
 _fit_demosaic/_compute_fit_statistics all at once),
 test_simulation_method_2d_sweep, and the remaining dye-selector branches
 (exhaustive search, viable-dye-count errors, plotting).
@@ -449,7 +449,7 @@ class TestGenCameraImageStack:
 
 # ======================================================================
 # test_simulation_method -- strategy dispatch (covers _fit_standard/
-# _fit_elliptical/_fit_standard_iter/_fit_standard_data/
+# _fit_elliptical/_fit_standard_data/
 # _fit_demosaic/_compute_fit_statistics all at once)
 # ======================================================================
 
@@ -473,7 +473,7 @@ class TestSimulationMethod:
 
     @pytest.mark.parametrize("strategy", [
         FittingStrategy.STANDARD, FittingStrategy.ELLIPTICAL,
-        FittingStrategy.STANDARD_ITER, FittingStrategy.STANDARD_DATA,
+        FittingStrategy.STANDARD_DATA,
         FittingStrategy.DEMOSAIC,
     ])
     def test_all_strategies(self, sim, camera_parameters, wavelength_and_qys, smoothing_function, tmp_path, strategy):

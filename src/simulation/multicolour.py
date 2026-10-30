@@ -50,7 +50,6 @@ class FittingStrategy(Enum):
     """
 
     STANDARD = "standard"
-    STANDARD_ITER = "standard_iter"  # STANDARD with 2 IRLS model-weight iterations
     STANDARD_DATA = "standard_data"  # smooth → model → raw-data weights (unbiased final pass)
     ELLIPTICAL = "elliptical"        # Rotated elliptical Gaussian on Bayer data (11 params)
     DEMOSAIC = "demosaic"
@@ -915,10 +914,6 @@ class MultiC_Sim_Funcs_Refactored:
             return self._fit_elliptical(
                 photoelectron_data, smoothed_data, weights_map, camera_params, config
             )
-        elif strategy == FittingStrategy.STANDARD_ITER:
-            return self._fit_standard_iter(
-                photoelectron_data, smoothed_data, weights_map, camera_params, config
-            )
         elif strategy == FittingStrategy.STANDARD_DATA:
             return self._fit_standard_data(
                 photoelectron_data, smoothed_data, weights_map, camera_params, config
@@ -1116,77 +1111,6 @@ class MultiC_Sim_Funcs_Refactored:
 
         return fit_results
 
-    def _fit_standard_iter(
-        self,
-        photoelectron_data: np.ndarray,
-        smoothed_data: np.ndarray,
-        weights_map: np.ndarray,
-        camera_params: CameraParameters,
-        config: SimulationConfig,
-    ) -> pd.DataFrame:
-        """STANDARD_ITER fitting: two IRLS model-weight update iterations.
-
-        Identical to _fit_standard but uses STANDARD_ITER strategy, which performs
-        two additional Levenberg-Marquardt passes with model-derived weights after
-        the initial smoothing-weight fit.  The camera readnoise is propagated to the
-        processor so that model weights use the correct variance formula.
-        """
-        # Propagate camera readnoise to the STANDARD_ITER processor
-        readnoise_scalar = float(np.median(camera_params.readnoise))
-        self.image_analysis.processors[IAF_FittingStrategy.STANDARD_ITER].readnoise = readnoise_scalar
-
-        masks_tofit = self._build_frame_masks(camera_params.masks, config.n_bootstrap)
-
-        puncta_tofit, smoothed_puncta_tofit, weights_tofit = [], [], []
-        relative_coords, planes = [], []
-
-        for frame in range(config.n_bootstrap):
-            puncta_tofit.append(photoelectron_data[frame, :, :])
-            smoothed_puncta_tofit.append(smoothed_data[frame, :, :])
-            weights_tofit.append(weights_map[frame, :, :])
-            relative_coords.append((0, 0))
-            planes.append(frame)
-
-        del photoelectron_data, smoothed_data, weights_map
-        gc.collect()
-
-        fit_results, fit_errors = self.image_analysis.fit_puncta_parallel_method(
-            puncta_tofit,
-            smoothed_puncta_tofit,
-            weights_tofit,
-            relative_coords,
-            planes,
-            IAF_FittingStrategy.STANDARD_ITER,
-            masks=masks_tofit,
-            readnoise_maps=self._build_frame_readnoise(camera_params.readnoise, len(puncta_tofit)),
-        )
-
-        _lbls = camera_params.pixel_order
-        columns = (
-            ["xc", "yc", "s_x", "s_y"]
-            + [f"bg_{l}" for l in _lbls]
-            + [f"A_{l}" for l in _lbls]
-            + ["chi_sqr", "frame"]
-        )
-        error_columns = (
-            ["xc_err", "yc_err", "s_x_err", "s_y_err"]
-            + [f"bg_{l}_err" for l in _lbls]
-            + [f"A_{l}_err" for l in _lbls]
-        )
-
-        fit_results = pd.DataFrame(fit_results, columns=columns).sort_values(by=["frame"])
-        fit_errors_df = pd.DataFrame(fit_errors, columns=error_columns)
-        fit_results = pd.concat([fit_results.reset_index(drop=True), fit_errors_df], axis=1)
-
-        fit_results["photons"] = sum(fit_results[f"A_{l}"] for l in _lbls)
-        fit_results["background_photons"] = sum(fit_results[f"bg_{l}"] for l in _lbls)
-
-        for l in _lbls:
-            fit_results[f"A_{l}"] /= fit_results["photons"]
-            fit_results[f"bg_{l}"] /= fit_results["background_photons"]
-
-        return fit_results
-
     def _fit_standard_data(
         self,
         photoelectron_data: np.ndarray,
@@ -1197,10 +1121,9 @@ class MultiC_Sim_Funcs_Refactored:
     ) -> pd.DataFrame:
         """STANDARD_DATA fitting: smooth → model weights → raw-data weights (S4).
 
-        Identical to _fit_standard_iter except the final LM pass uses weights
-        derived from the raw observed data rather than a second model pass.
-        This breaks the double-inflation coupling and produces unbiased amplitude
-        estimates at high photon counts.
+        Three LM passes (StandardDataFittingProcessor): weights from the smoothed
+        image, then from the first fit's model, then from the raw data; the raw-data
+        final pass gives unbiased amplitudes at high photon counts.
         """
         # Propagate camera readnoise to the STANDARD_DATA processor
         readnoise_scalar = float(np.median(camera_params.readnoise))
@@ -2753,7 +2676,7 @@ class MultiC_Sim_Funcs_Refactored:
                         if overwrite or not Path(input_params_path).exists():
                             real_params.write_csv(input_params_path)
 
-                        if strategy in (FittingStrategy.STANDARD, FittingStrategy.STANDARD_ITER, FittingStrategy.STANDARD_DATA):
+                        if strategy in (FittingStrategy.STANDARD, FittingStrategy.STANDARD_DATA):
                             gt_path = Path(save_folder) / f"{flag}LM_method_{dyestr}_fittesting_input_groundtruthpositions.csv"
                             pl.DataFrame({"x0": x0, "y0": y0}).write_csv(gt_path)
 
@@ -3047,7 +2970,7 @@ class MultiC_Sim_Funcs_Refactored:
         # match the existing HDF5 fit results.  Overwriting with freshly-drawn random
         # positions would break the correspondence between fit rows and ground truth and
         # produce ~57 nm apparent sigma_xy (pure noise) in downstream analysis.
-        if strategy in (FittingStrategy.STANDARD, FittingStrategy.STANDARD_ITER, FittingStrategy.STANDARD_DATA, FittingStrategy.ELLIPTICAL):
+        if strategy in (FittingStrategy.STANDARD, FittingStrategy.STANDARD_DATA, FittingStrategy.ELLIPTICAL):
             groundtruth_path = Path(save_folder) / f"{starting_flag}LM_method_{dyestr}_fittesting_input_groundtruthpositions.csv"
             if (not overwrite) and Path(groundtruth_path).exists():
                 # Continuation run: reload saved positions so they are consistent with the HDF5.
