@@ -1375,6 +1375,15 @@ class TestDeltaChi2GateCalibration:
         g.prepare(FittingStrategy.STANDARD, 10, 5.0, masks)
         assert len(list(tmp_path.glob("*.json"))) == 3
 
+    def test_every_read_noise_of_a_sweep_gets_its_own_calibration(self, tmp_path):
+        # Figure 1c's neighbouring read noises once shared a calibration rounded to 0.1 e-
+        _, _, _, _, _, masks = self._rois()
+        g = DeltaChi2Gate(cache_dir=tmp_path, n_null=100)
+        for rn in (2.154435, 2.257020, 2.25702001):
+            g.prepare(FittingStrategy.STANDARD_DATA, 10, rn, masks)
+        assert sorted(f.name.split("_")[3] for f in tmp_path.glob("*.json")) == ["rn2.154", "rn2.257"]
+        assert g.key["readnoise_e"] == 2.257
+
     def test_bright_emitters_pass_and_noise_mostly_rejected(self, tmp_path):
         g = DeltaChi2Gate(noise_rate=0.01, cache_dir=tmp_path, n_null=300)
         iaf_ = Image_Analysis_Functions(readnoise=2.0, fit_gate=g)

@@ -34,8 +34,21 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Bump when the calibration procedure changes, so stale cached files are not reused.
-CALIBRATION_VERSION = 3
+# Bump when the calibration procedure *or the fitter* changes, so stale cached files are not
+# reused (the thresholds are quantiles of the fitter's own delta-chi^2 on pure noise). Version 4:
+# the 2026-10-27..29 fitter changes (xtol, initial guesses, rejecting fits that never leave their
+# guess), and read noise kept to READNOISE_SIG_FIGS instead of rounded to 0.1 e-.
+CALIBRATION_VERSION = 4
+
+# Significant figures of the read noise a calibration is made at: every read noise of a sweep
+# gets its own calibration (neighbouring Figure 1c values differ by ~5%), while repeated runs at
+# one read noise share theirs.
+READNOISE_SIG_FIGS = 4
+
+
+def readnoise_key(readnoise: float) -> float:
+    """Read noise (photoelectrons RMS) to READNOISE_SIG_FIGS significant figures."""
+    return float(f"{float(readnoise):.{READNOISE_SIG_FIGS}g}")
 
 
 def default_cache_dir() -> Path:
@@ -152,7 +165,7 @@ class DeltaChi2Gate:
             "version": CALIBRATION_VERSION,
             "strategy": getattr(strategy, "value", str(strategy)),
             "roi_size": int(roi_size),
-            "readnoise_e": round(float(readnoise), 1),
+            "readnoise_e": readnoise_key(readnoise),
             "n_channels": int(n_ch),
             "smoothing_sigma": round(self.smoothing_sigma, 2),
             "n_null": self.n_null,
@@ -160,7 +173,7 @@ class DeltaChi2Gate:
 
     def _cache_path(self, key: dict) -> Path:
         digest = hashlib.sha1(json.dumps(key, sort_keys=True).encode()).hexdigest()[:10]
-        name = (f"{key['strategy']}_roi{key['roi_size']}_rn{key['readnoise_e']:.1f}"
+        name = (f"{key['strategy']}_roi{key['roi_size']}_rn{key['readnoise_e']:g}"
                 f"_ch{key['n_channels']}_{digest}.json")
         return (self.cache_dir or default_cache_dir()) / name
 
@@ -182,7 +195,7 @@ class DeltaChi2Gate:
                 logger.warning("Ignoring unreadable fit-gate calibration %s", path)
         if table is None:
             logger.info("Calibrating the delta-chi^2 fit gate (%s) -- once per setting, then cached", key)
-            table, fitted_bg = self._calibrate(strategy, roi_size, readnoise, masks)
+            table, fitted_bg = self._calibrate(strategy, roi_size, key["readnoise_e"], masks)
             self._save(path, key, table, fitted_bg)
         self.key = key
         self._set_table(table, fitted_bg)
