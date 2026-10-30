@@ -23,14 +23,11 @@ from pyS3M.ImageAnalysisFunctions import (
     FittingValidationError,
     FittingResultProcessor,
     StandardFittingProcessor,
-    StandardIGFittingProcessor,
     StandardIterFittingProcessor,
     StandardDataFittingProcessor,
     EllipticalFittingProcessor,
     CircularFittingProcessor,
     NoColourFittingProcessor,
-    JustColourFittingProcessor,
-    RawColourFittingProcessor,
     Image_Analysis_Functions,
     _fit_puncta_method_standalone,
 )
@@ -142,17 +139,17 @@ class TestCalculateErrors:
     def test_pcov_contains_inf(self):
         pcov = np.eye(3)
         pcov[0, 0] = np.inf
-        out = FittingResultProcessor.calculate_errors(pcov, FittingStrategy.JUSTCOLOUR)
+        out = FittingResultProcessor.calculate_errors(pcov, FittingStrategy.NOCOLOUR)
         assert all(np.isnan(v) for v in out)
 
     def test_normal_pcov(self):
         pcov = np.diag([4.0, 9.0])
-        out = FittingResultProcessor.calculate_errors(pcov, FittingStrategy.JUSTCOLOUR)
+        out = FittingResultProcessor.calculate_errors(pcov, FittingStrategy.NOCOLOUR)
         assert out == pytest.approx([2.0, 3.0])
 
     def test_non_positive_diagonal_becomes_nan(self):
         pcov = np.diag([4.0, -1.0])
-        out = FittingResultProcessor.calculate_errors(pcov, FittingStrategy.JUSTCOLOUR)
+        out = FittingResultProcessor.calculate_errors(pcov, FittingStrategy.NOCOLOUR)
         assert out[0] == pytest.approx(2.0)
         assert np.isnan(out[1])
 
@@ -175,17 +172,17 @@ class TestCalculateErrors:
     def test_pfit_none_preserves_sqrt_space_error(self):
         # Omitting pfit returns sqrt(diag(pcov)) unchanged (sqrt-space errors).
         pcov = np.diag([4.0, 9.0])
-        out = FittingResultProcessor.calculate_errors(pcov, FittingStrategy.JUSTCOLOUR)
+        out = FittingResultProcessor.calculate_errors(pcov, FittingStrategy.NOCOLOUR)
         assert out == pytest.approx([2.0, 3.0])
 
     def test_pfit_applies_jacobian_correction(self):
-        # JUSTCOLOUR: the whole 2-param vector is sqrt-space (A, bg). A parameter
-        # fitted as sqrt(A)=5.0 with sqrt-space sigma=2.0 has real-space sigma
+        # NOCOLOUR: [x, y, sy, sx, sqrt(bg), sqrt(A)]. A parameter fitted as sqrt(A)=5.0
+        # with sqrt-space sigma=2.0 has real-space sigma
         # sigma_A = 2*|sqrt(A)|*sigma_sqrt(A) = 2*5*2 = 20 (delta method for x^2).
-        pcov = np.diag([4.0, 9.0])
-        pfit = np.array([5.0, 3.0])
-        out = FittingResultProcessor.calculate_errors(pcov, FittingStrategy.JUSTCOLOUR, pfit)
-        assert out == pytest.approx([2 * 5.0 * 2.0, 2 * 3.0 * 3.0])
+        pcov = np.diag([1.0, 1.0, 1.0, 1.0, 9.0, 4.0])
+        pfit = np.array([4.0, 4.0, 1.3, 1.3, 3.0, 5.0])
+        out = FittingResultProcessor.calculate_errors(pcov, FittingStrategy.NOCOLOUR, pfit)
+        assert out == pytest.approx([1.0, 1.0, 1.0, 1.0, 2 * 3.0 * 3.0, 2 * 5.0 * 2.0])
 
     def test_pfit_only_corrects_sqrt_space_range(self):
         # STANDARD_DATA: pfit=[x,y,sy,sx,bg_0,bg_1,bg_2,A_0,A_1,A_2] (n_ch=3).
@@ -201,12 +198,13 @@ class TestCalculateErrors:
     def test_pfit_shorter_than_pcov_clips_safely(self):
         # Degenerate-fit-style length mismatch between pfit and pcov: the
         # correction must clip to the shared length rather than raise.
-        pcov = np.diag([4.0, 9.0, 16.0])
-        pfit = np.array([5.0])  # only covers index 0
-        out = FittingResultProcessor.calculate_errors(pcov, FittingStrategy.JUSTCOLOUR, pfit)
-        assert out[0] == pytest.approx(2 * 5.0 * 2.0)
-        assert out[1] == pytest.approx(3.0)   # beyond pfit -> uncorrected
-        assert out[2] == pytest.approx(4.0)   # beyond pfit -> uncorrected
+        # STANDARD_DATA pfit of 10 (sqrt-space 4:10) against an 8 x 8 pcov: only 4:8 corrected.
+        pcov = np.diag(np.full(8, 4.0))
+        pfit = np.array([1.0, 2.0, 1.3, 1.3, 1.0, 1.0, 5.0, 5.0, 5.0, 5.0])
+        out = FittingResultProcessor.calculate_errors(pcov, FittingStrategy.STANDARD_DATA, pfit)
+        assert len(out) == 8
+        assert out[:4] == pytest.approx([2.0] * 4)
+        assert out[4:8] == pytest.approx([2 * 1.0 * 2.0, 2 * 1.0 * 2.0, 2 * 5.0 * 2.0, 2 * 5.0 * 2.0])
 
 
 class TestFractionErrors:
@@ -275,14 +273,8 @@ class TestSqrtSpaceSlice:
     def test_nocolour_too_short(self):
         assert FittingResultProcessor._sqrt_space_slice(FittingStrategy.NOCOLOUR, 4) == slice(0, 0)
 
-    def test_justcolour(self):
-        assert FittingResultProcessor._sqrt_space_slice(FittingStrategy.JUSTCOLOUR, 2) == slice(0, 2)
-
-    def test_rawcolour(self):
-        assert FittingResultProcessor._sqrt_space_slice(FittingStrategy.RAWCOLOUR, 6) == slice(0, 6)
-
     def test_unhandled_strategy_returns_empty(self):
-        assert FittingResultProcessor._sqrt_space_slice(FittingStrategy.STANDARD_IG, 10) == slice(0, 0)
+        assert FittingResultProcessor._sqrt_space_slice("unknown", 10) == slice(0, 0)
 
 
 class TestCalculateReducedChisquared:
@@ -374,7 +366,7 @@ class TestProcessFitResults:
 
     def test_pfit_empty(self):
         pfit, err = FittingResultProcessor.process_fit_results(
-            np.array([]), None, SIZE, [0.0, 0.0], FittingStrategy.JUSTCOLOUR,
+            np.array([]), None, SIZE, [0.0, 0.0], FittingStrategy.NOCOLOUR,
         )
         assert np.all(np.isnan(pfit))
 
@@ -497,20 +489,6 @@ class TestProcessFitResults:
         assert out[4] == pytest.approx(4.5 ** 2)
         assert out[5] == pytest.approx(20.0 ** 2)
 
-    def test_justcolour_normal_path_squares_both(self):
-        pfit = np.array([3.0, 2.0])
-        out, err = FittingResultProcessor.process_fit_results(
-            pfit, None, SIZE, [0.0, 0.0], FittingStrategy.JUSTCOLOUR,
-        )
-        assert out[0] == pytest.approx(9.0)
-        assert out[1] == pytest.approx(4.0)
-
-    def test_rawcolour_normal_path_squares_all(self):
-        pfit = np.array([1.0, 1.0, 1.0, 2.0, 2.0, 2.0])
-        out, err = FittingResultProcessor.process_fit_results(
-            pfit, None, SIZE, [0.0, 0.0], FittingStrategy.RAWCOLOUR,
-        )
-        np.testing.assert_allclose(out[:6], [1.0, 1.0, 1.0, 4.0, 4.0, 4.0])
 
 
 class TestFittingProcessorAbstractBody:
@@ -527,7 +505,7 @@ class TestFittingProcessorAbstractBody:
 
 
 # ======================================================================
-# StandardFittingProcessor / StandardIGFittingProcessor
+# StandardFittingProcessor
 # ======================================================================
 
 class TestStandardFittingProcessor:
@@ -565,29 +543,6 @@ class TestStandardFittingProcessor:
         monkeypatch.setattr(iaf, "leastsq", _raise)
         pfit, err = StandardFittingProcessor().fit_single_punctum(punctum, punctum, _weights(), [0.0, 0.0], masks=masks)
         assert np.all(np.isnan(pfit))
-
-
-class TestStandardIGFittingProcessor:
-    def test_masks_none_raises(self):
-        punctum, masks = _synthetic_punctum()
-        with pytest.raises(FittingValidationError, match="requires masks"):
-            StandardIGFittingProcessor().fit_single_punctum(punctum, punctum, _weights(), (4, 4, 1.3, 1.3, 20, 400), masks=None)
-
-    def test_all_nonpositive_smoothed_returns_nan(self):
-        punctum, masks = _synthetic_punctum()
-        smoothed = np.zeros((SIZE, SIZE), dtype=np.float32)
-        pfit, err = StandardIGFittingProcessor().fit_single_punctum(
-            punctum, smoothed, _weights(), (4, 4, 1.3, 1.3, 20, 400), masks=masks,
-        )
-        assert np.all(np.isnan(pfit))
-
-    def test_normal_fit_seeded_from_demosaiced_result(self):
-        punctum, masks = _synthetic_punctum(x0=4.0, y0=4.0)
-        pfit, err = StandardIGFittingProcessor().fit_single_punctum(
-            punctum, punctum, _weights(), (4.0, 4.0, 1.3, 1.3, 20.0, 400.0), masks=masks,
-        )
-        assert pfit[0] == pytest.approx(4.0, abs=1.0)
-        assert pfit[1] == pytest.approx(4.0, abs=1.0)
 
 
 # ======================================================================
@@ -911,86 +866,6 @@ class TestNoColourFittingProcessor:
 
         monkeypatch.setattr(iaf, "leastsq", _raise)
         pfit, err = NoColourFittingProcessor().fit_single_punctum(punctum, punctum, _weights(), [0.0, 0.0])
-        assert np.all(np.isnan(pfit))
-
-
-# ======================================================================
-# JustColourFittingProcessor
-# ======================================================================
-
-class TestJustColourFittingProcessor:
-    def test_masks_none_raises(self):
-        punctum, masks = _synthetic_punctum()
-        with pytest.raises(FittingValidationError, match="requires masks"):
-            JustColourFittingProcessor().fit_single_punctum(punctum, punctum, _weights(), [4.0, 4.0, 1.3, 1.3], masks=None)
-
-    def test_normal_fit(self):
-        punctum, masks = _synthetic_punctum(x0=4.0, y0=4.0)
-        pfit, err = JustColourFittingProcessor().fit_single_punctum(
-            punctum, punctum, _weights(), [4.0, 4.0, 1.3, 1.3], masks=masks,
-        )
-        # 2 model params + appended chisqr; PARAM_DIMENSIONS["fit"]=4 includes
-        # the plane index appended later by Image_Analysis_Functions.fit_puncta_method.
-        assert len(pfit) == 3
-
-    def test_leastsq_non_convergence_returns_nan(self, monkeypatch):
-        punctum, masks = _synthetic_punctum()
-        monkeypatch.setattr(iaf, "leastsq", _fail_leastsq)
-        pfit, err = JustColourFittingProcessor().fit_single_punctum(
-            punctum, punctum, _weights(), [4.0, 4.0, 1.3, 1.3], masks=masks,
-        )
-        assert np.all(np.isnan(pfit))
-
-    def test_exception_path_returns_nan(self, monkeypatch):
-        punctum, masks = _synthetic_punctum()
-
-        def _raise(*a, **kw):
-            raise RuntimeError("forced failure")
-
-        monkeypatch.setattr(iaf, "leastsq", _raise)
-        pfit, err = JustColourFittingProcessor().fit_single_punctum(
-            punctum, punctum, _weights(), [4.0, 4.0, 1.3, 1.3], masks=masks,
-        )
-        assert np.all(np.isnan(pfit))
-
-
-# ======================================================================
-# RawColourFittingProcessor
-# ======================================================================
-
-class TestRawColourFittingProcessor:
-    def test_masks_none_raises(self):
-        punctum, masks = _synthetic_punctum()
-        with pytest.raises(FittingValidationError, match="requires masks"):
-            RawColourFittingProcessor().fit_single_punctum(punctum, punctum, _weights(), [4.0, 4.0, 1.3, 1.3], masks=None)
-
-    def test_normal_fit(self):
-        punctum, masks = _synthetic_punctum(x0=4.0, y0=4.0)
-        pfit, err = RawColourFittingProcessor().fit_single_punctum(
-            punctum, punctum, _weights(), [4.0, 4.0, 1.3, 1.3], masks=masks,
-        )
-        # 6 model params + appended chisqr; PARAM_DIMENSIONS["fit"]=8 includes
-        # the plane index appended later by Image_Analysis_Functions.fit_puncta_method.
-        assert len(pfit) == 7
-
-    def test_leastsq_non_convergence_returns_nan(self, monkeypatch):
-        punctum, masks = _synthetic_punctum()
-        monkeypatch.setattr(iaf, "leastsq", _fail_leastsq)
-        pfit, err = RawColourFittingProcessor().fit_single_punctum(
-            punctum, punctum, _weights(), [4.0, 4.0, 1.3, 1.3], masks=masks,
-        )
-        assert np.all(np.isnan(pfit))
-
-    def test_exception_path_returns_nan(self, monkeypatch):
-        punctum, masks = _synthetic_punctum()
-
-        def _raise(*a, **kw):
-            raise RuntimeError("forced failure")
-
-        monkeypatch.setattr(iaf, "leastsq", _raise)
-        pfit, err = RawColourFittingProcessor().fit_single_punctum(
-            punctum, punctum, _weights(), [4.0, 4.0, 1.3, 1.3], masks=masks,
-        )
         assert np.all(np.isnan(pfit))
 
 

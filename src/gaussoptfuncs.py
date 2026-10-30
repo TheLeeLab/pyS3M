@@ -64,44 +64,6 @@ def gaussian_unscaled_model(
 
 
 @jit(nopython=True, nogil=True, cache=True)
-def WLS_justcolour_model_nobounds(
-    params,
-    x,
-    gauss_2d,
-    locparams,
-):
-    """
-    Calculate a coloured gaussian based on input params.
-
-
-    Args:
-        params (numpy.ndarray): Input parameters.
-        data (numpy.ndarray): Data to fit.
-        masks (np.3darray): 3d array of colour masks
-
-    Returns:
-        gauss_2d (numpy.ndarray): 2d bayer filtered gaussian.
-    """
-
-    gauss_2d[:, :] = (
-        np.multiply(
-            params[0] ** 2,
-            gaussian_unscaled_model(
-                gauss_2d[:, :],
-                x,
-                len(x),
-                locparams[0],
-                locparams[1],
-                locparams[2],
-                locparams[3],
-            ),
-        )
-        + params[1] ** 2
-    )
-    return gauss_2d
-
-
-@jit(nopython=True, nogil=True, cache=True)
 def WLS_nocolour_model_nobounds(
     params,
     data,
@@ -135,54 +97,6 @@ def WLS_nocolour_model_nobounds(
             ),
         )
         + params[4] ** 2
-    )
-    return gauss_2d
-
-
-@jit(nopython=True, nogil=True, cache=True)
-def WLS_rawcolour_model_nobounds(
-    params,
-    data,
-    masks,
-    background_bayer_matrix,
-    bayer_matrix,
-    x,
-    gauss_2d,
-    locparams,
-):
-    """
-    Calculate a coloured gaussian based on input params.
-
-
-    Args:
-        params (numpy.ndarray): Input parameters.
-        data (numpy.ndarray): Data to fit.
-        masks (np.3darray): 3d array of colour masks
-
-    Returns:
-        gauss_2d (numpy.ndarray): 2d bayer filtered gaussian.
-    """
-
-    for i in np.arange(masks.shape[-1]):
-        pixels = masks[:, :, i].ravel()
-        bayer_matrix[pixels] = params[-3 + i] ** 2
-        background_bayer_matrix[pixels] = params[-6 + i] ** 2
-    bayer_matrix = bayer_matrix.reshape(len(x), len(x))
-    background_bayer_matrix = background_bayer_matrix.reshape(len(x), len(x))
-    gauss_2d[:, :] = (
-        np.multiply(
-            bayer_matrix,
-            gaussian_unscaled_model(
-                gauss_2d[:, :],
-                x,
-                len(x),
-                locparams[0],
-                locparams[1],
-                locparams[2],
-                locparams[3],
-            ),
-        )
-        + background_bayer_matrix
     )
     return gauss_2d
 
@@ -311,62 +225,6 @@ def WLS_chi_nocolour_nobounds(params, data, weights, size, ravelsize):
     gauss_2d = np.zeros((size, size), dtype=np.float32)
     chi = np.zeros((size, size), dtype=np.float32)
     gauss_2d[:, :] = WLS_nocolour_model_nobounds(params, data, x, gauss_2d)
-    chi[:, :] = np.multiply(weights, np.square(np.subtract(data, gauss_2d)))
-    return np.sqrt(chi.ravel())
-
-
-@jit(nopython=True, nogil=True, cache=True)
-def WLS_chi_justcolour_nobounds(params, data, weights, size, locparams):
-    """
-    Calculate the chi vector for the weighted least squares model.
-
-    Args:
-        params (numpy.ndarray): Input parameters.
-        data (numpy.ndarray): Data to fit.
-        weights (np.ndarray): weights for the chi
-
-    Returns:
-        chi (numpy.ndarray): Vector of chi.
-    """
-    x = np.arange(size, dtype=np.float32)
-    gauss_2d = np.zeros((size, size), dtype=np.float32)
-    chi = np.zeros((size, size), dtype=np.float32)
-    gauss_2d[:, :] = WLS_justcolour_model_nobounds(params, x, gauss_2d, locparams)
-    chi[:, :] = np.multiply(weights, np.square(np.subtract(data, gauss_2d)))
-    return np.sqrt(chi.ravel())
-
-
-@jit(nopython=True, nogil=True, cache=True)
-def WLS_rawcolour_chi_nobounds(
-    params, data, masks, weights, size, ravelsize, locparams
-):
-    """
-    Calculate the chi vector for the weighted least squares model.
-
-    Args:
-        params (numpy.ndarray): Input parameters.
-        data (numpy.ndarray): Data to fit.
-        masks (np.3darray): 3d array of colour masks
-        weights (np.ndarray): weights for the chi
-
-    Returns:
-        chi (numpy.ndarray): Vector of chi.
-    """
-    x = np.arange(size, dtype=np.float32)
-    background_bayer_matrix = np.zeros(ravelsize, dtype=np.float32)
-    bayer_matrix = np.zeros(ravelsize, dtype=np.float32)
-    gauss_2d = np.zeros((size, size), dtype=np.float32)
-    chi = np.zeros((size, size), dtype=np.float32)
-    gauss_2d[:, :] = WLS_rawcolour_model_nobounds(
-        params,
-        data,
-        masks,
-        background_bayer_matrix,
-        bayer_matrix,
-        x,
-        gauss_2d,
-        locparams,
-    )
     chi[:, :] = np.multiply(weights, np.square(np.subtract(data, gauss_2d)))
     return np.sqrt(chi.ravel())
 

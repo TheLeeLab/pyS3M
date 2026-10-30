@@ -73,18 +73,6 @@ class TestGaussianUnscaledModel:
 # Model functions (WLS_*_model_nobounds)
 # ======================================================================
 
-class TestWLSJustcolourModel:
-    def test_basic_and_py_func(self):
-        x = _x()
-        params = np.array([2.0, 1.0])  # [sqrt(A), sqrt(bg)]
-        locparams = np.array([3.0, 3.0, 1.0, 1.0])  # [x0, y0, sx, sy]
-        gauss_2d = np.zeros((SIZE, SIZE))
-        jit_out = gf.WLS_justcolour_model_nobounds(params, x, gauss_2d.copy(), locparams)
-        py_out = gf.WLS_justcolour_model_nobounds.py_func(params, x, gauss_2d.copy(), locparams)
-        np.testing.assert_allclose(jit_out, py_out)
-        assert np.all(jit_out >= params[1] ** 2)  # never below background
-
-
 class TestWLSNocolourModel:
     def test_basic_and_py_func(self):
         x = _x()
@@ -93,26 +81,6 @@ class TestWLSNocolourModel:
         gauss_2d = np.zeros((SIZE, SIZE))
         jit_out = gf.WLS_nocolour_model_nobounds(params, data, x, gauss_2d.copy())
         py_out = gf.WLS_nocolour_model_nobounds.py_func(params, data, x, gauss_2d.copy())
-        np.testing.assert_allclose(jit_out, py_out)
-
-
-class TestWLSRawcolourModel:
-    def test_basic_and_py_func(self):
-        x = _x()
-        data = np.zeros((SIZE, SIZE))
-        masks = _bayer_masks()
-        ravelsize = SIZE * SIZE
-        # Only the last 6 entries matter: [bg0,bg1,bg2, A0,A1,A2] (sqrt values).
-        params = np.array([1.0, 1.0, 1.0, 2.0, 2.0, 2.0])
-        locparams = np.array([3.0, 3.0, 1.0, 1.0])
-        gauss_2d = np.zeros((SIZE, SIZE))
-
-        jit_out = gf.WLS_rawcolour_model_nobounds(
-            params, data, masks, np.zeros(ravelsize), np.zeros(ravelsize), x, gauss_2d.copy(), locparams,
-        )
-        py_out = gf.WLS_rawcolour_model_nobounds.py_func(
-            params, data, masks, np.zeros(ravelsize), np.zeros(ravelsize), x, gauss_2d.copy(), locparams,
-        )
         np.testing.assert_allclose(jit_out, py_out)
 
 
@@ -179,37 +147,6 @@ class TestWLSChiNocolourNobounds:
         ravelsize = SIZE * SIZE
         jit_out = gf.WLS_chi_nocolour_nobounds(params, model, weights, SIZE, ravelsize)
         py_out = gf.WLS_chi_nocolour_nobounds.py_func(params, model, weights, SIZE, ravelsize)
-        np.testing.assert_allclose(jit_out, py_out)
-        np.testing.assert_allclose(jit_out, 0.0, atol=1e-6)
-
-
-class TestWLSChiJustcolourNobounds:
-    def test_basic_and_py_func(self):
-        x = _x()
-        params = np.array([2.0, 1.0])
-        locparams = np.array([3.0, 3.0, 1.0, 1.0])
-        model = gf.WLS_justcolour_model_nobounds(params, x, np.zeros((SIZE, SIZE)), locparams)
-        weights = np.ones((SIZE, SIZE))
-        jit_out = gf.WLS_chi_justcolour_nobounds(params, model, weights, SIZE, locparams)
-        py_out = gf.WLS_chi_justcolour_nobounds.py_func(params, model, weights, SIZE, locparams)
-        np.testing.assert_allclose(jit_out, py_out)
-        np.testing.assert_allclose(jit_out, 0.0, atol=1e-6)
-
-
-class TestWLSRawcolourChiNobounds:
-    def test_basic_and_py_func(self):
-        x = _x()
-        masks = _bayer_masks()
-        ravelsize = SIZE * SIZE
-        params = np.array([1.0, 1.0, 1.0, 2.0, 2.0, 2.0])
-        locparams = np.array([3.0, 3.0, 1.0, 1.0])
-        model = gf.WLS_rawcolour_model_nobounds(
-            params, np.zeros((SIZE, SIZE)), masks, np.zeros(ravelsize), np.zeros(ravelsize),
-            x, np.zeros((SIZE, SIZE)), locparams,
-        )
-        weights = np.ones((SIZE, SIZE))
-        jit_out = gf.WLS_rawcolour_chi_nobounds(params, model, masks, weights, SIZE, ravelsize, locparams)
-        py_out = gf.WLS_rawcolour_chi_nobounds.py_func(params, model, masks, weights, SIZE, ravelsize, locparams)
         np.testing.assert_allclose(jit_out, py_out)
         np.testing.assert_allclose(jit_out, 0.0, atol=1e-6)
 

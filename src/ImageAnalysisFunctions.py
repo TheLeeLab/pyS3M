@@ -61,14 +61,11 @@ class FittingStrategy(Enum):
     """
 
     STANDARD = "standard"  # Full colour fitting with all channels
-    STANDARD_IG = "standard_ig"  # Full fit on raw Bayer, seeded from demosaiced fit
     STANDARD_ITER = "standard_iter"  # STANDARD with 2 IRLS model-weight iterations
     STANDARD_DATA = "standard_data"  # smooth → model → raw-data weights (unbiased final pass)
     CIRCULAR = "circular"  # STANDARD_DATA with a single shared PSF width (no sx/sy split)
     ELLIPTICAL = "elliptical"  # Rotated elliptical Gaussian (11 params; for tracking)
     NOCOLOUR = "nocolour"  # No colour information, intensity only
-    JUSTCOLOUR = "justcolour"  # Colour channels only, no intensity
-    RAWCOLOUR = "rawcolour"  # Raw colour data without processing
 
 
 class FittingConstants:
@@ -94,14 +91,11 @@ class FittingConstants:
     # Array dimensions for different strategies
     PARAM_DIMENSIONS = {
         FittingStrategy.STANDARD: {"fit": 12, "error": 10},
-        FittingStrategy.STANDARD_IG: {"fit": 12, "error": 10},
         FittingStrategy.STANDARD_ITER: {"fit": 12, "error": 10},
         FittingStrategy.STANDARD_DATA: {"fit": 12, "error": 10},
         FittingStrategy.CIRCULAR: {"fit": 11, "error": 9},
         FittingStrategy.ELLIPTICAL: {"fit": 13, "error": 11},
         FittingStrategy.NOCOLOUR: {"fit": 8, "error": 6},
-        FittingStrategy.JUSTCOLOUR: {"fit": 4, "error": 2},
-        FittingStrategy.RAWCOLOUR: {"fit": 8, "error": 6},
     }
 
 
@@ -162,8 +156,6 @@ class FittingParameters:
             FittingStrategy.STANDARD_DATA,
             FittingStrategy.CIRCULAR,
             FittingStrategy.ELLIPTICAL,
-            FittingStrategy.JUSTCOLOUR,
-            FittingStrategy.RAWCOLOUR,
         }
 
         if self.strategy in colour_strategies and self.masks is None:
@@ -208,10 +200,6 @@ class FittingResultProcessor:
             return slice(3, 3 + 2 * n_ch_circ)
         if strategy == FittingStrategy.NOCOLOUR:
             return slice(4, 6) if length >= 6 else slice(0, 0)
-        if strategy == FittingStrategy.JUSTCOLOUR:
-            return slice(0, 2)
-        if strategy == FittingStrategy.RAWCOLOUR:
-            return slice(0, 6)
         return slice(0, 0)
 
     @staticmethod
@@ -461,7 +449,7 @@ class FittingResultProcessor:
 
         STANDARD-like and NOCOLOUR: [row, col, s_row, s_col, ...] -> [col, row, s_col, s_row, ...];
         ELLIPTICAL: the same, theta stays at index 4; CIRCULAR: [row, col, s, ...] ->
-        [col, row, s, ...]. Strategies without a position (JUSTCOLOUR, RAWCOLOUR) are unchanged.
+        [col, row, s, ...].
         """
         perm = np.arange(length)
         if length < 2:
@@ -592,12 +580,6 @@ class FittingResultProcessor:
         elif strategy == FittingStrategy.NOCOLOUR:
             if len(pfit_processed) >= 6:
                 pfit_processed[4:6] = np.square(pfit_processed[4:6])
-        elif strategy == FittingStrategy.JUSTCOLOUR:
-            # params[0]=sqrt(A), params[1]=sqrt(b) — square both
-            pfit_processed[0:2] = np.square(pfit_processed[0:2])
-        elif strategy == FittingStrategy.RAWCOLOUR:
-            # params[0:3]=sqrt(bg_B/G/R), params[3:6]=sqrt(A_B/G/R) — square all
-            pfit_processed[0:6] = np.square(pfit_processed[0:6])
 
         # Append chi-squared
         pfit_final = np.append(pfit_processed, chisqr)
@@ -796,55 +778,6 @@ class StandardFittingProcessor(FittingProcessor):
             )
             n_ch = (len(initial_guess) - 4) // 2
             return (np.full(4 + 2 * n_ch + 2, np.nan), np.full(4 + 2 * n_ch, np.nan))
-
-
-class StandardIGFittingProcessor(StandardFittingProcessor):
-    """Full STANDARD fit on raw Bayer data, seeded from a prior demosaiced fit.
-
-    The six-element ``relative_coords`` tuple carries
-    ``(xc, yc, s_x, s_y, b, A)`` from a NOCOLOUR fit on the demosaiced image.
-    These replace the image-derived initial guess so the optimiser starts from
-    an accurate position rather than the centre-of-mass estimate, improving
-    both colour accuracy and localisation precision.
-
-    WLS_model_nobounds parameter layout, in the ROI's [row, col] order:
-        [y (row), x (column), sigma_y, sigma_x, sqrt(bg_B), sqrt(bg_G), sqrt(bg_R),
-         sqrt(A_B), sqrt(A_G), sqrt(A_R)]
-
-    The seed is a processed (x-first) NOCOLOUR result, so it is reordered to y, x and
-    sigma_y, sigma_x.
-    """
-
-    def fit_single_punctum(
-        self,
-        punctum: np.ndarray,
-        smoothed_punctum: np.ndarray,
-        weights: np.ndarray,
-        relative_coords,          # (xc, yc, s_x, s_y, b, A) from demosaiced fit
-        masks: Optional[np.ndarray] = None,
-        readnoise_map: Optional[np.ndarray] = None,
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        if masks is None:
-            raise FittingValidationError("Standard-IG fitting requires masks")
-
-        n_ch = masks.shape[-1]
-
-        if np.max(smoothed_punctum) <= 0:
-            return (np.full(4 + 2 * n_ch + 2, np.nan), np.full(4 + 2 * n_ch, np.nan))
-
-        xc, yc, s_x, s_y, b, A = (float(v) for v in relative_coords)
-        b_ch = max(b / n_ch, 1e-6)
-        A_ch = max(A / n_ch, 1e-6)
-
-        # model order: row, col, row width, col width (WLS_model_nobounds convention)
-        initial_guess = np.concatenate([
-            [yc, xc, s_y, s_x],
-            np.full(n_ch, np.sqrt(b_ch)),   # bg channels
-            np.full(n_ch, np.sqrt(A_ch)),   # A channels
-        ])
-
-        # relative_coords=(0,0): xc/yc in the seed are already local ROI coords
-        return self._perform_wls_fit(punctum, initial_guess, masks, weights, (0.0, 0.0))
 
 
 class StandardIterFittingProcessor(StandardFittingProcessor):
@@ -1408,201 +1341,6 @@ class NoColourFittingProcessor(FittingProcessor):
             return (np.full(dims["fit"], np.nan), np.full(dims["error"], np.nan))
 
 
-class JustColourFittingProcessor(FittingProcessor):
-    """Processor for just-colour fitting strategy."""
-
-    def fit_single_punctum(
-        self,
-        punctum: np.ndarray,
-        smoothed_punctum: np.ndarray,
-        weights: np.ndarray,
-        relative_coords: List[float],
-        masks: Optional[np.ndarray] = None,
-        readnoise_map: Optional[np.ndarray] = None,
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """Fit single punctum using just-colour strategy.
-
-        Args:
-            punctum: 2D array containing punctum data.
-            smoothed_punctum: 2D array containing smoothed punctum data.
-            weights: 2D array containing fitting weights.
-            relative_coords: Relative coordinate offsets.
-            masks: 3D array containing colour masks (required).
-
-        Returns:
-            Tuple of (fit_parameters, parameter_errors).
-        """
-        if masks is None:
-            raise FittingValidationError("Just-colour fitting requires masks")
-
-        # Implementation similar to other processors but for just-colour strategy
-        initial_guess = self._generate_initial_guess(smoothed_punctum, masks)
-        return self._perform_justcolour_fit(
-            punctum, initial_guess, masks, weights, relative_coords
-        )
-
-    def _generate_initial_guess(
-        self, smoothed_punctum: np.ndarray, masks: np.ndarray
-    ) -> np.ndarray:
-        """Generate initial guess for just-colour fitting.
-
-        Position and shape are fixed via locparams; only amplitude and
-        background are free parameters (in sqrt-space, as the model uses
-        params[0]**2 and params[1]**2).
-        """
-        max_val = np.max(smoothed_punctum)
-        min_val = np.min(smoothed_punctum)
-        return np.array(
-            [
-                np.sqrt(np.abs(max_val)),   # params[0] = sqrt(A)
-                np.sqrt(np.abs(min_val)),   # params[1] = sqrt(b)
-            ]
-        )
-
-    def _perform_justcolour_fit(
-        self,
-        data: np.ndarray,
-        initial_guess: np.ndarray,
-        masks: np.ndarray,
-        weights: np.ndarray,
-        relative_coords: List[float],
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """Perform just-colour fitting."""
-        size = int(data.shape[0])
-        locparams = relative_coords  # For justcolour fitting
-
-        try:
-            pfit, pcov, infodict, errmsg, success = leastsq(
-                gaussoptfuncs.WLS_chi_justcolour_nobounds,
-                x0=initial_guess,
-                args=(data, weights, size, locparams),
-                full_output=True,
-                ftol=FittingConstants.DEFAULT_FTOL,
-                xtol=FittingConstants.DEFAULT_XTOL,
-            )
-
-            if success not in np.array([1, 2, 3, 4]):
-                dims = FittingConstants.PARAM_DIMENSIONS[FittingStrategy.JUSTCOLOUR]
-                return (np.full(dims["fit"], np.nan), np.full(dims["error"], np.nan))
-
-            # Calculate chi-squared
-            residuals = gaussoptfuncs.WLS_chi_justcolour_nobounds(
-                pfit, data, weights, size, locparams
-            )
-            chisqr = FittingResultProcessor.calculate_reduced_chisquared(
-                residuals, len(data.ravel()), len(initial_guess)
-            )
-
-            # Process covariance matrix
-            pcov = FittingResultProcessor.process_covariance(
-                pcov, chisqr, len(data.ravel()), len(initial_guess)
-            )
-
-            return FittingResultProcessor.process_fit_results(
-                pfit, pcov, size, relative_coords, FittingStrategy.JUSTCOLOUR, chisqr
-            )
-
-        except Exception as e:
-            logging.warning(f"Just-colour fitting failed: {e}")
-            dims = FittingConstants.PARAM_DIMENSIONS[FittingStrategy.JUSTCOLOUR]
-            return (np.full(dims["fit"], np.nan), np.full(dims["error"], np.nan))
-
-
-class RawColourFittingProcessor(FittingProcessor):
-    """Processor for raw-colour fitting strategy."""
-
-    def fit_single_punctum(
-        self,
-        punctum: np.ndarray,
-        smoothed_punctum: np.ndarray,
-        weights: np.ndarray,
-        relative_coords: List[float],
-        masks: Optional[np.ndarray] = None,
-        readnoise_map: Optional[np.ndarray] = None,
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """Fit single punctum using raw-colour strategy."""
-        if masks is None:
-            raise FittingValidationError("Raw-colour fitting requires masks")
-
-        initial_guess = self._generate_initial_guess(smoothed_punctum, masks)
-        return self._perform_rawcolour_fit(
-            punctum, initial_guess, masks, weights, relative_coords
-        )
-
-    def _generate_initial_guess(
-        self, smoothed_punctum: np.ndarray, masks: np.ndarray
-    ) -> np.ndarray:
-        """Generate initial guess for raw-colour fitting.
-
-        Position and shape are fixed via locparams; only per-channel
-        backgrounds and amplitudes are free (in sqrt-space).  Layout must
-        match the negative-index access in WLS_rawcolour_model_nobounds:
-          params[-6+i] -> bg_B, bg_G, bg_R  (indices 0, 1, 2)
-          params[-3+i] -> A_B,  A_G,  A_R   (indices 3, 4, 5)
-        """
-        max_val = np.max(smoothed_punctum)
-        min_val = np.min(smoothed_punctum)
-        return np.array(
-            [
-                np.sqrt(np.abs(min_val)),        # params[0] = sqrt(bg_B)
-                np.sqrt(np.abs(min_val)),        # params[1] = sqrt(bg_G)
-                np.sqrt(np.abs(min_val)),        # params[2] = sqrt(bg_R)
-                np.sqrt(np.abs(max_val * 0.33)), # params[3] = sqrt(A_B)
-                np.sqrt(np.abs(max_val * 0.33)), # params[4] = sqrt(A_G)
-                np.sqrt(np.abs(max_val * 0.33)), # params[5] = sqrt(A_R)
-            ]
-        )
-
-    def _perform_rawcolour_fit(
-        self,
-        data: np.ndarray,
-        initial_guess: np.ndarray,
-        masks: np.ndarray,
-        weights: np.ndarray,
-        relative_coords: List[float],
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """Perform raw-colour fitting."""
-        size = int(data.shape[0])
-        ravelsize = int(np.prod(data.shape))
-        locparams = relative_coords  # For rawcolour fitting
-
-        try:
-            pfit, pcov, infodict, errmsg, success = leastsq(
-                gaussoptfuncs.WLS_rawcolour_chi_nobounds,
-                x0=initial_guess,
-                args=(data, masks, weights, size, ravelsize, locparams),
-                full_output=True,
-                ftol=FittingConstants.DEFAULT_FTOL,
-                xtol=FittingConstants.DEFAULT_XTOL,
-            )
-
-            if success not in np.array([1, 2, 3, 4]):
-                dims = FittingConstants.PARAM_DIMENSIONS[FittingStrategy.RAWCOLOUR]
-                return (np.full(dims["fit"], np.nan), np.full(dims["error"], np.nan))
-
-            # Calculate chi-squared
-            residuals = gaussoptfuncs.WLS_rawcolour_chi_nobounds(
-                pfit, data, masks, weights, size, ravelsize, locparams
-            )
-            chisqr = FittingResultProcessor.calculate_reduced_chisquared(
-                residuals, len(data.ravel()), len(initial_guess)
-            )
-
-            # Process covariance matrix
-            pcov = FittingResultProcessor.process_covariance(
-                pcov, chisqr, len(data.ravel()), len(initial_guess)
-            )
-
-            return FittingResultProcessor.process_fit_results(
-                pfit, pcov, size, relative_coords, FittingStrategy.RAWCOLOUR, chisqr
-            )
-
-        except Exception as e:
-            logging.warning(f"Raw-colour fitting failed: {e}")
-            dims = FittingConstants.PARAM_DIMENSIONS[FittingStrategy.RAWCOLOUR]
-            return (np.full(dims["fit"], np.nan), np.full(dims["error"], np.nan))
-
-
 class Image_Analysis_Functions:
     """A class for image analysis and Gaussian fitting in multicolour SMLM.
 
@@ -1652,14 +1390,11 @@ class Image_Analysis_Functions:
         # Initialize strategy processors
         self.processors = {
             FittingStrategy.STANDARD: StandardFittingProcessor(),
-            FittingStrategy.STANDARD_IG: StandardIGFittingProcessor(),
             FittingStrategy.STANDARD_ITER: StandardIterFittingProcessor(readnoise=readnoise),
             FittingStrategy.STANDARD_DATA: StandardDataFittingProcessor(readnoise=readnoise),
             FittingStrategy.CIRCULAR: CircularFittingProcessor(readnoise=readnoise),
             FittingStrategy.ELLIPTICAL: EllipticalFittingProcessor(),
             FittingStrategy.NOCOLOUR: NoColourFittingProcessor(),
-            FittingStrategy.JUSTCOLOUR: JustColourFittingProcessor(),
-            FittingStrategy.RAWCOLOUR: RawColourFittingProcessor(),
         }
 
         self._skip_gate_prepare = False   # set in worker processes, which receive a prepared gate
@@ -1779,7 +1514,7 @@ class Image_Analysis_Functions:
         # For colour strategies, derive actual fit/error dimensions from channel count in masks.
         # This makes the allocations correct for cameras with more than 3 colour channels.
         _colour_strategies = {
-            FittingStrategy.STANDARD, FittingStrategy.STANDARD_IG,
+            FittingStrategy.STANDARD,
             FittingStrategy.STANDARD_ITER, FittingStrategy.STANDARD_DATA,
         }
         if strategy in _colour_strategies and masks is not None and len(masks) > 0:
@@ -2029,7 +1764,7 @@ def _fit_puncta_method_standalone(
         dims = FittingConstants.PARAM_DIMENSIONS[strategy]
         n_puncta = len(puncta)
         _colour_strategies = {
-            FittingStrategy.STANDARD, FittingStrategy.STANDARD_IG,
+            FittingStrategy.STANDARD,
             FittingStrategy.STANDARD_ITER, FittingStrategy.STANDARD_DATA,
         }
         if strategy in _colour_strategies and masks is not None and len(masks) > 0:

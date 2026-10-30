@@ -47,7 +47,6 @@ class FittingStrategy(Enum):
       count); total photons = sum of the three channels' photon counts; per-channel
       B/G/R amplitude and background are that channel's value normalised to the sum,
       as before.
-    - STANDARD_IG: Full STANDARD fit on raw Bayer, seeded from a demosaiced initial guess
     """
 
     STANDARD = "standard"
@@ -55,7 +54,6 @@ class FittingStrategy(Enum):
     STANDARD_DATA = "standard_data"  # smooth → model → raw-data weights (unbiased final pass)
     ELLIPTICAL = "elliptical"        # Rotated elliptical Gaussian on Bayer data (11 params)
     DEMOSAIC = "demosaic"
-    STANDARD_IG = "standard_ig"  # Full STANDARD fit on raw Bayer, seeded from demosaiced fit
 
 
 @dataclass
@@ -799,20 +797,7 @@ class MultiC_Sim_Funcs_Refactored:
         )
 
         # Handle different demosaic strategies
-        if strategy == FittingStrategy.STANDARD_IG:
-            _, grayscale_photoelectron_data = self.scmos.bayer_demosaic_stack(
-                photoelectron_data, True
-            )
-            _, grayscale_smoothed_data = self.scmos.bayer_demosaic_stack(
-                smoothed_data, True
-            )
-            return (
-                photoelectron_data,
-                smoothed_data,
-                (grayscale_photoelectron_data, grayscale_smoothed_data),
-            )
-
-        elif strategy == FittingStrategy.DEMOSAIC:
+        if strategy == FittingStrategy.DEMOSAIC:
             # Non-variance-aware demosaic (plain colour interpolation) -- per-channel
             # weighting is applied later, at the per-channel Gaussian fit stage.
             # Algorithm is user-selectable: config.demosaic_strategy, one of
@@ -937,15 +922,6 @@ class MultiC_Sim_Funcs_Refactored:
         elif strategy == FittingStrategy.STANDARD_DATA:
             return self._fit_standard_data(
                 photoelectron_data, smoothed_data, weights_map, camera_params, config
-            )
-        elif strategy == FittingStrategy.STANDARD_IG:
-            return self._fit_demosaic_ig(
-                photoelectron_data,
-                smoothed_data,
-                weights_map,
-                grayscale_data,
-                camera_params,
-                config,
             )
         elif strategy == FittingStrategy.DEMOSAIC:
             return self._fit_demosaic(
@@ -1431,121 +1407,6 @@ class MultiC_Sim_Funcs_Refactored:
             logger.warning(f"Could not add Nile Red wavelength fits: {e}")
             # Return unchanged DataFrame if wavelength fitting fails
             return fit_results
-
-    def _fit_demosaic_ig(
-        self,
-        photoelectron_data: np.ndarray,
-        smoothed_data: np.ndarray,
-        weights_map: np.ndarray,
-        grayscale_data: Tuple,
-        camera_params: CameraParameters,
-        config: SimulationConfig,
-    ) -> pd.DataFrame:
-        """
-        Demosaic Initial Guess (IG) fitting approach with two-stage fitting.
-
-        First fits grayscale demosaiced data to get positions and shapes, then
-        uses these as fixed parameters to fit colour information from the original Bayer data.
-
-        Args:
-            photoelectron_data (np.ndarray): Original Bayer photoelectron data
-            smoothed_data (np.ndarray): Smoothed Bayer data
-            weights_map (np.ndarray): Weight maps for Bayer data fitting
-            grayscale_data (Tuple): Grayscale photoelectron and smoothed data
-            camera_params (CameraParameters): Camera parameters
-            config (SimulationConfig): Simulation configuration
-
-        Returns:
-            pd.DataFrame: Combined fitting results from both stages
-        """
-        grayscale_photoelectron_data, grayscale_smoothed_data = grayscale_data
-        weights_grayscale_map = self._compute_error_maps(
-            smoothed_data, grayscale_smoothed_data, camera_params
-        )[1]
-
-        # First fit grayscale
-        puncta_tofit, smoothed_puncta_tofit, weights_tofit = [], [], []
-        relative_coords, planes = [], []
-
-        for frame in range(config.n_bootstrap):
-            puncta_tofit.append(grayscale_photoelectron_data[frame, :, :])
-            smoothed_puncta_tofit.append(grayscale_smoothed_data[frame, :, :])
-            weights_tofit.append(weights_grayscale_map[frame, :, :])
-            relative_coords.append((0, 0))
-            planes.append(frame)
-
-        del grayscale_photoelectron_data, grayscale_smoothed_data, weights_grayscale_map
-        gc.collect()
-
-        default_params = ["xc", "yc", "s_x", "s_y", "b", "A", "chi_sqr", "frame"]
-        fit_results, _ = self.image_analysis.fit_puncta_parallel_method(
-            puncta_tofit,
-            smoothed_puncta_tofit,
-            weights_tofit,
-            relative_coords,
-            planes,
-            IAF_FittingStrategy.NOCOLOUR,
-        )
-        fit_results = pd.DataFrame(fit_results, columns=default_params).sort_values(
-            by=["frame"]
-        )
-
-        # Second fit for colour using position information
-        masks_3d = np.dstack(
-            [camera_params.masks[x] for x in camera_params.masks.keys()]
-        )
-        puncta_tofit, smoothed_puncta_tofit, weights_tofit = [], [], []
-        locparams, planes, masks_tofit = [], [], []
-
-        for frame in range(config.n_bootstrap):
-            puncta_tofit.append(photoelectron_data[frame, :, :])
-            smoothed_puncta_tofit.append(smoothed_data[frame, :, :])
-            weights_tofit.append(weights_map[frame, :, :])
-            locparams.append(
-                (
-                    fit_results["xc"][frame],
-                    fit_results["yc"][frame],
-                    fit_results["s_x"][frame],
-                    fit_results["s_y"][frame],
-                    fit_results["b"][frame],
-                    fit_results["A"][frame],
-                )
-            )
-            masks_tofit.append(masks_3d)
-            planes.append(frame)
-
-        del photoelectron_data, smoothed_data, weights_map
-        gc.collect()
-
-        fit_results_colour, _ = self.image_analysis.fit_puncta_parallel_method(
-            puncta_tofit,
-            smoothed_puncta_tofit,
-            weights_tofit,
-            locparams,
-            planes,
-            IAF_FittingStrategy.STANDARD_IG,
-            masks=masks_tofit,
-        )
-
-        _lbls = camera_params.pixel_order
-        colour_columns = (
-            ["xc", "yc", "s_x", "s_y"]
-            + [f"bg_{l}" for l in _lbls]
-            + [f"A_{l}" for l in _lbls]
-            + ["chi_sqr", "frame"]
-        )
-        fit_results_colour = pd.DataFrame(
-            fit_results_colour, columns=colour_columns
-        ).sort_values(by=["frame"])
-
-        fit_results_colour["photons"] = sum(fit_results_colour[f"A_{l}"] for l in _lbls)
-        fit_results_colour["background_photons"] = sum(fit_results_colour[f"bg_{l}"] for l in _lbls)
-
-        for l in _lbls:
-            fit_results_colour[f"A_{l}"] /= fit_results_colour["photons"]
-            fit_results_colour[f"bg_{l}"] /= fit_results_colour["background_photons"]
-
-        return fit_results_colour
 
     def _fit_demosaic(
         self,
