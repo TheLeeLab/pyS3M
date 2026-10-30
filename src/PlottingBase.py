@@ -723,9 +723,10 @@ class BasePlotter(ABC):
         """Add colorbar to image plot.
 
         On a figure with constrained layout (the publication style's default, e.g. every
-        ``two_column_plot``), the bar is added with ``fig.colorbar(ax=...)`` so the layout makes room
-        for it; an ``axes_grid1`` divider would be invisible to the layout and the bar, its ticks and
-        label would run into the next panel.
+        ``two_column_plot``), the bar is an inset of ``ax``: as tall as the image as drawn, with room
+        made for it by the layout. An ``axes_grid1`` divider would be invisible to the layout (the bar,
+        its ticks and label would run into the next panel), and ``fig.colorbar(ax=...)`` would span the
+        axes' whole grid cell, taller than an equal-aspect image.
 
         Args:
             im: Image object to create colorbar for
@@ -742,12 +743,18 @@ class BasePlotter(ABC):
 
         fig = ax.get_figure()
         if isinstance(fig.get_layout_engine(), ConstrainedLayoutEngine):
-            kwargs = {}
-            if size is not None:
-                kwargs["fraction"] = float(str(size).rstrip("%")) / 100
-            if pad is not None:
-                kwargs["pad"] = pad
-            cbar = fig.colorbar(im, ax=ax, location=location, **kwargs)
+            # An inset of the image's axes: it follows the axes' drawn box (after aspect="equal"
+            # shrinks it), so the bar is exactly as tall (or wide) as the image, and constrained
+            # layout counts the inset in the axes' extent and leaves room for it
+            w = float(str(size).rstrip("%")) / 100 if size is not None else 0.05
+            gap = pad if pad is not None else 0.04
+            bounds = {
+                "right": [1 + gap, 0, w, 1],
+                "left": [-gap - w, 0, w, 1],
+                "top": [0, 1 + gap, 1, w],
+                "bottom": [0, -gap - w, 1, w],
+            }[location]
+            cbar = fig.colorbar(im, cax=ax.inset_axes(bounds), location=location)
             if label:
                 cbar.set_label(label)
             return cbar
