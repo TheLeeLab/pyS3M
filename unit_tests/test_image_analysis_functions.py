@@ -405,11 +405,26 @@ class TestProcessFitResults:
             pfit, pcov, SIZE, [0.0, 0.0], FittingStrategy.STANDARD, chisqr=1.0,
         )
         assert not np.any(np.isnan(out))
-        # Three equal channels (f = 1/3), independent sigma_A = 2 q sigma_q:
-        # sigma_f = sqrt((1 - f)^2 + 2 f^2) sigma_A / S = sqrt(2/3) sigma_A / S
+        # Three equal channels (f = 1/3), independent, Var(A) = 4 q^2 sigma_q^2 + 2 sigma_q^4
+        # (exact for Gaussian q): sigma_f = sqrt((1 - f)^2 + 2 f^2) sigma_A / S = sqrt(2/3) sigma_A / S
         for q, sl in ((4.5, slice(4, 7)), (20.0, slice(7, 10))):
-            expected = np.sqrt(2 / 3) * 2 * q * 0.01 / (3 * q ** 2)
+            sigma_a = np.sqrt(4 * q ** 2 * 0.01 ** 2 + 2 * 0.01 ** 4)
+            expected = np.sqrt(2 / 3) * sigma_a / (3 * q ** 2)
             assert err[sl] == pytest.approx([expected] * 3)
+
+    def test_fraction_error_of_a_channel_fitted_at_zero_does_not_vanish(self):
+        # The delta method alone gives sigma_A = 2 q sigma_q -> 0 as q -> 0, so a channel fitted
+        # at zero would claim a zero error; the second-order term keeps sigma_A = sqrt(2) sigma_q^2
+        pfit = np.array([4.0, 4.0, 1.3, 1.3, 4.5, 4.5, 4.5, 0.0, 20.0, 20.0])
+        sigma_q = 2.0
+        pcov = np.diag(np.full(len(pfit), sigma_q ** 2))
+        out, err = FittingResultProcessor.process_fit_results(
+            pfit, pcov, SIZE, [0.0, 0.0], FittingStrategy.STANDARD, chisqr=1.0,
+        )
+        s = 2 * 20.0 ** 2
+        # f_0 = 0, so df_0/dA_0 = 1/S and df_0/dA_k = 0 for the others
+        assert err[7] == pytest.approx(np.sqrt(2) * sigma_q ** 2 / s)
+        assert err[7] > 0
 
     def test_standard_like_relative_coords_none_skips_offset(self):
         pfit = np.array([4.0, 4.0, 1.3, 1.3, 4.5, 4.5, 4.5, 20.0, 20.0, 20.0])

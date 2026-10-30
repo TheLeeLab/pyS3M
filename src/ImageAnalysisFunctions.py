@@ -269,9 +269,16 @@ class FittingResultProcessor:
     ) -> Optional[np.ndarray]:
         """Errors of the normalised amplitude and background fractions, from the full covariance.
 
-        The fitted parameters are q_k = sqrt(A_k), so with S = sum_k A_k the fraction
-        f_c = A_c / S has dF_c/dq_k = 2 q_k (delta_ck - f_c) / S, and
-        sigma_f = sqrt(diag(J C J^T)) with C the (chi^2-scaled) covariance of the q block.
+        The fitted parameters are q_k = sqrt(A_k), with C the (chi^2-scaled) covariance of the
+        q block. The covariance of the amplitudes A_k = q_k^2 is taken to second order, which
+        is exact for Gaussian q:
+
+            Cov(A_j, A_k) = 4 q_j q_k C_jk + 2 C_jk^2.
+
+        The first term alone (the delta method) vanishes as q_k -> 0, so a channel fitted
+        near zero would get a near-zero error however uncertain q_k is; the second term keeps
+        sigma(A_k) >= sqrt(2) C_kk there. With S = sum_k A_k, the fraction f_c = A_c / S has
+        df_c/dA_k = (delta_ck - f_c) / S, and sigma_f = sqrt(diag(J Cov_A J^T)).
         Amplitudes and backgrounds are each normalised over their own channels. Unlike
         sigma_A / S, this includes the uncertainty of S and every covariance between
         channels.
@@ -301,8 +308,10 @@ class FittingResultProcessor:
             if not np.isfinite(total) or total <= 0:
                 continue
             f = a / total
-            jac = (np.eye(n_ch) - f[:, None]) * (2.0 * q[None, :] / total)
-            var = np.einsum("ij,jk,ik->i", jac, pcov[np.ix_(idx, idx)], jac)
+            c_q = pcov[np.ix_(idx, idx)]
+            cov_a = 4.0 * np.outer(q, q) * c_q + 2.0 * np.square(c_q)
+            jac = (np.eye(n_ch) - f[:, None]) / total
+            var = np.einsum("ij,jk,ik->i", jac, cov_a, jac)
             out[half * n_ch:(half + 1) * n_ch] = np.where(var > 0, np.sqrt(np.maximum(var, 0.0)), np.nan)
         return out
 
