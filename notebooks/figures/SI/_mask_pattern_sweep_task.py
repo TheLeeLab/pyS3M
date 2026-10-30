@@ -212,7 +212,7 @@ def run_one(
         save_folder=save_folder,
         n_photon_space=n_photon_space,
         smoothing_function=make_smoothing_function(),
-        strategy=FittingStrategy.STANDARD,
+        strategy=FittingStrategy.STANDARD_DATA,
         starting_flag=flag,
         config=config,
         overwrite=True,
