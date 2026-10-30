@@ -31,7 +31,6 @@ from pyS3M.ImageAnalysisFunctions import (
     NoColourFittingProcessor,
     JustColourFittingProcessor,
     RawColourFittingProcessor,
-    PosthenColourFittingProcessor,
     Image_Analysis_Functions,
     _fit_puncta_method_standalone,
 )
@@ -174,9 +173,7 @@ class TestCalculateErrors:
         assert all(np.isnan(v) for v in out)
 
     def test_pfit_none_preserves_sqrt_space_error(self):
-        # Backward-compat: omitting pfit returns sqrt(diag(pcov)) unchanged --
-        # the pre-delta-method-fix behaviour, still correct for callers (e.g.
-        # POSTHENCOLOUR) that don't square pfit before using it.
+        # Omitting pfit returns sqrt(diag(pcov)) unchanged (sqrt-space errors).
         pcov = np.diag([4.0, 9.0])
         out = FittingResultProcessor.calculate_errors(pcov, FittingStrategy.JUSTCOLOUR)
         assert out == pytest.approx([2.0, 3.0])
@@ -285,7 +282,7 @@ class TestSqrtSpaceSlice:
         assert FittingResultProcessor._sqrt_space_slice(FittingStrategy.RAWCOLOUR, 6) == slice(0, 6)
 
     def test_unhandled_strategy_returns_empty(self):
-        assert FittingResultProcessor._sqrt_space_slice(FittingStrategy.POSTHENCOLOUR, 10) == slice(0, 0)
+        assert FittingResultProcessor._sqrt_space_slice(FittingStrategy.STANDARD_IG, 10) == slice(0, 0)
 
 
 class TestCalculateReducedChisquared:
@@ -993,51 +990,6 @@ class TestRawColourFittingProcessor:
         monkeypatch.setattr(iaf, "leastsq", _raise)
         pfit, err = RawColourFittingProcessor().fit_single_punctum(
             punctum, punctum, _weights(), [4.0, 4.0, 1.3, 1.3], masks=masks,
-        )
-        assert np.all(np.isnan(pfit))
-
-
-# ======================================================================
-# PosthenColourFittingProcessor
-# ======================================================================
-
-class TestPosthenColourFittingProcessor:
-    def test_masks_none_raises(self):
-        punctum, masks = _synthetic_punctum()
-        with pytest.raises(FittingValidationError, match="requires masks"):
-            PosthenColourFittingProcessor().fit_single_punctum(punctum, punctum, _weights(), [0.0, 0.0], masks=None)
-
-    def test_normal_fit_default_raw_punctum(self):
-        punctum, masks = _synthetic_punctum(x0=4.0, y0=4.0)
-        pfit, err = PosthenColourFittingProcessor().fit_single_punctum(
-            punctum, punctum, _weights(), [0.0, 0.0], masks=masks,
-        )
-        assert not np.any(np.isnan(pfit))  # bug fix confirmed: real (non-NaN) result now
-
-    def test_normal_fit_explicit_raw_punctum(self):
-        punctum, masks = _synthetic_punctum(x0=4.0, y0=4.0)
-        pfit, err = PosthenColourFittingProcessor().fit_single_punctum(
-            punctum, punctum, _weights(), [0.0, 0.0], masks=masks, raw_punctum=punctum,
-        )
-        assert not np.any(np.isnan(pfit))
-
-    def test_colour_leastsq_non_convergence_returns_nan(self, monkeypatch):
-        punctum, masks = _synthetic_punctum()
-        monkeypatch.setattr(iaf, "leastsq", _fail_leastsq)
-        pfit, err = PosthenColourFittingProcessor().fit_single_punctum(
-            punctum, punctum, _weights(), [0.0, 0.0], masks=masks,
-        )
-        assert np.all(np.isnan(pfit))
-
-    def test_exception_path_returns_nan(self, monkeypatch):
-        punctum, masks = _synthetic_punctum()
-
-        def _raise(*a, **kw):
-            raise RuntimeError("forced failure")
-
-        monkeypatch.setattr(iaf, "leastsq", _raise)
-        pfit, err = PosthenColourFittingProcessor().fit_single_punctum(
-            punctum, punctum, _weights(), [0.0, 0.0], masks=masks,
         )
         assert np.all(np.isnan(pfit))
 

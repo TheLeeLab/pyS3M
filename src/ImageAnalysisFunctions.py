@@ -69,7 +69,6 @@ class FittingStrategy(Enum):
     NOCOLOUR = "nocolour"  # No colour information, intensity only
     JUSTCOLOUR = "justcolour"  # Colour channels only, no intensity
     RAWCOLOUR = "rawcolour"  # Raw colour data without processing
-    POSTHENCOLOUR = "posthencolour"  # Post-processing colour enhancement
 
 
 class FittingConstants:
@@ -103,7 +102,6 @@ class FittingConstants:
         FittingStrategy.NOCOLOUR: {"fit": 8, "error": 6},
         FittingStrategy.JUSTCOLOUR: {"fit": 4, "error": 2},
         FittingStrategy.RAWCOLOUR: {"fit": 8, "error": 6},
-        FittingStrategy.POSTHENCOLOUR: {"fit": 10, "error": 8},
     }
 
 
@@ -166,7 +164,6 @@ class FittingParameters:
             FittingStrategy.ELLIPTICAL,
             FittingStrategy.JUSTCOLOUR,
             FittingStrategy.RAWCOLOUR,
-            FittingStrategy.POSTHENCOLOUR,
         }
 
         if self.strategy in colour_strategies and self.masks is None:
@@ -233,8 +230,7 @@ class FittingResultProcessor:
                 sigma_sqrt(A) — matching process_fit_results squaring those
                 same parameters for storage. Omitting it returns errors in
                 whatever space pcov's diagonal is in (sqrt-space for those
-                entries) — only correct for callers that don't square pfit
-                before using it (e.g. FittingStrategy.POSTHENCOLOUR).
+                entries).
 
         Returns:
             List of parameter errors (standard deviations).
@@ -1607,153 +1603,6 @@ class RawColourFittingProcessor(FittingProcessor):
             return (np.full(dims["fit"], np.nan), np.full(dims["error"], np.nan))
 
 
-class PosthenColourFittingProcessor(FittingProcessor):
-    """Processor for post-colour enhancement fitting strategy."""
-
-    def fit_single_punctum(
-        self,
-        punctum: np.ndarray,
-        smoothed_punctum: np.ndarray,
-        weights: np.ndarray,
-        relative_coords: List[float],
-        masks: Optional[np.ndarray] = None,
-        readnoise_map: Optional[np.ndarray] = None,
-        raw_punctum: Optional[np.ndarray] = None,
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """Fit single punctum using post-colour enhancement strategy.
-
-        The posthencolour strategy performs a two-stage fit:
-        1. First fits position using no-colour (greyscale) data
-        2. Then fits colour using raw data with fixed positions
-        """
-        if masks is None:
-            raise FittingValidationError("Post-colour fitting requires masks")
-
-        # Use raw_punctum if provided, otherwise use punctum
-        if raw_punctum is None:
-            raw_punctum = punctum
-
-        return self._perform_posthencolour_fit(
-            punctum, raw_punctum, smoothed_punctum, weights, masks, relative_coords
-        )
-
-    def _perform_posthencolour_fit(
-        self,
-        grayscale_punctum: np.ndarray,
-        raw_punctum: np.ndarray,
-        smoothed_punctum: np.ndarray,
-        weights: np.ndarray,
-        masks: np.ndarray,
-        relative_coords: List[float],
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """Perform post-colour enhancement fitting.
-
-        This implements the two-stage fitting approach from the original:
-        1. First fit position parameters using greyscale data (no-colour)
-        2. Then fit colour parameters using raw data with fixed positions
-        """
-        try:
-            # Generate initial guess from smoothed data
-            initial_guess = np.empty(10, dtype=np.float32)
-            initial_guess[:] = gaussoptfuncs.initial_guess(
-                smoothed_punctum, raw_punctum, masks
-            )
-
-            # Split into position and colour components
-            initial_guess_position = initial_guess[:6]
-            initial_guess_position[-1] = initial_guess[-1] * 3
-            initial_guess_position[-2] = initial_guess_position[-2] * 3
-            initial_guess_colour = initial_guess[6:]
-
-            # Stage 1: Fit position using no-colour (greyscale) fitting
-            nocolour_processor = NoColourFittingProcessor()
-            pfit_pos_leastsq, perr_pos_leastsq = (
-                nocolour_processor._perform_nocolour_fit(
-                    grayscale_punctum, initial_guess_position, weights, relative_coords
-                )
-            )
-
-            # Location parameters for the colour fit, back in the model's ROI frame: the
-            # no-colour result is [xc, yc, s_x, s_y, ...] in full-frame pixels (column, row),
-            # the model takes [row, col, s_row, s_col] within the ROI.
-            col0, row0 = (
-                (relative_coords[0], relative_coords[1])
-                if relative_coords is not None and len(relative_coords) >= 2 else (0.0, 0.0)
-            )
-            locparams = np.array(
-                [
-                    pfit_pos_leastsq[1] - row0,
-                    pfit_pos_leastsq[0] - col0,
-                    pfit_pos_leastsq[3],
-                    pfit_pos_leastsq[2],
-                    pfit_pos_leastsq[4],
-                    pfit_pos_leastsq[5],
-                ]
-            )
-
-            # Stage 2: Fit colour using raw data with fixed positions
-            rawcolour_processor = RawColourFittingProcessor()
-
-            # Create a mock WLS_fit_rawcolour_nobounds call
-            size = int(raw_punctum.shape[0])
-            ravelsize = int(np.prod(raw_punctum.shape))
-
-            pfit_colour, pcov_colour, infodict, errmsg, success = leastsq(
-                gaussoptfuncs.WLS_rawcolour_chi_nobounds,
-                x0=initial_guess_colour,
-                args=(raw_punctum, masks, weights, size, ravelsize, locparams),
-                full_output=True,
-                ftol=FittingConstants.DEFAULT_FTOL,
-                xtol=FittingConstants.DEFAULT_XTOL,
-            )
-
-            if success not in np.array([1, 2, 3, 4]):
-                dims = FittingConstants.PARAM_DIMENSIONS[FittingStrategy.POSTHENCOLOUR]
-                return (np.full(dims["fit"], np.nan), np.full(dims["error"], np.nan))
-
-            # Calculate chi-squared for colour component
-            residuals_colour = gaussoptfuncs.WLS_rawcolour_chi_nobounds(
-                pfit_colour,
-                raw_punctum,
-                masks,
-                weights,
-                size,
-                ravelsize,
-                locparams,
-            )
-            chisqr_colour = FittingResultProcessor.calculate_reduced_chisquared(
-                residuals_colour, len(raw_punctum.ravel()), len(initial_guess_colour)
-            )
-
-            # Process covariance matrix
-            pcov_colour = FittingResultProcessor.process_covariance(
-                pcov_colour,
-                chisqr_colour,
-                len(raw_punctum.ravel()),
-                len(initial_guess_colour),
-            )
-
-            # Calculate errors for colour component
-            perr_colour_leastsq = FittingResultProcessor.calculate_errors(
-                pcov_colour, FittingStrategy.RAWCOLOUR
-            )
-
-            # Combine position and colour results
-            pfit_leastsq = np.concatenate(
-                [pfit_pos_leastsq[:-1], pfit_colour]
-            )  # Exclude position chi-squared
-            perr_leastsq = np.concatenate(
-                [perr_pos_leastsq[:-1], perr_colour_leastsq]
-            )  # Exclude position error
-
-            return pfit_leastsq, np.array(perr_leastsq)
-
-        except Exception as e:
-            logging.warning(f"Post-colour fitting failed: {e}")
-            dims = FittingConstants.PARAM_DIMENSIONS[FittingStrategy.POSTHENCOLOUR]
-            return (np.full(dims["fit"], np.nan), np.full(dims["error"], np.nan))
-
-
 class Image_Analysis_Functions:
     """A class for image analysis and Gaussian fitting in multicolour SMLM.
 
@@ -1811,7 +1660,6 @@ class Image_Analysis_Functions:
             FittingStrategy.NOCOLOUR: NoColourFittingProcessor(),
             FittingStrategy.JUSTCOLOUR: JustColourFittingProcessor(),
             FittingStrategy.RAWCOLOUR: RawColourFittingProcessor(),
-            FittingStrategy.POSTHENCOLOUR: PosthenColourFittingProcessor(),
         }
 
         self._skip_gate_prepare = False   # set in worker processes, which receive a prepared gate
