@@ -48,3 +48,36 @@ def test_bad_origin_raises():
     with pytest.raises(ValueError):
         add_bayer_key(ax, np.zeros((4, 4), int), origin="left")
     plt.close(fig)
+
+
+def test_key_from_masks_at_roi_position():
+    # a 4 x 4 crop of full-frame masks starting at an odd row and column: its top-left pixel is R
+    full = _masks(10, 10)
+    fig, ax = plt.subplots()
+    ax.imshow(np.zeros((4, 4)), origin="upper")
+    add_bayer_key(ax, full, row_min=3, col_min=5)
+    cells = {(int(round(p.get_y() + 0.5)), int(round(p.get_x() + 0.5))): to_hex(p.get_facecolor())
+             for p in ax.patches if p.get_fill()}
+    pt = bayer_pixel_type(full)
+    for (row, col), colour in cells.items():
+        assert colour == to_hex(BAYER_COLOURS[pt[3 + row, 5 + col]])
+    assert cells[(0, 0)] == to_hex(BAYER_COLOURS[2])
+    plt.close(fig)
+
+
+def test_origin_defaults_to_the_image():
+    fig, ax = plt.subplots()
+    ax.imshow(np.zeros((6, 6)), origin="lower")
+    add_bayer_key(ax, _masks())
+    assert {int(round(p.get_y() + 0.5)) for p in ax.patches if p.get_fill()} == {4, 5}
+    plt.close(fig)
+
+
+def test_masks_not_covering_the_image_raise():
+    fig, ax = plt.subplots()
+    ax.imshow(np.zeros((6, 6)), origin="upper")
+    with pytest.raises(ValueError):
+        add_bayer_key(ax, _masks(6, 6), row_min=2)  # crop runs off the masks
+    with pytest.raises(ValueError):
+        add_bayer_key(ax, _masks(6, 6), origin="lower")  # not how the image is shown
+    plt.close(fig)

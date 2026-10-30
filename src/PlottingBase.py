@@ -161,30 +161,58 @@ def bayer_pixel_type(masks: Dict[str, np.ndarray], pixel_order=("B", "G", "R")) 
     return np.argmax(np.stack([np.asarray(masks[c]) for c in pixel_order], axis=-1), axis=-1)
 
 
-def add_bayer_key(ax, pixel_type: np.ndarray, origin: str = "upper", n: int = 2,
-                  colours=BAYER_COLOURS):
+def add_bayer_key(ax, masks, origin: Optional[str] = None, n: int = 2, colours=BAYER_COLOURS,
+                  pixel_order=("B", "G", "R"), row_min: int = 0, col_min: int = 0):
     """Show the colour filters under an image: cover its displayed top-left ``n`` x ``n`` pixels with
     each pixel's filter colour, so a reader sees where the image sits on the Bayer grid.
+
+    The filters come from the masks the image was recorded or simulated with, never from an assumed
+    pattern: pass the simulation's masks (``CameraParameters.masks``, ``camera_parameters["masks"]``),
+    or, for real data, the camera calibration's full-frame masks with the frame position of the
+    image's top-left pixel (``row_min``, ``col_min``; e.g. a fitted ROI's origin). The key is taken
+    from the masks at that position, at the size of the image on the axes.
 
     Draw on an image shown with ``imshow`` without ``extent`` (pixel centres at integers), as
     ``ImagePlotMixin.image_plot`` does.
 
     Args:
         ax: Axes holding the image.
-        pixel_type: (H, W) pixel type of every pixel of the image, an index into ``colours``
-            (see ``bayer_pixel_type``).
+        masks: Boolean mask per colour (dict, each (H, W) or larger), or an already computed (H, W)
+            pixel-type array, an index into ``colours`` (see ``bayer_pixel_type``).
         origin: The image's ``origin`` ("upper": row 0 at the top; "lower": at the bottom), so the
             key always covers the corner displayed top left, with the filters actually there.
+            Default: the origin of the image on the axes.
         n: Side of the key in pixels.
         colours: Colour of each pixel type (default: B, G, R as ``BAYER_COLOURS``).
+        pixel_order: Colour of each index, when ``masks`` is a dict (a calibration's ``"pixel_order"``).
+        row_min, col_min: Row and column of ``masks`` under the image's pixel [0, 0] (0 when the
+            masks are the image's own).
 
     Returns:
         The axes.
+
+    Raises:
+        ValueError: If ``origin`` is invalid or differs from the image's, or the masks do not cover
+            the image at (``row_min``, ``col_min``).
     """
     from matplotlib.patches import Rectangle
 
+    pixel_type = bayer_pixel_type(masks, pixel_order) if isinstance(masks, dict) else np.asarray(masks)
+    image = ax.images[-1] if ax.images else None
+    if origin is None:
+        origin = image.origin if image is not None else "upper"
     if origin not in ("upper", "lower"):
         raise ValueError(f"origin must be 'upper' or 'lower', not {origin!r}")
+    if image is not None:
+        if image.origin != origin:
+            raise ValueError(f"origin {origin!r} differs from the image's {image.origin!r}")
+        H_img, W_img = image.get_array().shape[:2]
+        pixel_type = pixel_type[row_min:row_min + H_img, col_min:col_min + W_img]
+        if pixel_type.shape != (H_img, W_img):
+            raise ValueError(f"masks at (row {row_min}, col {col_min}) cover {pixel_type.shape}, "
+                             f"not the image's {(H_img, W_img)}")
+    else:
+        pixel_type = pixel_type[row_min:, col_min:]
     H = pixel_type.shape[0]
     rows = range(n) if origin == "upper" else range(H - n, H)
     for r in rows:
@@ -694,6 +722,11 @@ class BasePlotter(ABC):
     ) -> matplotlib.colorbar.Colorbar:
         """Add colorbar to image plot.
 
+        On a figure with constrained layout (the publication style's default, e.g. every
+        ``two_column_plot``), the bar is added with ``fig.colorbar(ax=...)`` so the layout makes room
+        for it; an ``axes_grid1`` divider would be invisible to the layout and the bar, its ticks and
+        label would run into the next panel.
+
         Args:
             im: Image object to create colorbar for
             ax: Axis containing the image
@@ -705,6 +738,20 @@ class BasePlotter(ABC):
         Returns:
             Colorbar object
         """
+        from matplotlib.layout_engine import ConstrainedLayoutEngine
+
+        fig = ax.get_figure()
+        if isinstance(fig.get_layout_engine(), ConstrainedLayoutEngine):
+            kwargs = {}
+            if size is not None:
+                kwargs["fraction"] = float(str(size).rstrip("%")) / 100
+            if pad is not None:
+                kwargs["pad"] = pad
+            cbar = fig.colorbar(im, ax=ax, location=location, **kwargs)
+            if label:
+                cbar.set_label(label)
+            return cbar
+
         size = size or self.config.DEFAULT_COLORBAR_WIDTH
         pad = pad or self.config.DEFAULT_COLORBAR_PAD
 
