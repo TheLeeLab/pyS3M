@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from scipy.ndimage import gaussian_filter
 
 import pyS3M.gaussoptfuncs as gaussoptfuncs
 import pyS3M.ImageAnalysisFunctions as iaf
@@ -211,6 +212,54 @@ class TestCalculateErrors:
         assert out[2] == pytest.approx(4.0)   # beyond pfit -> uncorrected
 
 
+class TestFractionErrors:
+    """A_*_err / bg_*_err are errors of the normalised fractions, from the full covariance."""
+
+    def test_matches_monte_carlo_of_the_covariance(self):
+        # f = q^2 / sum q^2 with q ~ N(pfit, C): linear propagation must match the sampled spread
+        rng = np.random.default_rng(0)
+        pfit = np.array([4.0, 4.0, 1.3, 1.3, 1.0, 1.4, 1.2, 15.0, 25.0, 40.0])
+        a = rng.normal(size=(10, 10)) * 0.02
+        pcov = a @ a.T + np.diag(np.r_[np.full(7, 1e-3), 0.3, 0.4, 0.5])
+        err = FittingResultProcessor.fraction_errors(pcov, FittingStrategy.STANDARD_DATA, pfit)
+        q = rng.multivariate_normal(pfit, pcov, size=200_000)[:, 7:10]
+        f = q ** 2 / (q ** 2).sum(1, keepdims=True)
+        np.testing.assert_allclose(err[3:], f.std(0), rtol=0.03)
+
+    def test_is_not_sigma_a_over_total(self):
+        # the dominant channel's error shrinks: its fluctuations move the total with it
+        pfit = np.array([4.0, 4.0, 1.3, 1.3, 1.0, 1.0, 1.0, 10.0, 10.0, 40.0])
+        pcov = np.diag(np.full(10, 0.25))
+        err = FittingResultProcessor.fraction_errors(pcov, FittingStrategy.STANDARD_DATA, pfit)
+        simple = np.sqrt(0.25) * 2 * pfit[7:10] / np.sum(pfit[7:10] ** 2)
+        assert err[5] < 0.6 * simple[2]
+
+    def test_single_channel_or_failed_fit_gives_none(self):
+        assert FittingResultProcessor.fraction_errors(np.eye(6), FittingStrategy.NOCOLOUR, np.ones(6)) is None
+        assert FittingResultProcessor.fraction_errors(np.inf, FittingStrategy.STANDARD_DATA, np.ones(10)) is None
+
+    def test_fitted_fraction_errors_match_their_spread(self):
+        rng = np.random.default_rng(3)
+        size, n, rn = 12, 300, 1.0
+        masks = _bayer_masks(size)
+        amp = np.array([300.0, 800.0, 2000.0])
+        yy, xx = np.mgrid[0:size, 0:size]
+        mf = masks.astype(float)
+        pes, sms, ws = [], [], []
+        for _ in range(n):
+            g = np.exp(-((yy - 5.5) ** 2 + (xx - 5.5) ** 2) / (2 * 1.4 ** 2)) / (2 * np.pi * 1.4 ** 2)
+            pe = (rng.poisson(mf @ amp * g + mf @ np.array([1.0, 2.0, 2.0]))
+                  + rng.normal(0, rn, (size, size))).astype(np.float32)
+            sm = gaussian_filter(pe, 1.5, mode="nearest")
+            pes.append(pe); sms.append(sm); ws.append((1 / (np.clip(sm, 0, None) + 1 + rn ** 2)).astype(np.float32))
+        fit, err = Image_Analysis_Functions(readnoise=rn, fit_gate=None).fit_puncta_method(
+            pes, sms, ws, [(0.0, 0.0)] * n, list(range(n)), FittingStrategy.STANDARD_DATA, masks=[masks] * n)
+        ok = np.isfinite(fit[:, 0])
+        f = fit[ok, 7:10] / fit[ok, 7:10].sum(1, keepdims=True)
+        ratio = np.median(err[ok, 7:10], axis=0) / f.std(0)
+        assert np.all((ratio > 0.75) & (ratio < 1.25)), ratio
+
+
 class TestSqrtSpaceSlice:
     def test_standard_like(self):
         assert FittingResultProcessor._sqrt_space_slice(FittingStrategy.STANDARD, 10) == slice(4, 10)
@@ -361,19 +410,19 @@ class TestProcessFitResults:
         assert np.all(np.isnan(out))
 
     def test_standard_like_error_jacobian_corrected(self):
-        # End-to-end: process_fit_results must pass pfit through to
-        # calculate_errors so amplitude/background errors come back
-        # delta-method-corrected (real-space), not raw sqrt-space sigma.
+        # End-to-end: amplitude/background errors come back as errors of the normalised
+        # fractions (FittingResultProcessor.fraction_errors), from the sqrt-space covariance.
         pfit = np.array([4.0, 4.0, 1.3, 1.3, 4.5, 4.5, 4.5, 20.0, 20.0, 20.0])
         pcov = np.diag(np.full(len(pfit), 0.01 ** 2))  # sqrt-space sigma = 0.01
         out, err = FittingResultProcessor.process_fit_results(
             pfit, pcov, SIZE, [0.0, 0.0], FittingStrategy.STANDARD, chisqr=1.0,
         )
         assert not np.any(np.isnan(out))
-        # bg errors: sigma_bg = 2*|sqrt(bg)|*sigma_sqrt(bg) = 2*4.5*0.01
-        assert err[4:7] == pytest.approx([2 * 4.5 * 0.01] * 3)
-        # A errors: sigma_A = 2*|sqrt(A)|*sigma_sqrt(A) = 2*20.0*0.01
-        assert err[7:10] == pytest.approx([2 * 20.0 * 0.01] * 3)
+        # Three equal channels (f = 1/3), independent sigma_A = 2 q sigma_q:
+        # sigma_f = sqrt((1 - f)^2 + 2 f^2) sigma_A / S = sqrt(2/3) sigma_A / S
+        for q, sl in ((4.5, slice(4, 7)), (20.0, slice(7, 10))):
+            expected = np.sqrt(2 / 3) * 2 * q * 0.01 / (3 * q ** 2)
+            assert err[sl] == pytest.approx([expected] * 3)
 
     def test_standard_like_relative_coords_none_skips_offset(self):
         pfit = np.array([4.0, 4.0, 1.3, 1.3, 4.5, 4.5, 4.5, 20.0, 20.0, 20.0])

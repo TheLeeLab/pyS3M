@@ -80,31 +80,28 @@ class IO_Functions:
             df["background_photoelectrons"] = df["background_photons"] * self._mask_weighted_sum(df, "bg_")
         return df
 
-    def _normalize_color_channels(self, df, total_col, color_cols, error_cols):
-        """Normalize color channel values and errors by their total.
+    def _normalize_color_channels(self, df, total_col, color_cols):
+        """Normalize color channel values by their total.
 
         Args:
             df (pd.DataFrame): Input dataframe
             total_col (str): Name of column containing total values
             color_cols (list): List of column names to normalize (e.g., ['A_B', 'A_G', 'A_R'])
-            error_cols (list): List of error column names to normalize
 
         Returns:
             pd.DataFrame: Dataframe with normalized columns
 
         Notes:
             This method normalizes values by dividing by the total, avoiding
-            division by zero using a mask. Both values and errors are normalized.
+            division by zero using a mask. The errors are left as they are: the fitter
+            already reports them as errors of the normalised fractions, propagated from
+            its full covariance (FittingResultProcessor.fraction_errors).
         """
         # Avoid division by zero
         mask = df[total_col] > 0
 
         # Normalize color channel values
         for col in color_cols:
-            df.loc[mask, col] = df.loc[mask, col] / df.loc[mask, total_col]
-
-        # Normalize error values
-        for col in error_cols:
             df.loc[mask, col] = df.loc[mask, col] / df.loc[mask, total_col]
 
         return df
@@ -209,7 +206,6 @@ class IO_Functions:
                     df,
                     total_col="photons",
                     color_cols=["A_B", "A_G", "A_R"],
-                    error_cols=["A_B_err", "A_G_err", "A_R_err"],
                 )
 
         # Add background photons column and normalise bg_B, bg_G, bg_R if they exist
@@ -222,7 +218,6 @@ class IO_Functions:
                     df,
                     total_col="background_photons",
                     color_cols=["bg_B", "bg_G", "bg_R"],
-                    error_cols=["bg_B_err", "bg_G_err", "bg_R_err"],
                 )
 
         return df

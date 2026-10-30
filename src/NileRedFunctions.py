@@ -586,30 +586,27 @@ class NileRed_Functions:
     def _normalize_rgb_with_errors(
         rgb: np.ndarray, rgb_err: np.ndarray
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-        """Normalize RGB values to unit sum and propagate errors via quadrature.
+        """Normalize RGB fractions to unit sum, with their errors.
+
+        Every caller passes the fitted colour fractions (A_R/A_G/A_B, already divided by
+        their total) or weighted averages of them, which sum to ~1. Their errors are
+        already errors of the normalised fractions, propagated from the fitter's full
+        covariance (ImageAnalysisFunctions.FittingResultProcessor.fraction_errors), so
+        here both are only divided by the sum; propagating the total's uncertainty again
+        would count it twice.
 
         Args:
-            rgb: [R, G, B] intensities (unnormalized)
-            rgb_err: [R_err, G_err, B_err] errors on intensities
+            rgb: [R, G, B] colour fractions
+            rgb_err: [R_err, G_err, B_err] errors of those fractions
 
         Returns:
             rgb_norm: [R, G, B] normalized to unit sum
-            rgb_norm_err: propagated errors on normalized values
+            rgb_norm_err: their errors (1e-3 for a channel at zero, so it keeps a weight)
         """
+        rgb = np.asarray(rgb, dtype=np.float64)
         rgb_total = np.sum(rgb)
         rgb_norm = rgb / rgb_total
-
-        total_err = np.linalg.norm(rgb_err)
-        rgb_norm_err = np.array([
-            (
-                rgb_norm[i] * np.sqrt(
-                    (rgb_err[i] / rgb[i]) ** 2 + (total_err / rgb_total) ** 2
-                )
-                if rgb[i] > 0
-                else 1e-3
-            )
-            for i in range(3)
-        ])
+        rgb_norm_err = np.where(rgb > 0, np.asarray(rgb_err, dtype=np.float64) / rgb_total, 1e-3)
 
         return rgb_norm, rgb_norm_err
 

@@ -1059,22 +1059,14 @@ class MultiC_Sim_Funcs_Refactored:
             [fit_results.reset_index(drop=True), fit_errors_df], axis=1
         )
 
-        # Sqrt transformation error correction (fitter returns A after squaring; errors are for sqrt(A))
-        for l in _lbls:
-            for col, err in [(f"A_{l}", f"A_{l}_err"), (f"bg_{l}", f"bg_{l}_err")]:
-                mask = fit_results[col] > 0
-                fit_results.loc[mask, err] = (
-                    fit_results.loc[mask, err] * 2.0 * np.sqrt(fit_results.loc[mask, col])
-                )
-
+        # Colour and background values to fractions; the fitter already reports their errors
+        # as fraction errors from its full covariance (FittingResultProcessor.fraction_errors)
         fit_results["photons"] = sum(fit_results[f"A_{l}"] for l in _lbls)
         fit_results["background_photons"] = sum(fit_results[f"bg_{l}"] for l in _lbls)
 
         for l in _lbls:
             fit_results[f"A_{l}"] /= fit_results["photons"]
-            fit_results[f"A_{l}_err"] /= fit_results["photons"]
             fit_results[f"bg_{l}"] /= fit_results["background_photons"]
-            fit_results[f"bg_{l}_err"] /= fit_results["background_photons"]
 
         return fit_results
 
@@ -1137,22 +1129,14 @@ class MultiC_Sim_Funcs_Refactored:
         fit_errors_df = pd.DataFrame(fit_errors, columns=error_columns)
         fit_results = pd.concat([fit_results.reset_index(drop=True), fit_errors_df], axis=1)
 
-        # Sqrt transformation error correction (bg and A only; theta is not squared)
-        for l in _lbls:
-            for col, err in [(f"A_{l}", f"A_{l}_err"), (f"bg_{l}", f"bg_{l}_err")]:
-                mask = fit_results[col] > 0
-                fit_results.loc[mask, err] = (
-                    fit_results.loc[mask, err] * 2.0 * np.sqrt(fit_results.loc[mask, col])
-                )
-
+        # Colour and background values to fractions; the fitter already reports their errors
+        # as fraction errors from its full covariance (FittingResultProcessor.fraction_errors)
         fit_results["photons"] = sum(fit_results[f"A_{l}"] for l in _lbls)
         fit_results["background_photons"] = sum(fit_results[f"bg_{l}"] for l in _lbls)
 
         for l in _lbls:
             fit_results[f"A_{l}"] /= fit_results["photons"]
-            fit_results[f"A_{l}_err"] /= fit_results["photons"]
             fit_results[f"bg_{l}"] /= fit_results["background_photons"]
-            fit_results[f"bg_{l}_err"] /= fit_results["background_photons"]
 
         return fit_results
 
@@ -1218,21 +1202,12 @@ class MultiC_Sim_Funcs_Refactored:
         fit_errors_df = pd.DataFrame(fit_errors, columns=error_columns)
         fit_results = pd.concat([fit_results.reset_index(drop=True), fit_errors_df], axis=1)
 
-        for l in _lbls:
-            for col, err in [(f"A_{l}", f"A_{l}_err"), (f"bg_{l}", f"bg_{l}_err")]:
-                mask = fit_results[col] > 0
-                fit_results.loc[mask, err] = (
-                    fit_results.loc[mask, err] * 2.0 * np.sqrt(fit_results.loc[mask, col])
-                )
-
         fit_results["photons"] = sum(fit_results[f"A_{l}"] for l in _lbls)
         fit_results["background_photons"] = sum(fit_results[f"bg_{l}"] for l in _lbls)
 
         for l in _lbls:
             fit_results[f"A_{l}"] /= fit_results["photons"]
-            fit_results[f"A_{l}_err"] /= fit_results["photons"]
             fit_results[f"bg_{l}"] /= fit_results["background_photons"]
-            fit_results[f"bg_{l}_err"] /= fit_results["background_photons"]
 
         return fit_results
 
@@ -1298,21 +1273,12 @@ class MultiC_Sim_Funcs_Refactored:
         fit_errors_df = pd.DataFrame(fit_errors, columns=error_columns)
         fit_results = pd.concat([fit_results.reset_index(drop=True), fit_errors_df], axis=1)
 
-        for l in _lbls:
-            for col, err in [(f"A_{l}", f"A_{l}_err"), (f"bg_{l}", f"bg_{l}_err")]:
-                mask = fit_results[col] > 0
-                fit_results.loc[mask, err] = (
-                    fit_results.loc[mask, err] * 2.0 * np.sqrt(fit_results.loc[mask, col])
-                )
-
         fit_results["photons"] = sum(fit_results[f"A_{l}"] for l in _lbls)
         fit_results["background_photons"] = sum(fit_results[f"bg_{l}"] for l in _lbls)
 
         for l in _lbls:
             fit_results[f"A_{l}"] /= fit_results["photons"]
-            fit_results[f"A_{l}_err"] /= fit_results["photons"]
             fit_results[f"bg_{l}"] /= fit_results["background_photons"]
-            fit_results[f"bg_{l}_err"] /= fit_results["background_photons"]
 
         return fit_results
 

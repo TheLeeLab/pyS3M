@@ -72,9 +72,10 @@ class _FakeStat:
 class TestNormalizeColorChannels:
     def test_normalizes_by_total(self, io):
         df = pd.DataFrame({"total": [10.0, 0.0], "a": [5.0, 3.0], "a_err": [1.0, 0.5]})
-        out = io._normalize_color_channels(df, "total", ["a"], ["a_err"])
+        out = io._normalize_color_channels(df, "total", ["a"])
         assert out["a"].iloc[0] == pytest.approx(0.5)
-        assert out["a_err"].iloc[0] == pytest.approx(0.1)
+        # errors untouched: the fitter already reports errors of the normalised fractions
+        assert out["a_err"].iloc[0] == pytest.approx(1.0)
         # zero-total row untouched (division-by-zero mask)
         assert out["a"].iloc[1] == pytest.approx(3.0)
 

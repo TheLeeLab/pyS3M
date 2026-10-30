@@ -283,6 +283,49 @@ class FittingResultProcessor:
             return [np.nan] * expected_size
 
     @staticmethod
+    def fraction_errors(
+        pcov: np.ndarray, strategy: FittingStrategy, pfit: np.ndarray,
+    ) -> Optional[np.ndarray]:
+        """Errors of the normalised amplitude and background fractions, from the full covariance.
+
+        The fitted parameters are q_k = sqrt(A_k), so with S = sum_k A_k the fraction
+        f_c = A_c / S has dF_c/dq_k = 2 q_k (delta_ck - f_c) / S, and
+        sigma_f = sqrt(diag(J C J^T)) with C the (chi^2-scaled) covariance of the q block.
+        Amplitudes and backgrounds are each normalised over their own channels. Unlike
+        sigma_A / S, this includes the uncertainty of S and every covariance between
+        channels.
+
+        Args:
+            pcov: Parameter covariance matrix (already chi_sqr-scaled), in pfit's order.
+            strategy: Fitting strategy (sets where the sqrt-space parameters are).
+            pfit: Raw (sqrt-space, pre-squaring) fitted parameters.
+
+        Returns:
+            The sqrt-space slice's errors (backgrounds then amplitudes, in pfit's order) as
+            fraction errors, or None where there is nothing to normalise (fewer than two
+            channels, no usable covariance).
+        """
+        if pcov is None or np.isscalar(pcov) or np.ndim(pcov) != 2 or not np.all(np.isfinite(pcov)):
+            return None
+        sl = FittingResultProcessor._sqrt_space_slice(strategy, len(pfit))
+        n_ch = (sl.stop - sl.start) // 2
+        if n_ch < 2 or sl.stop > pcov.shape[0]:
+            return None
+        out = np.full(2 * n_ch, np.nan)
+        for half in range(2):   # backgrounds, then amplitudes
+            idx = np.arange(sl.start + half * n_ch, sl.start + (half + 1) * n_ch)
+            q = np.asarray(pfit, dtype=np.float64)[idx]
+            a = np.square(q)
+            total = a.sum()
+            if not np.isfinite(total) or total <= 0:
+                continue
+            f = a / total
+            jac = (np.eye(n_ch) - f[:, None]) * (2.0 * q[None, :] / total)
+            var = np.einsum("ij,jk,ik->i", jac, pcov[np.ix_(idx, idx)], jac)
+            out[half * n_ch:(half + 1) * n_ch] = np.where(var > 0, np.sqrt(np.maximum(var, 0.0)), np.nan)
+        return out
+
+    @staticmethod
     def calculate_reduced_chisquared(
         residuals: np.ndarray, n_data_points: int, n_parameters: int
     ) -> float:
@@ -567,6 +610,14 @@ class FittingResultProcessor:
         # sqrt-space amplitude/background errors get delta-method propagated into
         # the same real-space units as the squared values stored above.
         errors = np.asarray(FittingResultProcessor.calculate_errors(pcov, strategy, pfit))
+        # Colour and background errors are those of the normalised fractions (A_c / sum A,
+        # bg_c / sum bg), from the full covariance: what A_*_err and bg_*_err report
+        # downstream, where only the values are divided by their totals.
+        frac = FittingResultProcessor.fraction_errors(pcov, strategy, pfit)
+        if frac is not None:
+            sl = FittingResultProcessor._sqrt_space_slice(strategy, len(pfit))
+            errors = errors.astype(np.float64)
+            errors[sl] = frac
         if len(errors) == len(perm):
             errors = errors[perm]
 

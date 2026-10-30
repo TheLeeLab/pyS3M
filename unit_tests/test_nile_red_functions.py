@@ -282,6 +282,12 @@ class TestNormalizeRgbWithErrors:
         assert norm.sum() == pytest.approx(1.0)
         assert np.all(norm_err > 0)
 
+    def test_fraction_errors_only_rescaled(self, nrf):
+        # inputs are fractions whose errors already include the total's uncertainty
+        norm, norm_err = NileRedFunctions.NileRed_Functions._normalize_rgb_with_errors(
+            np.array([0.6, 0.3, 0.1]), np.array([0.02, 0.015, 0.01]))
+        np.testing.assert_allclose(norm_err, [0.02, 0.015, 0.01])
+
     def test_zero_channel_gets_fallback_error(self, nrf):
         rgb = np.array([200.0, 0.0, 50.0])
         rgb_err = np.array([10.0, 8.0, 5.0])
