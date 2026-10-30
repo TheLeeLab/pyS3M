@@ -1,7 +1,7 @@
 ## pyS3M
 
-[![Tests](https://github.com/JBeckwith/pyS3M/actions/workflows/tests.yml/badge.svg)](https://github.com/JBeckwith/pyS3M/actions/workflows/tests.yml)
-[![Coverage](https://JBeckwith.github.io/pyS3M/badges/coverage.svg)](https://github.com/JBeckwith/pyS3M/actions/workflows/tests.yml)
+[![Tests](https://github.com/TheLeeLab/pyS3M/actions/workflows/tests.yml/badge.svg)](https://github.com/TheLeeLab/pyS3M/actions/workflows/tests.yml)
+[![Coverage](https://theleelab.github.io/pyS3M/badges/coverage.svg)](https://github.com/TheLeeLab/pyS3M/actions/workflows/tests.yml)
 [![Documentation](https://readthedocs.org/projects/pys3m/badge/?version=latest)](https://pys3m.readthedocs.io/en/latest/?badge=latest)
 [![DOI](https://zenodo.org/badge/1197322070.svg)](https://zenodo.org/badge/latestdoi/1197322070)
 
