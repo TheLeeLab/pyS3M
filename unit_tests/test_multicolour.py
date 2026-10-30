@@ -42,6 +42,7 @@ from pyS3M.simulation.multicolour import (
     MultiC_Sim_Funcs_Refactored,
     SimulationConfig,
     SimulationValidationError,
+    replace_unphysical_calibration_pixels,
 )
 
 FILTERS = [
@@ -1531,6 +1532,50 @@ class TestBackgroundDefinition:
         )
         expected = 5.0 * sim.background_pixel_efficiency(wl, qys).mean()
         assert normal.mean() == pytest.approx(expected, rel=0.04)
+
+
+class TestUnphysicalCalibrationPixels:
+    """Failed calibration fits on dead pixels (negative rqe/gain/variance, NaN; the Ximea chip has 3)
+    take the median of the valid pixels, so they cannot make the background Poisson mean negative."""
+
+    @pytest.mark.parametrize("key,value", [("rqe", -2.19), ("rqe", np.nan), ("gain", -0.5),
+                                           ("variance", -1.0), ("offset", np.inf)])
+    def test_image_simulates_with_a_bad_pixel(self, sim, camera_parameters, wavelength_and_qys, key, value):
+        wl, _ = wavelength_and_qys
+        x0y0, n_photons = _minimal_x0y0_photons()
+        cp = dict(camera_parameters)
+        cp[key] = cp[key].copy()
+        cp[key][2, 3] = value
+        bayer, _, _ = sim.gen_camera_image_stack(
+            cp, wl, 660.0, np.array([0.2, 0.3, 0.5]), n_photons, x0y0, smoothing_function=None,
+            background_photons=10.0, emission_spectra=_spectra(x0y0, wl),
+        )
+        assert np.all(np.isfinite(bayer))
+
+    def test_bad_pixel_takes_the_valid_median(self):
+        gain, offset, variance, rqe = (np.full((4, 4), v) for v in (2.0, 100.0, 1.0, 0.9))
+        rqe[1, 2] = -2.19
+        variance[0, 0] = 0.0  # zeros kept: a noise-free camera
+        g, o, v, r, n_bad = replace_unphysical_calibration_pixels(gain, offset, variance, rqe)
+        assert n_bad == 1
+        assert r[1, 2] == pytest.approx(0.9)
+        assert v[0, 0] == 0.0
+        np.testing.assert_array_equal(rqe[1, 2], -2.19)  # inputs not modified
+
+    def test_valid_maps_returned_unchanged(self):
+        maps = tuple(np.full((4, 4), v) for v in (2.0, 100.0, 1.0, 0.9))
+        out = replace_unphysical_calibration_pixels(*maps)
+        assert out[-1] == 0 and all(a is b for a, b in zip(out[:4], maps))
+
+    def test_negative_background_raises(self, sim, camera_parameters, wavelength_and_qys):
+        wl, _ = wavelength_and_qys
+        x0y0, n_photons = _minimal_x0y0_photons()
+        with pytest.raises(SimulationValidationError, match="background_photons"):
+            sim.gen_camera_image_stack(
+                camera_parameters, wl, 660.0, np.array([0.2, 0.3, 0.5]), n_photons, x0y0,
+                background_photons=-1.0, return_photoelectrons_stack=True,
+                emission_spectra=_spectra(x0y0, wl),
+            )
 
 
 class TestBuildFrameReadnoise:

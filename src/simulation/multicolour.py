@@ -276,6 +276,41 @@ def sanitise_calibration_maps(
     return out, int(invalid.sum())
 
 
+def replace_unphysical_calibration_pixels(
+    gain, offset, variance, rqe,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
+    """
+    Give unphysical calibration pixels each map's median over the valid pixels.
+
+    A pixel is unphysical where any map is non-finite, or gain, variance or rqe is negative
+    (failed calibration fits on dead pixels: the Ximea chip has 3, one of them in its top-left
+    512 x 512 crop). A negative rqe would give a negative Poisson mean for the background, and a
+    negative variance a negative noise width. Zeros are kept (a dead pixel, a noise-free camera).
+    Maps that are not arrays of one shared shape are returned unchanged, as are maps with no
+    unphysical pixel (so a valid calibration's simulation is untouched).
+
+    Returns:
+        gain, offset, variance, rqe and the number of pixels replaced.
+    """
+    maps = [np.asarray(m) for m in (gain, offset, variance, rqe)]
+    if len({m.shape for m in maps}) != 1 or maps[0].ndim < 2:
+        return gain, offset, variance, rqe, 0
+    invalid = np.zeros(maps[0].shape, dtype=bool)
+    for m in maps:
+        invalid |= ~np.isfinite(m)
+    for m in (maps[0], maps[2], maps[3]):
+        invalid |= m < 0
+    n_bad = int(invalid.sum())
+    if n_bad == 0:
+        return gain, offset, variance, rqe, 0
+    out = []
+    for m in maps:
+        m = m.astype(float)
+        m[invalid] = np.median(m[~invalid])
+        out.append(m)
+    return (*out, n_bad)
+
+
 def sample_chip_patches_batch(
     chip_maps: dict[str, np.ndarray],
     patch_shape: tuple[int, int],
@@ -1877,6 +1912,9 @@ class MultiC_Sim_Funcs_Refactored:
             pixel_size = self.pixel_size * 1000  # µm → nm
 
         relative_QE = camera_calibration["rqe"]
+        gain, offset, variance, relative_QE, _ = replace_unphysical_calibration_pixels(
+            gain, offset, variance, relative_QE
+        )
 
         if psf_model not in ("dipole", "gaussian"):
             raise SimulationValidationError(f"psf_model must be 'dipole' or 'gaussian'; got {psf_model!r}")
@@ -2013,6 +2051,10 @@ class MultiC_Sim_Funcs_Refactored:
             mask_stack.astype(float), background_qe_per_channel, axes=([-1], [0])
         )  # (w, h), or (s, w, h) if masks vary per frame
         background_rate = background_photons * np.asarray(relative_QE, dtype=float)
+        if not np.all(np.isfinite(background_rate)) or np.any(background_rate < 0):
+            raise SimulationValidationError(
+                f"background_photons ({background_photons}) times rqe must be finite and >= 0"
+            )
 
         def _background_frame(frame):
             return np.random.binomial(
