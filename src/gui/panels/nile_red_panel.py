@@ -24,12 +24,12 @@ class NileRedPanel(QWidget):
     analysing a previously-saved localisation table without redoing fit+cluster
     in the current session). Always uses the pixelated (spatial-grid) fit
     rather than a plain per-localisation fit: it discretises localisations onto
-    a regular pixel grid, weighted-averages RGB/PSF-width per grid cell (far
-    higher SNR than any single localisation), and fits one wavelength per
-    cell, producing a genuine spatial wavelength map."""
+    a regular pixel grid, pools each grid cell's photoelectrons per colour
+    channel (far higher SNR than any single localisation), and fits one
+    wavelength per cell, producing a genuine spatial wavelength map."""
 
-    # filter_ids, wl_min, wl_max, NA, pixel_size_nm, min_localisations
-    fit_requested = pyqtSignal(list, float, float, float, float, int)
+    # filter_ids, wl_min, wl_max, pixel_size_nm, min_localisations
+    fit_requested = pyqtSignal(list, float, float, float, int)
     clear_requested = pyqtSignal()
     load_locs_requested = pyqtSignal(str)  # path to .h5 file
 
@@ -101,13 +101,6 @@ class NileRedPanel(QWidget):
         self._wl_max.setSuffix(" nm")
         form.addRow("Max λ:", self._wl_max)
 
-        self._na = QDoubleSpinBox()
-        self._na.setRange(0.1, 2.0)
-        self._na.setDecimals(2)
-        self._na.setSingleStep(0.01)
-        self._na.setValue(1.49)
-        form.addRow("NA:", self._na)
-
         self._pixel_size = QDoubleSpinBox()
         self._pixel_size.setRange(5.0, 2000.0)
         self._pixel_size.setDecimals(0)
@@ -167,7 +160,6 @@ class NileRedPanel(QWidget):
             filter_ids,
             self._wl_min.value(),
             self._wl_max.value(),
-            self._na.value(),
             self._pixel_size.value(),
             self._min_locs.value(),
         )

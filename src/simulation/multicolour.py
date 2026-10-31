@@ -1194,11 +1194,11 @@ class MultiC_Sim_Funcs_Refactored:
         """
         Add Nile Red wavelength fitting columns to fit results DataFrame.
 
-        For each row in fit_results, fits the Nile Red wavelength from RGB and sigma values,
+        For each row in fit_results, fits the Nile Red wavelength from its colour fractions,
         then adds 'wl_fit' and 'wl_fit_err' columns.
 
         Args:
-            fit_results: DataFrame with fit results including RGB, sigma, and error columns
+            fit_results: DataFrame with fit results including A_R/A_G/A_B and their errors
             nile_red_wavelength: True wavelength used for simulation (for spectrum generation)
             camera_params: Camera parameters dataclass
             camera_parameters: Full camera parameters dictionary with all optical parameters
@@ -1230,64 +1230,31 @@ class MultiC_Sim_Funcs_Refactored:
             # This is slower but more flexible and avoids the need to pre-generate LUTs
 
             # Extract data from DataFrame
-            R = fit_results["A_R"].to_numpy()
-            G = fit_results["A_G"].to_numpy()
-            B = fit_results["A_B"].to_numpy()
-            sigma_x = fit_results["s_x"].to_numpy() * config.pixel_size  # Convert to nm
-            sigma_y = fit_results["s_y"].to_numpy() * config.pixel_size
-
-            R_err = fit_results["A_R_err"].to_numpy()
-            G_err = fit_results["A_G_err"].to_numpy()
-            B_err = fit_results["A_B_err"].to_numpy()
-            sigma_x_err = fit_results["s_x_err"].to_numpy() * config.pixel_size
-            sigma_y_err = fit_results["s_y_err"].to_numpy() * config.pixel_size
-
-            # Extract fitted photons and background for SNR calculation
-            fitted_photons = fit_results["photons"].to_numpy()
-
-            # NOTE: bg_R/bg_G/bg_B are normalised to fractions (sum to 1) by
-            # _fit_standard/_fit_standard_data before this function is called, so summing
-            # them no longer recovers the absolute background level (previously this line
-            # summed bg_R+bg_G+bg_B directly, which -- now that those are fractions --
-            # always evaluated to ~1.0 regardless of the true background_photons, silently
-            # defeating the SNR-based error inflation below at any real background level).
-            # The absolute total is already computed and stored in 'background_photons'.
-            fitted_background_photons = fit_results["background_photons"].to_numpy()
+            rgb = fit_results[["A_R", "A_G", "A_B"]].to_numpy(dtype=np.float64)
+            rgb_err = fit_results[["A_R_err", "A_G_err", "A_B_err"]].to_numpy(dtype=np.float64)
 
             # Normalize RGB and propagate errors, then build fit args
             from pyS3M.NileRedFunctions import NileRed_Functions as _NRF
 
-            rgb_total = R + G + B
+            # Failed colour fits (NaN fractions) and rows with a non-finite or zero
+            # error are not fitted: the inversion would otherwise drop or mis-weight
+            # those channels and return a spurious wavelength.
+            valid_rows = _NRF._valid_colour_rows(fit_results)
 
             fit_args = []
             valid_indices = []
-            for j in range(len(R)):
-                # NaN comparisons are always False (NaN <= 0 is False), so a plain
-                # `<= 0` check silently lets failed colour fits (R/G/B all NaN)
-                # through into the wavelength inversion below, which doesn't detect
-                # NaN input either and returns a spurious, deterministic "fit"
-                # instead of failing -- polluting wl_fit with fake, non-random
-                # values for every failed localisation. Explicitly require finite.
-                if not np.isfinite(rgb_total[j]) or rgb_total[j] <= 0:
-                    continue
-
-                rgb_norm, rgb_norm_err = _NRF._normalize_rgb_with_errors(
-                    np.array([R[j], G[j], B[j]]),
-                    np.array([R_err[j], G_err[j], B_err[j]]),
-                )
+            for j in np.flatnonzero(valid_rows):
+                rgb_norm, rgb_norm_err = _NRF._normalize_rgb_with_errors(rgb[j], rgb_err[j])
 
                 fit_args.append((
-                    rgb_norm, sigma_x[j], sigma_y[j],
-                    rgb_norm_err, sigma_x_err[j], sigma_y_err[j],
-                    filter_spectra, wavelength_array, pixel_QYs, config.NA,
-                    fitted_photons[j], fitted_background_photons[j],
+                    rgb_norm, rgb_norm_err, filter_spectra, wavelength_array, pixel_QYs,
                     (500.0, 750.0),
                 ))
                 valid_indices.append(j)
 
             # Parallel wavelength fitting using ProcessPoolExecutor
-            wl_fits = np.full(len(R), np.nan)
-            wl_fit_errs = np.full(len(R), np.nan)
+            wl_fits = np.full(len(rgb), np.nan)
+            wl_fit_errs = np.full(len(rgb), np.nan)
 
             if len(fit_args) > 0:
                 # Use multiprocessing for parallel fitting

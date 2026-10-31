@@ -4,6 +4,7 @@ Nile Red Spectral Model Functions
 Forward and inverse models for predicting Nile Red emission properties (RGB intensities
 and PSF widths) based on spectral parameters. Uses skew-Gaussian emission model fitted
 from experimental data to extract central emission wavelength from localisation data.
+The inverse model fits the colour fractions only (see fit_nile_red_wavelength).
 
 Leverages SpectralFunctions for wavelength/energy conversions and spectral models,
 and PSFFunctions for wavelength-dependent PSF calculations.
@@ -35,7 +36,7 @@ class NileRed_Functions:
 
     This class implements forward and inverse models for Nile Red emission:
     - Forward: central_wavelength → (R, G, B, σ_x, σ_y)
-    - Inverse: (R, G, B, σ_x, σ_y) → central_wavelength
+    - Inverse: (R, G, B) → central_wavelength
 
     Default spectral parameters from notebook 20251007_NileRedOptimiser:
     - sigma = 0.1630104 eV (Gaussian width in energy space)
@@ -480,32 +481,53 @@ class NileRed_Functions:
 
         return predictions
 
-    def residuals_nile_red(
+    def predict_rgb(
         self,
-        wavelength_center: np.ndarray,
-        observed_data: dict[str, float],
-        errors: dict[str, float],
+        wavelength_center: float,
         filter_spectra: np.ndarray,
         wavelength_array: np.ndarray,
         pixel_QYs: np.ndarray,
-        NA: float = 1.49,
+    ) -> NDArray[np.float64]:
+        """Predicted [R, G, B] colour fractions for a Nile Red spectrum.
+
+        The colour part of nile_red_forward_model, which the inverse model fits.
+
+        Args:
+            wavelength_center: Skew-Gaussian location parameter (nm)
+            filter_spectra: Optical filter transmission curves (n_filters, n_wavelengths)
+            wavelength_array: Wavelength grid (nm)
+            pixel_QYs: Bayer pixel quantum yields [B, G, R] shape (3, n_wavelengths)
+
+        Returns:
+            rgb_predicted: [R, G, B] fractions (unit sum)
+        """
+        spectrum = self.generate_nile_red_spectrum(
+            wavelength_center, wavelength_array, normalize=True
+        )
+        spectrum_filtered = self.apply_optical_filters(spectrum, filter_spectra)
+        return self.calculate_rgb_from_spectrum(spectrum_filtered, wavelength_array, pixel_QYs)
+
+    def residuals_nile_red(
+        self,
+        wavelength_center: np.ndarray,
+        observed_rgb: np.ndarray,
+        rgb_errors: np.ndarray,
+        filter_spectra: np.ndarray,
+        wavelength_array: np.ndarray,
+        pixel_QYs: np.ndarray,
     ) -> NDArray[np.float64]:
         """Residual vector for least-squares fitting of Nile Red wavelength.
 
-        This function returns the vector of weighted residuals rather than chi-squared,
-        which is more appropriate for least-squares optimization algorithms.
-
         Args:
             wavelength_center: Central wavelength parameter (1D array with single element)
-            observed_data: dict with 'R', 'G', 'B', 'sigma_x', 'sigma_y'
-            errors: dict with same keys as observed_data
+            observed_rgb: [R, G, B] colour fractions (unit sum)
+            rgb_errors: their errors (finite, > 0)
             filter_spectra: Optical filter transmission curves
             wavelength_array: Wavelength grid (nm)
             pixel_QYs: Pixel quantum yields
-            NA: Numerical aperture (default: 1.49)
 
         Returns:
-            residuals: Array of weighted residuals (observation - prediction) / error
+            residuals: (observed - predicted) / error for R, G, B
         """
         # Extract scalar wavelength (least_squares passes 1D array)
         wl = (
@@ -513,74 +535,8 @@ class NileRed_Functions:
             if isinstance(wavelength_center, np.ndarray)
             else wavelength_center
         )
-
-        # Get predictions from forward model
-        predictions = self.nile_red_forward_model(
-            wl, filter_spectra, wavelength_array, pixel_QYs, NA
-        )
-
-        # Build residual vector
-        residuals = []
-        for key in ["R", "G", "B", "sigma_x", "sigma_y"]:
-            if key in observed_data and key in errors:
-                if errors[key] > 0:
-                    residual = (observed_data[key] - predictions[key]) / errors[key]
-                    residuals.append(residual)
-
-        return np.array(residuals)
-
-    def _error_inflation_factor(self, snr: float) -> float:
-        """Calculate error inflation factor based on SNR.
-
-        At low SNR, fit errors systematically underestimate true uncertainty
-        due to noise floor, non-negativity constraints, and normalization bias.
-        This function provides empirical inflation factors to correct for this.
-
-        Args:
-            snr: Signal-to-noise ratio
-
-        Returns:
-            inflation_factor: Multiplicative factor for error (>= 1.0)
-        """
-        if snr < 2.0:
-            return 3.0
-        elif snr < 5.0:
-            return 2.0
-        elif snr < 10.0:
-            return 1.5
-        else:
-            return 1.0
-
-    def _calculate_channel_snr(
-        self, observed_rgb: np.ndarray, total_photons: float, background_photons: float
-    ) -> np.ndarray:
-        """Calculate signal-to-noise ratio for each RGB channel.
-
-        SNR = S / sqrt(S + B) where:
-        - S = signal photons in channel
-        - B = background photons in channel
-
-        Args:
-            observed_rgb: [R, G, B] measured intensities (normalized or absolute)
-            total_photons: Total signal photon count
-            background_photons: Total background photons (distributed evenly across RGB)
-
-        Returns:
-            snr_array: [SNR_R, SNR_G, SNR_B]
-        """
-        # Normalize RGB if needed
-        rgb_fractions = observed_rgb / np.sum(observed_rgb)
-
-        # Calculate signal photons per channel
-        signal_photons = rgb_fractions * total_photons
-
-        # Background photons per channel (assume uniform distribution)
-        background_per_channel = background_photons / 3.0
-
-        # Calculate SNR for each channel
-        snr_array = signal_photons / np.sqrt(signal_photons + background_per_channel)
-
-        return snr_array
+        predicted = self.predict_rgb(wl, filter_spectra, wavelength_array, pixel_QYs)
+        return (observed_rgb - predicted) / rgb_errors
 
     @staticmethod
     def _normalize_rgb_with_errors(
@@ -611,23 +567,60 @@ class NileRed_Functions:
         return rgb_norm, rgb_norm_err
 
     @staticmethod
-    def _weighted_average_with_error(
-        values: np.ndarray, errors: np.ndarray
-    ) -> tuple[float, float]:
-        """Compute inverse-error-weighted average and propagated error.
+    def _valid_colour_rows(df: pd.DataFrame, require_photons: bool = False) -> NDArray[np.bool_]:
+        """Rows whose colour fractions can be fitted: finite fractions with a positive sum,
+        finite errors > 0 and, for pooling, finite photons > 0.
 
         Args:
-            values: Array of measurements
-            errors: Array of measurement errors (must be > 0)
+            df: Localisations with A_R/A_G/A_B, their *_err columns and, if
+                require_photons, 'photons'
+            require_photons: Also require a usable 'photons' value
 
         Returns:
-            weighted_avg: Weighted average of values
-            propagated_err: Propagated error = 1 / sqrt(sum(1/err^2))
+            valid: Boolean mask, one entry per row
         """
-        weights = 1.0 / errors
-        weighted_avg = np.average(values, weights=weights)
-        propagated_err = 1.0 / np.sqrt(np.sum(1.0 / errors ** 2))
-        return weighted_avg, propagated_err
+        values = df[["A_R", "A_G", "A_B"]].to_numpy(dtype=np.float64)
+        errors = df[["A_R_err", "A_G_err", "A_B_err"]].to_numpy(dtype=np.float64)
+        valid = (
+            np.all(np.isfinite(values), axis=1)
+            & np.all(np.isfinite(errors), axis=1)
+            & np.all(errors > 0, axis=1)
+            & (values.sum(axis=1) > 0)
+        )
+        if require_photons:
+            photons = df["photons"].to_numpy(dtype=np.float64)
+            valid &= np.isfinite(photons) & (photons > 0)
+        return valid
+
+    @staticmethod
+    def _pool_colour_fractions(
+        fractions: np.ndarray, fraction_errors: np.ndarray, amplitude_sums: np.ndarray
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """Pool localisations' colour fractions by summing their photoelectrons per channel.
+
+        A localisation's channel amplitude is A_p = f_p * S, with S its 'photons' (the sum
+        of its channel amplitudes), so the group's fraction is that of its summed signal,
+        F_p = sum_i f_p,i S_i / sum_i S_i, with the propagated error
+        sigma(F_p) = sqrt(sum_i S_i^2 sigma(f_p,i)^2) / sum_i S_i. The weights don't depend
+        on the fractions, so F is unbiased; an inverse-error-weighted mean is not (it
+        favours localisations whose channel fluctuated low and so got a smaller error).
+
+        Args:
+            fractions: (n, 3) [R, G, B] fractions of each localisation
+            fraction_errors: (n, 3) their errors
+            amplitude_sums: (n,) each localisation's 'photons'
+
+        Returns:
+            pooled: [R, G, B] pooled fractions
+            pooled_err: their errors
+        """
+        S = np.asarray(amplitude_sums, dtype=np.float64)[:, None]
+        f = np.asarray(fractions, dtype=np.float64)
+        e = np.asarray(fraction_errors, dtype=np.float64)
+        total = S.sum()
+        pooled = (S * f).sum(axis=0) / total
+        pooled_err = np.sqrt((S ** 2 * e ** 2).sum(axis=0)) / total
+        return pooled, pooled_err
 
     def _parallel_fit_wavelengths(
         self,
@@ -706,89 +699,48 @@ class NileRed_Functions:
     def fit_nile_red_wavelength(
         self,
         observed_rgb: np.ndarray,
-        observed_sigma_x: float,
-        observed_sigma_y: float,
         rgb_errors: np.ndarray,
-        sigma_x_error: float,
-        sigma_y_error: float,
         filter_spectra: np.ndarray,
         wavelength_array: np.ndarray,
         pixel_QYs: np.ndarray,
-        NA: float = 1.49,
         wavelength_bounds: tuple[float, float] = (500.0, 750.0),
-        total_photons: Optional[float] = None,
-        background_photons: float = 40.0,
-        apply_snr_inflation: bool = True,
         wavelength_initial_guess: Optional[float] = None,
     ) -> tuple[float, dict[str, float]]:
-        """Fit central wavelength of Nile Red emission from experimental data.
+        """Fit central wavelength of Nile Red emission from its colour fractions.
 
-        Uses all three RGB channels for wavelength fitting. Implements SNR-based error
-        inflation to correct for underestimated errors at low photon counts:
-        - SNR < 2: inflate by 3.0x
-        - SNR 2-5: inflate by 2.0x
-        - SNR 5-10: inflate by 1.5x
-        - SNR > 10: use as-is (1.0x)
+        Only R, G and B enter the fit, weighted by their errors as given: the fitter's
+        fraction errors come from its full covariance and are calibrated, so they are
+        not inflated. The fitted PSF width is not used: a Gaussian fit's width depends on
+        the PSF model and defocus as well as on wavelength (the dipole PSF fits ~15%
+        wider than sigma_PSF(lambda)), and with its small error it outweighed the colour
+        and biased the wavelength by up to +36 nm (FigureSI_NileRed_ForwardModel,
+        LOG 2026-10-31).
 
         Args:
-            observed_rgb: [R, G, B] measured intensities
-            observed_sigma_x, observed_sigma_y: Measured PSF widths (nm)
+            observed_rgb: [R, G, B] colour fractions
             rgb_errors: Errors on [R, G, B]
-            sigma_x_error, sigma_y_error: Errors on PSF widths (nm)
             filter_spectra: Optical filter transmission curves
             wavelength_array: Wavelength grid (nm)
             pixel_QYs: Pixel quantum yields
-            NA: Numerical aperture (default: 1.49)
             wavelength_bounds: Search range for wavelength (nm)
-            total_photons: Total photon count for SNR calculation (optional)
-            background_photons: Background photon count (default: 40.0, distributed across RGB)
-            apply_snr_inflation: Apply SNR-based error inflation (default: True)
             wavelength_initial_guess: Custom initial guess for wavelength (nm).
                 If None, uses self.default_wavelength_center (617.6 nm).
 
         Returns:
-            wavelength_center: Fitted central wavelength (nm)
-            predictions: Predicted values at best-fit wavelength
+            wavelength_mean: Fitted spectral centre of mass (nm); NaN if any fraction or
+                error is non-finite, an error is not positive, or the fractions sum to <= 0
+            predictions: 'R', 'G', 'B' at the best fit and 'wavelength_error' (NaN on failure)
         """
+        observed_rgb = np.asarray(observed_rgb, dtype=np.float64)
+        rgb_errors = np.asarray(rgb_errors, dtype=np.float64)
+        rgb_total = np.sum(observed_rgb)
+        if (not np.all(np.isfinite(observed_rgb)) or not np.all(np.isfinite(rgb_errors))
+                or np.any(rgb_errors <= 0) or not rgb_total > 0):
+            return np.nan, {"wavelength_error": np.nan}
+
         # Normalize RGB to unit sum
-        observed_rgb_norm = observed_rgb / np.sum(observed_rgb)
-        rgb_errors_norm = rgb_errors / np.sum(observed_rgb)
-
-        # Apply SNR-based error inflation if requested and total_photons is provided
-        if apply_snr_inflation and total_photons is not None:
-            # Calculate SNR for each channel
-            snr_rgb = self._calculate_channel_snr(
-                observed_rgb, total_photons, background_photons
-            )
-
-            # Apply inflation factors
-            inflation_factors = np.array(
-                [
-                    self._error_inflation_factor(snr_rgb[0]),  # R
-                    self._error_inflation_factor(snr_rgb[1]),  # G
-                    self._error_inflation_factor(snr_rgb[2]),  # B
-                ]
-            )
-
-            # Inflate errors
-            rgb_errors_norm = rgb_errors_norm * inflation_factors
-
-        # Use all three RGB channels for wavelength fitting
-        observed_data = {
-            "R": observed_rgb_norm[0],
-            "G": observed_rgb_norm[1],
-            "B": observed_rgb_norm[2],
-            "sigma_x": observed_sigma_x,
-            "sigma_y": observed_sigma_y,
-        }
-
-        errors = {
-            "R": rgb_errors_norm[0],
-            "G": rgb_errors_norm[1],
-            "B": rgb_errors_norm[2],
-            "sigma_x": sigma_x_error,
-            "sigma_y": sigma_y_error,
-        }
+        observed_rgb_norm = observed_rgb / rgb_total
+        rgb_errors_norm = rgb_errors / rgb_total
 
         # Initial guess: use custom guess, default central wavelength, or midpoint of bounds
         if wavelength_initial_guess is not None:
@@ -805,12 +757,11 @@ class NileRed_Functions:
             bounds=(wavelength_bounds[0], wavelength_bounds[1]),
             method="trf",  # Trust Region Reflective
             args=(
-                observed_data,
-                errors,
+                observed_rgb_norm,
+                rgb_errors_norm,
                 filter_spectra,
                 wavelength_array,
                 pixel_QYs,
-                NA,
             ),
         )
 
@@ -836,17 +787,16 @@ class NileRed_Functions:
         n_params = 1
         dof = max(n_data - n_params, 1)
         s2 = np.sum(result.fun**2) / dof
-        JtJ = float(J.T @ J)
+        JtJ = float(J[:, 0] @ J[:, 0])
         if JtJ > 0:
             wavelength_error = np.sqrt(s2 / JtJ)
         else:
             wavelength_error = np.nan
 
         # Get predictions at best fit
-        predictions = self.nile_red_forward_model(
-            wavelength_center, filter_spectra, wavelength_array, pixel_QYs, NA
-        )
-        predictions["wavelength_error"] = wavelength_error
+        rgb_fit = self.predict_rgb(wavelength_center, filter_spectra, wavelength_array, pixel_QYs)
+        predictions = {"R": rgb_fit[0], "G": rgb_fit[1], "B": rgb_fit[2],
+                       "wavelength_error": wavelength_error}
 
         return wavelength_mean, predictions
 
@@ -877,7 +827,7 @@ class NileRed_Functions:
 
         This method generates Nile Red spectra at different wavelengths, simulates
         imaging and fitting using existing infrastructure, then extracts wavelengths
-        from the RGB+PSF fit results.
+        from the fitted colour fractions.
 
         `wavelength_range`/`wavelength_step` sweep the desired PEAK (mode) wavelength
         of each simulated spectrum, not the skew-Gaussian's energy-space location
@@ -1180,8 +1130,6 @@ class NileRed_Functions:
         filter_names: list[str],
         camera_parameters: dict,
         wavelength_bounds: tuple[float, float] = (500.0, 750.0),
-        NA: float = 1.49,
-        pixel_size: float | None = None,  # nm; None → self.pixel_size * 1000
         output_path: Optional[str] = None,
         cpu_fraction: float = 0.9,
         verbose: bool = True,
@@ -1191,14 +1139,15 @@ class NileRed_Functions:
         Fit Nile Red wavelengths from localisations stored in HDF5 file.
 
         Convenience function that loads an HDF5 file containing localisation data
-        (RGB intensities, PSF widths, and errors), fits the Nile Red wavelength
+        (colour fractions and their errors), fits the Nile Red wavelength
         for each localisation using parallel processing, and returns/saves the
-        updated DataFrame with wavelength columns added.
+        updated DataFrame with wavelength columns added. Rows with a non-finite
+        fraction or error, or an error <= 0, are not fitted (wl_fit NaN).
 
         When aggregate_id_column is provided, uses a two-step fitting approach:
 
-        1. Compute weighted-average A_R, A_G, A_B, s_x, s_y per aggregate and
-           fit wavelength for each aggregate (higher SNR → more stable fits)
+        1. Pool each aggregate's colour fractions by summing their photoelectrons
+           (_pool_colour_fractions) and fit one wavelength per aggregate
         2. Use each aggregate's fitted wavelength as the initial guess when
            fitting individual localisations within that aggregate
 
@@ -1209,8 +1158,6 @@ class NileRed_Functions:
                 - 'pixel_QYs': Pixel quantum yields vs wavelength (if 'wavelength' not provided)
                 - 'wavelength': Wavelength array (nm) - optional if pixel_QYs shape implies it
             wavelength_bounds: Search range for wavelength fitting (nm), default: (500, 750)
-            NA: Numerical aperture, default: 1.49
-            pixel_size: Camera pixel size in nm, default: 69.0
             output_path: Optional path to save updated HDF5 file (if None, doesn't save)
             cpu_fraction: Fraction of CPUs to use for parallel fitting, default: 0.9
             verbose: Print progress messages, default: True
@@ -1224,12 +1171,10 @@ class NileRed_Functions:
                 containing the per-aggregate fitted wavelength.
 
         Required columns in HDF5 file:
-            - A_R, A_G, A_B: RGB amplitudes (normalized)
-            - s_x, s_y: PSF widths (pixels)
-            - A_R_err, A_G_err, A_B_err: RGB amplitude errors
-            - s_x_err, s_y_err: PSF width errors (pixels)
-            - photons: Total photon count (for SNR calculation)
-            - background_photons: Background photon count (for SNR calculation)
+            - A_R, A_G, A_B: colour fractions
+            - A_R_err, A_G_err, A_B_err: their errors
+            - photons: sum of the channel amplitudes (only with aggregate_id_column,
+              for pooling)
 
         Example:
             >>> import NileRedFunctions
@@ -1261,9 +1206,6 @@ class NileRed_Functions:
             ...     aggregate_id_column='cluster_id',
             ... )
         """
-        if pixel_size is None:
-            pixel_size = self.pixel_size * 1000  # µm → nm
-
         import pandas as pd
         import multiprocessing
 
@@ -1289,18 +1231,9 @@ class NileRed_Functions:
             logger.info(f"Loaded {n_locs} localisations")
 
         # Check required columns
-        required_cols = [
-            "A_R",
-            "A_G",
-            "A_B",
-            "s_x",
-            "s_y",
-            "A_R_err",
-            "A_G_err",
-            "A_B_err",
-            "s_x_err",
-            "s_y_err",
-        ]
+        required_cols = ["A_R", "A_G", "A_B", "A_R_err", "A_G_err", "A_B_err"]
+        if aggregate_id_column is not None:
+            required_cols.append("photons")
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
             raise ValueError(
@@ -1330,31 +1263,9 @@ class NileRed_Functions:
             logger.info(f"Wavelength array: {len(wavelength_array)} points")
 
         # Extract data from DataFrame
-        R = df["A_R"].to_numpy()
-        G = df["A_G"].to_numpy()
-        B = df["A_B"].to_numpy()
-        sigma_x = df["s_x"].to_numpy() * pixel_size  # Convert to nm
-        sigma_y = df["s_y"].to_numpy() * pixel_size
-
-        R_err = df["A_R_err"].to_numpy()
-        G_err = df["A_G_err"].to_numpy()
-        B_err = df["A_B_err"].to_numpy()
-        sigma_x_err = df["s_x_err"].to_numpy() * pixel_size
-        sigma_y_err = df["s_y_err"].to_numpy() * pixel_size
-
-        # Extract photons and background for SNR calculation (if available)
-        if "photons" in df.columns and "background_photons" in df.columns:
-            fitted_photons = df["photons"].to_numpy()
-            fitted_background_photons = df["background_photons"].to_numpy()
-            use_snr = True
-            if verbose:
-                logger.info("Using photon counts for SNR-based error inflation")
-        else:
-            if verbose:
-                logger.warning("Warning: 'photons' or 'background_photons' columns not found, skipping SNR error inflation")
-            fitted_photons = None
-            fitted_background_photons = None
-            use_snr = False
+        rgb_all = df[["A_R", "A_G", "A_B"]].to_numpy(dtype=np.float64)
+        rgb_err_all = df[["A_R_err", "A_G_err", "A_B_err"]].to_numpy(dtype=np.float64)
+        valid_rows = self._valid_colour_rows(df)
 
         # --- Phase 1: Fit aggregate priors (if aggregate_id_column provided) ---
         aggregate_wl_map = {}  # {aggregate_id: fitted_wavelength}
@@ -1379,46 +1290,24 @@ class NileRed_Functions:
             if verbose:
                 logger.info(f"Found {n_aggregates} aggregates")
 
-            # Compute weighted averages per aggregate and build fit args
+            # Pool each aggregate's photoelectrons and build fit args
             agg_fit_args = []
             agg_ids_ordered = []
+            poolable = self._valid_colour_rows(df, require_photons=True)
+            photons_all = df["photons"].to_numpy(dtype=np.float64)
+            agg_col = df[aggregate_id_column].to_numpy()
 
             for agg_id in aggregate_ids:
-                subset = df[df[aggregate_id_column] == agg_id]
-
-                # Weighted averages and propagated errors per channel
-                agg_R, agg_R_err = self._weighted_average_with_error(
-                    subset["A_R"].to_numpy(), subset["A_R_err"].to_numpy())
-                agg_G, agg_G_err = self._weighted_average_with_error(
-                    subset["A_G"].to_numpy(), subset["A_G_err"].to_numpy())
-                agg_B, agg_B_err = self._weighted_average_with_error(
-                    subset["A_B"].to_numpy(), subset["A_B_err"].to_numpy())
-                agg_sx, agg_sx_err = self._weighted_average_with_error(
-                    subset["s_x"].to_numpy(), subset["s_x_err"].to_numpy())
-                agg_sy, agg_sy_err = self._weighted_average_with_error(
-                    subset["s_y"].to_numpy(), subset["s_y_err"].to_numpy())
-
-                # Convert PSF widths from pixels to nm
-                agg_sx *= pixel_size
-                agg_sy *= pixel_size
-                agg_sx_err *= pixel_size
-                agg_sy_err *= pixel_size
-
-                # Normalize RGB with error propagation
-                agg_rgb = np.array([agg_R, agg_G, agg_B])
-                agg_rgb_err = np.array([agg_R_err, agg_G_err, agg_B_err])
-                if np.sum(agg_rgb) <= 0:
+                idx = np.flatnonzero((agg_col == agg_id) & poolable)
+                if len(idx) == 0:
                     continue
+                agg_rgb, agg_rgb_err = self._pool_colour_fractions(
+                    rgb_all[idx], rgb_err_all[idx], photons_all[idx])
                 rgb_norm, rgb_norm_err = self._normalize_rgb_with_errors(agg_rgb, agg_rgb_err)
 
-                # Sum photons across aggregate for SNR
-                agg_photons = subset["photons"].sum() if use_snr else None
-                agg_bg = subset["background_photons"].sum() if use_snr else None
-
                 agg_fit_args.append((
-                    rgb_norm, agg_sx, agg_sy, rgb_norm_err, agg_sx_err, agg_sy_err,
-                    filter_spectra, wavelength_array, pixel_QYs, NA,
-                    agg_photons, agg_bg, wavelength_bounds, None,
+                    rgb_norm, rgb_norm_err, filter_spectra, wavelength_array, pixel_QYs,
+                    wavelength_bounds, None,
                 ))
                 agg_ids_ordered.append(agg_id)
 
@@ -1454,14 +1343,8 @@ class NileRed_Functions:
         else:
             loc_agg_ids = None
 
-        for j in range(n_locs):
-            # Skip if RGB total is zero or negative
-            rgb_j = np.array([R[j], G[j], B[j]])
-            if np.sum(rgb_j) <= 0:
-                continue
-
-            rgb_err_j = np.array([R_err[j], G_err[j], B_err[j]])
-            rgb_norm, rgb_norm_err = self._normalize_rgb_with_errors(rgb_j, rgb_err_j)
+        for j in np.flatnonzero(valid_rows):
+            rgb_norm, rgb_norm_err = self._normalize_rgb_with_errors(rgb_all[j], rgb_err_all[j])
 
             # Look up aggregate prior initial guess
             wl_guess = None
@@ -1469,11 +1352,7 @@ class NileRed_Functions:
                 wl_guess = aggregate_wl_map.get(loc_agg_ids[j], None)
 
             fit_args.append((
-                rgb_norm, sigma_x[j], sigma_y[j],
-                rgb_norm_err, sigma_x_err[j], sigma_y_err[j],
-                filter_spectra, wavelength_array, pixel_QYs, NA,
-                fitted_photons[j] if use_snr else None,
-                fitted_background_photons[j] if use_snr else None,
+                rgb_norm, rgb_norm_err, filter_spectra, wavelength_array, pixel_QYs,
                 wavelength_bounds, wl_guess,
             ))
             valid_indices.append(j)
@@ -1547,7 +1426,6 @@ class NileRed_Functions:
         camera_parameters: dict,
         pixel_size_nm: float = 50.0,
         wavelength_bounds: tuple[float, float] = (500.0, 750.0),
-        NA: float = 1.49,
         camera_pixel_size: float | None = None,  # nm; None → self.pixel_size * 1000
         min_localisations: int = 3,
         output_path: Optional[str] = None,
@@ -1559,10 +1437,12 @@ class NileRed_Functions:
         """Fit Nile Red wavelengths on a spatial pixel grid.
 
         Discretises localisations onto a regular grid of user-defined pixel size,
-        computes inverse-error-weighted averages of RGB intensities and PSF widths
-        per pixel, then fits a single wavelength per pixel. This produces a spatial
-        wavelength map with higher per-pixel precision (more photons) and far fewer
-        fits than per-localisation fitting.
+        pools each pixel's colour fractions by summing their photoelectrons
+        (_pool_colour_fractions), then fits a single wavelength per pixel. This
+        produces a spatial wavelength map with higher per-pixel precision (more
+        photons) and far fewer fits than per-localisation fitting. Localisations with
+        a non-finite fraction, error or 'photons' (or an error/photons <= 0) are left
+        out of the pooling and of the min_localisations count.
 
         Args:
             h5_path: Path to HDF5 file containing localisation data.
@@ -1573,9 +1453,8 @@ class NileRed_Functions:
             pixel_size_nm: Grid pixel size in nm. Controls spatial resolution
                 vs averaging trade-off. Default: 50.0 nm.
             wavelength_bounds: Search range for wavelength fitting (nm).
-            NA: Numerical aperture. Default: 1.49.
             camera_pixel_size: Camera pixel size in nm. Default: 69.0.
-            min_localisations: Minimum localisations per pixel to attempt a fit.
+            min_localisations: Minimum usable localisations per pixel to attempt a fit.
                 Pixels with fewer localisations get NaN. Default: 3.
             output_path: Optional path to save updated HDF5 file.
             cpu_fraction: Fraction of CPUs to use for parallel fitting.
@@ -1615,11 +1494,9 @@ class NileRed_Functions:
 
         Required columns in HDF5 file:
             - xc, yc: Localisation positions (camera pixels)
-            - A_R, A_G, A_B: RGB amplitudes
-            - s_x, s_y: PSF widths (camera pixels)
-            - A_R_err, A_G_err, A_B_err: RGB amplitude errors
-            - s_x_err, s_y_err: PSF width errors (camera pixels)
-            - photons, background_photons: (optional) for SNR-based error inflation
+            - A_R, A_G, A_B: colour fractions
+            - A_R_err, A_G_err, A_B_err: their errors
+            - photons: sum of the channel amplitudes, for pooling
         """
         if camera_pixel_size is None:
             camera_pixel_size = self.pixel_size * 1000  # µm → nm
@@ -1649,8 +1526,7 @@ class NileRed_Functions:
 
         # --- Check required columns ---
         required_cols = [
-            "xc", "yc", "A_R", "A_G", "A_B", "s_x", "s_y",
-            "A_R_err", "A_G_err", "A_B_err", "s_x_err", "s_y_err",
+            "xc", "yc", "A_R", "A_G", "A_B", "A_R_err", "A_G_err", "A_B_err", "photons",
         ]
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
@@ -1676,15 +1552,10 @@ class NileRed_Functions:
         if verbose:
             logger.info(f"Optical system configured with {len(filter_names)} filters")
 
-        # --- Check SNR columns ---
-        if "photons" in df.columns and "background_photons" in df.columns:
-            use_snr = True
-            if verbose:
-                logger.info("Using photon counts for SNR-based error inflation")
-        else:
-            use_snr = False
-            if verbose:
-                logger.warning("Warning: 'photons' or 'background_photons' columns not found, " "skipping SNR error inflation")
+        rgb_all = df[["A_R", "A_G", "A_B"]].to_numpy(dtype=np.float64)
+        rgb_err_all = df[["A_R_err", "A_G_err", "A_B_err"]].to_numpy(dtype=np.float64)
+        photons = df["photons"].to_numpy(dtype=np.float64)
+        poolable = self._valid_colour_rows(df, require_photons=True)
 
         # --- Aggregate-level fitting (fallback for sub-threshold pixels) ---
         aggregate_wl_map = {}      # {agg_id: fitted_wavelength}
@@ -1711,46 +1582,19 @@ class NileRed_Functions:
             agg_fit_args = []
             agg_ids_ordered = []
 
+            agg_col = df[aggregate_id_column].to_numpy()
             for agg_id in agg_ids_unique:
-                subset = df[df[aggregate_id_column] == agg_id]
-
-                try:
-                    agg_R, agg_R_err = self._weighted_average_with_error(
-                        subset["A_R"].to_numpy(), subset["A_R_err"].to_numpy())
-                    agg_G, agg_G_err = self._weighted_average_with_error(
-                        subset["A_G"].to_numpy(), subset["A_G_err"].to_numpy())
-                    agg_B, agg_B_err = self._weighted_average_with_error(
-                        subset["A_B"].to_numpy(), subset["A_B_err"].to_numpy())
-                    agg_sx, agg_sx_err = self._weighted_average_with_error(
-                        subset["s_x"].to_numpy(), subset["s_x_err"].to_numpy())
-                    agg_sy, agg_sy_err = self._weighted_average_with_error(
-                        subset["s_y"].to_numpy(), subset["s_y_err"].to_numpy())
-                except (ZeroDivisionError, ValueError):
+                idx = np.flatnonzero((agg_col == agg_id) & poolable)
+                if len(idx) == 0:
                     continue
-
-                # Convert PSF widths from camera pixels to nm
-                agg_sx *= camera_pixel_size
-                agg_sy *= camera_pixel_size
-                agg_sx_err *= camera_pixel_size
-                agg_sy_err *= camera_pixel_size
-
-                # Normalize RGB with error propagation
-                agg_rgb = np.array([agg_R, agg_G, agg_B])
-                agg_rgb_err = np.array([agg_R_err, agg_G_err, agg_B_err])
-                if np.sum(agg_rgb) <= 0:
-                    continue
+                agg_rgb, agg_rgb_err = self._pool_colour_fractions(
+                    rgb_all[idx], rgb_err_all[idx], photons[idx])
                 rgb_norm, rgb_norm_err = self._normalize_rgb_with_errors(
                     agg_rgb, agg_rgb_err)
 
-                # Sum photons across aggregate for SNR
-                agg_photons = float(subset["photons"].sum()) if use_snr else None
-                agg_bg = (float(subset["background_photons"].sum())
-                          if use_snr else None)
-
                 agg_fit_args.append((
-                    rgb_norm, agg_sx, agg_sy, rgb_norm_err, agg_sx_err,
-                    agg_sy_err, filter_spectra, wavelength_array, pixel_QYs,
-                    NA, agg_photons, agg_bg, wavelength_bounds, None,
+                    rgb_norm, rgb_norm_err, filter_spectra, wavelength_array,
+                    pixel_QYs, wavelength_bounds, None,
                 ))
                 agg_ids_ordered.append(agg_id)
 
@@ -1816,78 +1660,30 @@ class NileRed_Functions:
 
         n_total_pixels = len(pixel_groups)
 
-        # --- Step 3: Compute weighted averages per pixel and build fit args ---
-        A_R = df["A_R"].to_numpy()
-        A_G = df["A_G"].to_numpy()
-        A_B = df["A_B"].to_numpy()
-        s_x = df["s_x"].to_numpy()
-        s_y = df["s_y"].to_numpy()
-        A_R_err = df["A_R_err"].to_numpy()
-        A_G_err = df["A_G_err"].to_numpy()
-        A_B_err = df["A_B_err"].to_numpy()
-        s_x_err = df["s_x_err"].to_numpy()
-        s_y_err = df["s_y_err"].to_numpy()
-        photons = df["photons"].to_numpy() if use_snr else None
-        bg_photons = df["background_photons"].to_numpy() if use_snr else None
-
+        # --- Step 3: Pool each pixel's photoelectrons and build fit args ---
         fit_args = []
         pixel_keys_ordered = []
         pixel_metadata = []  # (n_locs, total_photons, mean_photons) per pixel
         n_skipped = 0
 
         for key, indices in pixel_groups.items():
-            n_in_pixel = len(indices)
+            idx = np.array(indices)
+            idx = idx[poolable[idx]]
+            n_in_pixel = len(idx)
             if n_in_pixel < min_localisations:
                 n_skipped += 1
                 continue
 
-            idx = np.array(indices)
-
-            # Weighted averages per channel
-            try:
-                avg_R, avg_R_err = self._weighted_average_with_error(
-                    A_R[idx], A_R_err[idx])
-                avg_G, avg_G_err = self._weighted_average_with_error(
-                    A_G[idx], A_G_err[idx])
-                avg_B, avg_B_err = self._weighted_average_with_error(
-                    A_B[idx], A_B_err[idx])
-                avg_sx, avg_sx_err = self._weighted_average_with_error(
-                    s_x[idx], s_x_err[idx])
-                avg_sy, avg_sy_err = self._weighted_average_with_error(
-                    s_y[idx], s_y_err[idx])
-            except (ZeroDivisionError, ValueError):
-                n_skipped += 1
-                continue
-
-            # Convert PSF widths from camera pixels to nm
-            avg_sx *= camera_pixel_size
-            avg_sy *= camera_pixel_size
-            avg_sx_err *= camera_pixel_size
-            avg_sy_err *= camera_pixel_size
-
-            # Normalize RGB with error propagation
-            rgb = np.array([avg_R, avg_G, avg_B])
-            rgb_err = np.array([avg_R_err, avg_G_err, avg_B_err])
-            if np.sum(rgb) <= 0:
-                n_skipped += 1
-                continue
+            rgb, rgb_err = self._pool_colour_fractions(rgb_all[idx], rgb_err_all[idx], photons[idx])
             rgb_norm, rgb_norm_err = self._normalize_rgb_with_errors(rgb, rgb_err)
-
-            # Photon sums for SNR
-            pix_photons = float(np.sum(photons[idx])) if photons is not None else None
-            pix_bg = float(np.sum(bg_photons[idx])) if bg_photons is not None else None
+            pix_photons = float(np.sum(photons[idx]))
 
             fit_args.append((
-                rgb_norm, avg_sx, avg_sy, rgb_norm_err, avg_sx_err, avg_sy_err,
-                filter_spectra, wavelength_array, pixel_QYs, NA,
-                pix_photons, pix_bg, wavelength_bounds, None,
+                rgb_norm, rgb_norm_err, filter_spectra, wavelength_array, pixel_QYs,
+                wavelength_bounds, None,
             ))
             pixel_keys_ordered.append(key)
-            pixel_metadata.append((
-                n_in_pixel,
-                pix_photons if pix_photons is not None else np.nan,
-                (pix_photons / n_in_pixel) if pix_photons is not None else np.nan,
-            ))
+            pixel_metadata.append((n_in_pixel, pix_photons, pix_photons / n_in_pixel))
 
         n_to_fit = len(fit_args)
 
@@ -2032,17 +1828,10 @@ class NileRed_Functions:
 # Module-level standalone function for parallel Nile Red wavelength fitting (must be pickleable)
 def _fit_nile_red_wavelength_standalone(
     rgb: np.ndarray,
-    sigma_x: float,
-    sigma_y: float,
     rgb_err: np.ndarray,
-    sigma_x_err: float,
-    sigma_y_err: float,
     filter_spectra: np.ndarray,
     wavelength_array: np.ndarray,
     pixel_QYs: np.ndarray,
-    NA: float,
-    total_photons: Optional[float] = None,
-    background_photons: Optional[float] = None,
     wavelength_bounds: tuple[float, float] = (500.0, 750.0),
     wavelength_initial_guess: Optional[float] = None,
 ) -> tuple[float, float]:
@@ -2052,12 +1841,8 @@ def _fit_nile_red_wavelength_standalone(
 
     Args:
         rgb: Normalized [R, G, B] intensities
-        sigma_x, sigma_y: PSF widths in nm
-        rgb_err, sigma_x_err, sigma_y_err: Errors on measurements
+        rgb_err: Errors on [R, G, B]
         filter_spectra, wavelength_array, pixel_QYs: Optical system parameters
-        NA: Numerical aperture
-        total_photons: Fitted total photon count (for SNR-based error inflation)
-        background_photons: Fitted background photon count (for SNR-based error inflation)
         wavelength_bounds: Search range for wavelength (nm)
         wavelength_initial_guess: Custom initial guess for wavelength (nm).
             If None, uses default (617.6 nm).
@@ -2071,19 +1856,11 @@ def _fit_nile_red_wavelength_standalone(
 
         wl, predictions = nrf.fit_nile_red_wavelength(
             observed_rgb=rgb,
-            observed_sigma_x=sigma_x,
-            observed_sigma_y=sigma_y,
             rgb_errors=rgb_err,
-            sigma_x_error=sigma_x_err,
-            sigma_y_error=sigma_y_err,
             filter_spectra=filter_spectra,
             wavelength_array=wavelength_array,
             pixel_QYs=pixel_QYs,
-            NA=NA,
             wavelength_bounds=wavelength_bounds,
-            total_photons=total_photons,
-            background_photons=background_photons,
-            apply_snr_inflation=True if total_photons is not None else False,
             wavelength_initial_guess=wavelength_initial_guess,
         )
         wl_err = predictions.get("wavelength_error", np.nan)

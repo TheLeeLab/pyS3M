@@ -1431,7 +1431,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _on_run_nile_red(
-        self, filter_ids: list, wl_min: float, wl_max: float, na: float,
+        self, filter_ids: list, wl_min: float, wl_max: float,
         pixel_size_nm: float, min_locs: int,
     ):
         if self._worker_running() or self.pipeline is None:
@@ -1465,7 +1465,6 @@ class MainWindow(QMainWindow):
                     tmp_path, filter_ids, camera_parameters,
                     pixel_size_nm=pixel_size_nm,
                     wavelength_bounds=(wl_min, wl_max),
-                    NA=na,
                     min_localisations=min_locs,
                     aggregate_id_column=aggregate_id_column,
                     verbose=True,

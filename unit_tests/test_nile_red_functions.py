@@ -1,6 +1,6 @@
 """Full coverage tests for pyS3M.NileRedFunctions -- Nile Red forward/inverse
 spectral model (skew-Gaussian emission -> RGB+PSF predictions, and the inverse
-least-squares wavelength fit), plus the two higher-level pipelines built on it:
+least-squares wavelength fit from the colour fractions), plus the two higher-level pipelines built on it:
 per-localisation (`fit_wavelengths_from_h5`) and per-pixel-grid
 (`fit_wavelengths_pixelated`) wavelength fitting, and the heavy simulation
 orchestrator `simulate_wavelength_precision`.
@@ -225,54 +225,45 @@ class TestNileRedForwardModel:
 
 
 class TestResidualsNileRed:
+    def _rgb(self, nrf, optical_system, wl=617.6):
+        wavelength_array, pixel_QYs, filter_spectra = optical_system
+        return nrf.predict_rgb(wl, filter_spectra, wavelength_array, pixel_QYs)
+
     def test_zero_at_exact_prediction(self, nrf, optical_system):
         wavelength_array, pixel_QYs, filter_spectra = optical_system
-        preds = nrf.nile_red_forward_model(617.6, filter_spectra, wavelength_array, pixel_QYs)
-        observed = {k: preds[k] for k in ["R", "G", "B", "sigma_x", "sigma_y"]}
-        errors = {k: 1.0 for k in observed}
+        rgb = self._rgb(nrf, optical_system)
         residuals = nrf.residuals_nile_red(
-            np.array([617.6]), observed, errors, filter_spectra, wavelength_array, pixel_QYs,
+            np.array([617.6]), rgb, np.ones(3), filter_spectra, wavelength_array, pixel_QYs,
         )
+        assert residuals.shape == (3,)
         np.testing.assert_allclose(residuals, 0.0, atol=1e-10)
 
     def test_scalar_wavelength_center_accepted(self, nrf, optical_system):
         wavelength_array, pixel_QYs, filter_spectra = optical_system
-        preds = nrf.nile_red_forward_model(617.6, filter_spectra, wavelength_array, pixel_QYs)
-        observed = {k: preds[k] for k in ["R", "G", "B", "sigma_x", "sigma_y"]}
-        errors = {k: 1.0 for k in observed}
+        rgb = self._rgb(nrf, optical_system)
         residuals = nrf.residuals_nile_red(
-            617.6, observed, errors, filter_spectra, wavelength_array, pixel_QYs,
+            617.6, rgb, np.ones(3), filter_spectra, wavelength_array, pixel_QYs,
         )
         np.testing.assert_allclose(residuals, 0.0, atol=1e-10)
 
-    def test_skips_keys_with_zero_error(self, nrf, optical_system):
+    def test_weighted_by_errors(self, nrf, optical_system):
+        wavelength_array, pixel_QYs, filter_spectra = optical_system
+        rgb = self._rgb(nrf, optical_system)
+        observed = rgb + np.array([0.01, -0.01, 0.0])
+        residuals = nrf.residuals_nile_red(
+            617.6, observed, np.array([0.01, 0.005, 1.0]), filter_spectra, wavelength_array, pixel_QYs,
+        )
+        np.testing.assert_allclose(residuals, [1.0, -2.0, 0.0], atol=1e-10)
+
+    def test_predict_rgb_matches_forward_model(self, nrf, optical_system):
         wavelength_array, pixel_QYs, filter_spectra = optical_system
         preds = nrf.nile_red_forward_model(617.6, filter_spectra, wavelength_array, pixel_QYs)
-        observed = {k: preds[k] for k in ["R", "G", "B", "sigma_x", "sigma_y"]}
-        errors = {"R": 1.0, "G": 1.0, "B": 1.0, "sigma_x": 0.0, "sigma_y": 1.0}
-        residuals = nrf.residuals_nile_red(
-            np.array([617.6]), observed, errors, filter_spectra, wavelength_array, pixel_QYs,
-        )
-        assert len(residuals) == 4
+        np.testing.assert_allclose(self._rgb(nrf, optical_system), [preds["R"], preds["G"], preds["B"]])
 
 
 # ======================================================================
-# _error_inflation_factor / _calculate_channel_snr / _normalize_rgb_with_errors /
-# _weighted_average_with_error
+# _normalize_rgb_with_errors / _valid_colour_rows / _pool_colour_fractions
 # ======================================================================
-
-class TestErrorInflationFactor:
-    @pytest.mark.parametrize("snr,expected", [(1.0, 3.0), (3.0, 2.0), (7.0, 1.5), (20.0, 1.0)])
-    def test_thresholds(self, nrf, snr, expected):
-        assert nrf._error_inflation_factor(snr) == expected
-
-
-class TestCalculateChannelSnr:
-    def test_higher_signal_gives_higher_snr(self, nrf):
-        rgb = np.array([0.7, 0.2, 0.1])
-        snr = nrf._calculate_channel_snr(rgb, total_photons=10000.0, background_photons=40.0)
-        assert snr[0] > snr[2]
-
 
 class TestNormalizeRgbWithErrors:
     def test_normalizes_to_unit_sum(self, nrf):
@@ -295,13 +286,62 @@ class TestNormalizeRgbWithErrors:
         assert norm_err[1] == pytest.approx(1e-3)
 
 
-class TestWeightedAverageWithError:
-    def test_basic(self, nrf):
-        values = np.array([1.0, 2.0, 3.0])
-        errors = np.array([1.0, 1.0, 1.0])
-        avg, err = NileRedFunctions.NileRed_Functions._weighted_average_with_error(values, errors)
-        assert avg == pytest.approx(2.0)
-        assert err > 0
+class TestValidColourRows:
+    def _df(self):
+        return pd.DataFrame({
+            "A_R": [0.6, np.nan, 0.6, 0.6, 0.0, 0.6],
+            "A_G": [0.3, 0.3, 0.3, 0.3, 0.0, 0.3],
+            "A_B": [0.1, 0.1, 0.1, 0.1, 0.0, 0.1],
+            "A_R_err": [0.01, 0.01, np.nan, 0.01, 0.01, 0.01],
+            "A_G_err": [0.01, 0.01, 0.01, 0.0, 0.01, 0.01],
+            "A_B_err": [0.01, 0.01, 0.01, 0.01, 0.01, 0.01],
+            "photons": [500.0, 500.0, 500.0, 500.0, 500.0, np.nan],
+        })
+
+    def test_rejects_nonfinite_and_nonpositive(self):
+        valid = NileRedFunctions.NileRed_Functions._valid_colour_rows(self._df())
+        np.testing.assert_array_equal(valid, [True, False, False, False, False, True])
+
+    def test_require_photons(self):
+        valid = NileRedFunctions.NileRed_Functions._valid_colour_rows(self._df(), require_photons=True)
+        np.testing.assert_array_equal(valid, [True, False, False, False, False, False])
+
+
+class TestPoolColourFractions:
+    def test_fraction_of_summed_photoelectrons(self):
+        fractions = np.array([[0.6, 0.3, 0.1], [0.4, 0.4, 0.2]])
+        errors = np.array([[0.02, 0.02, 0.01], [0.04, 0.04, 0.02]])
+        photons = np.array([3000.0, 1000.0])
+        pooled, pooled_err = NileRedFunctions.NileRed_Functions._pool_colour_fractions(
+            fractions, errors, photons)
+        # summed amplitudes: R 1800 + 400, G 900 + 400, B 300 + 200 of 4000
+        np.testing.assert_allclose(pooled, [0.55, 0.325, 0.125])
+        np.testing.assert_allclose(
+            pooled_err, np.sqrt((3000.0 * errors[0]) ** 2 + (1000.0 * errors[1]) ** 2) / 4000.0)
+
+    def test_equal_photons_is_plain_mean(self):
+        fractions = np.array([[0.6, 0.3, 0.1], [0.4, 0.4, 0.2], [0.5, 0.35, 0.15]])
+        errors = np.full((3, 3), 0.03)
+        pooled, pooled_err = NileRedFunctions.NileRed_Functions._pool_colour_fractions(
+            fractions, errors, np.full(3, 800.0))
+        np.testing.assert_allclose(pooled, fractions.mean(axis=0))
+        np.testing.assert_allclose(pooled_err, 0.03 / np.sqrt(3))
+
+    def test_unbiased_where_inverse_error_weighting_is_not(self):
+        # Errors that grow with the fraction (as photon-counting errors do) pull an
+        # inverse-error-weighted mean low; the photoelectron pool stays on the truth.
+        rng = np.random.default_rng(0)
+        n, truth = 20000, 0.1
+        f_b = rng.normal(truth, 0.03, n)
+        f_b = f_b[f_b > 0]
+        e_b = 0.3 * np.sqrt(f_b)
+        fractions = np.column_stack([0.6 - (f_b - truth), np.full(len(f_b), 0.3), f_b])
+        errors = np.column_stack([np.full(len(f_b), 0.03), np.full(len(f_b), 0.03), e_b])
+        pooled, _ = NileRedFunctions.NileRed_Functions._pool_colour_fractions(
+            fractions, errors, np.full(len(f_b), 1000.0))
+        inverse_var_mean = np.sum(f_b / e_b ** 2) / np.sum(1 / e_b ** 2)
+        assert pooled[2] == pytest.approx(truth, abs=1e-3)
+        assert inverse_var_mean < truth - 5e-3
 
 
 # ======================================================================
@@ -311,13 +351,10 @@ class TestWeightedAverageWithError:
 class TestParallelFitWavelengths:
     def _small_fit_args(self, nrf, optical_system, n=3, wl=617.6):
         wavelength_array, pixel_QYs, filter_spectra = optical_system
-        preds = nrf.nile_red_forward_model(wl, filter_spectra, wavelength_array, pixel_QYs)
-        rgb = np.array([preds["R"], preds["G"], preds["B"]])
+        rgb = nrf.predict_rgb(wl, filter_spectra, wavelength_array, pixel_QYs)
         rgb_err = np.abs(rgb) * 0.03 + 1e-4
         args = (
-            rgb, preds["sigma_x"], preds["sigma_y"], rgb_err, 1.0, 1.0,
-            filter_spectra, wavelength_array, pixel_QYs, 1.49,
-            None, None, (500.0, 750.0), None,
+            rgb, rgb_err, filter_spectra, wavelength_array, pixel_QYs, (500.0, 750.0), None,
         )
         return [args] * n
 
@@ -375,76 +412,73 @@ class TestParallelFitWavelengths:
 # ======================================================================
 
 class TestFitNileRedWavelength:
-    def test_recovers_known_wavelength_no_snr(self, nrf, optical_system):
+    def _rgb(self, nrf, optical_system, wl=617.6):
         wavelength_array, pixel_QYs, filter_spectra = optical_system
-        true_wl = 617.6
-        preds = nrf.nile_red_forward_model(true_wl, filter_spectra, wavelength_array, pixel_QYs)
-        rgb = np.array([preds["R"], preds["G"], preds["B"]])
-        rgb_err = np.abs(rgb) * 0.02 + 1e-4
-        wl_fit, out = nrf.fit_nile_red_wavelength(
-            rgb, preds["sigma_x"], preds["sigma_y"], rgb_err, 1.0, 1.0,
-            filter_spectra, wavelength_array, pixel_QYs,
-            apply_snr_inflation=False,
-        )
-        assert "wavelength_error" in out
+        rgb = nrf.predict_rgb(wl, filter_spectra, wavelength_array, pixel_QYs)
+        return rgb, np.abs(rgb) * 0.02 + 1e-4
 
-    def test_with_snr_inflation(self, nrf, optical_system):
+    def test_recovers_known_wavelength(self, nrf, optical_system):
         wavelength_array, pixel_QYs, filter_spectra = optical_system
-        true_wl = 617.6
-        preds = nrf.nile_red_forward_model(true_wl, filter_spectra, wavelength_array, pixel_QYs)
-        rgb = np.array([preds["R"], preds["G"], preds["B"]])
-        rgb_err = np.abs(rgb) * 0.02 + 1e-4
+        rgb, rgb_err = self._rgb(nrf, optical_system, wl=630.0)
         wl_fit, out = nrf.fit_nile_red_wavelength(
-            rgb, preds["sigma_x"], preds["sigma_y"], rgb_err, 1.0, 1.0,
-            filter_spectra, wavelength_array, pixel_QYs,
-            total_photons=500.0, background_photons=40.0, apply_snr_inflation=True,
+            rgb, rgb_err, filter_spectra, wavelength_array, pixel_QYs,
         )
-        assert "wavelength_error" in out
+        assert wl_fit == pytest.approx(nrf.spectral_centre_of_mass(630.0, wavelength_array), abs=0.05)
+        assert set(out) == {"R", "G", "B", "wavelength_error"}
+        np.testing.assert_allclose([out["R"], out["G"], out["B"]], rgb, atol=1e-6)
 
     def test_custom_initial_guess(self, nrf, optical_system):
         wavelength_array, pixel_QYs, filter_spectra = optical_system
-        preds = nrf.nile_red_forward_model(617.6, filter_spectra, wavelength_array, pixel_QYs)
-        rgb = np.array([preds["R"], preds["G"], preds["B"]])
-        rgb_err = np.abs(rgb) * 0.02 + 1e-4
+        rgb, rgb_err = self._rgb(nrf, optical_system)
         wl_fit, out = nrf.fit_nile_red_wavelength(
-            rgb, preds["sigma_x"], preds["sigma_y"], rgb_err, 1.0, 1.0,
-            filter_spectra, wavelength_array, pixel_QYs,
-            wavelength_initial_guess=650.0, apply_snr_inflation=False,
+            rgb, rgb_err, filter_spectra, wavelength_array, pixel_QYs,
+            wavelength_initial_guess=650.0,
         )
         assert "wavelength_error" in out
 
     def test_out_of_bounds_initial_guess_falls_back_to_midpoint(self, nrf, optical_system):
         wavelength_array, pixel_QYs, filter_spectra = optical_system
-        preds = nrf.nile_red_forward_model(617.6, filter_spectra, wavelength_array, pixel_QYs)
-        rgb = np.array([preds["R"], preds["G"], preds["B"]])
-        rgb_err = np.abs(rgb) * 0.02 + 1e-4
+        rgb, rgb_err = self._rgb(nrf, optical_system)
         wl_fit, out = nrf.fit_nile_red_wavelength(
-            rgb, preds["sigma_x"], preds["sigma_y"], rgb_err, 1.0, 1.0,
-            filter_spectra, wavelength_array, pixel_QYs,
-            wavelength_bounds=(500.0, 750.0),
-            wavelength_initial_guess=10000.0, apply_snr_inflation=False,
+            rgb, rgb_err, filter_spectra, wavelength_array, pixel_QYs,
+            wavelength_bounds=(500.0, 750.0), wavelength_initial_guess=10000.0,
         )
         assert "wavelength_error" in out
+
+    @pytest.mark.parametrize("bad", ["nan_rgb", "nan_err", "zero_err", "zero_sum"])
+    def test_unusable_input_returns_nan(self, nrf, optical_system, bad):
+        # A NaN error used to drop that channel's residual silently, so the fit
+        # returned its starting guess as if it were a measurement.
+        wavelength_array, pixel_QYs, filter_spectra = optical_system
+        rgb, rgb_err = self._rgb(nrf, optical_system)
+        if bad == "nan_rgb":
+            rgb[0] = np.nan
+        elif bad == "nan_err":
+            rgb_err[1] = np.nan
+        elif bad == "zero_err":
+            rgb_err[2] = 0.0
+        else:
+            rgb = np.zeros(3)
+        wl_fit, out = nrf.fit_nile_red_wavelength(
+            rgb, rgb_err, filter_spectra, wavelength_array, pixel_QYs,
+        )
+        assert np.isnan(wl_fit) and np.isnan(out["wavelength_error"])
 
     def test_zero_jacobian_yields_nan_error(self, nrf, optical_system, monkeypatch):
         # JtJ<=0 (a degenerate/zero Jacobian) can't be inverted for an error
         # estimate -- force it via a stubbed least_squares result rather than
         # hunting for real data that produces one.
         wavelength_array, pixel_QYs, filter_spectra = optical_system
-        preds = nrf.nile_red_forward_model(617.6, filter_spectra, wavelength_array, pixel_QYs)
-        rgb = np.array([preds["R"], preds["G"], preds["B"]])
-        rgb_err = np.abs(rgb) * 0.02 + 1e-4
+        rgb, rgb_err = self._rgb(nrf, optical_system)
 
         fake_result = types.SimpleNamespace(
             x=np.array([617.6]),
-            jac=np.zeros((5, 1)),
-            fun=np.zeros(5),
+            jac=np.zeros((3, 1)),
+            fun=np.zeros(3),
         )
         monkeypatch.setattr(NileRedFunctions, "least_squares", lambda *a, **kw: fake_result)
         wl_fit, out = nrf.fit_nile_red_wavelength(
-            rgb, preds["sigma_x"], preds["sigma_y"], rgb_err, 1.0, 1.0,
-            filter_spectra, wavelength_array, pixel_QYs,
-            apply_snr_inflation=False,
+            rgb, rgb_err, filter_spectra, wavelength_array, pixel_QYs,
         )
         assert np.isnan(out["wavelength_error"])
 
@@ -453,12 +487,10 @@ class TestFitNileRedWavelengthStandalone:
     def test_success(self, optical_system):
         wavelength_array, pixel_QYs, filter_spectra = optical_system
         nrf_local = NileRedFunctions.NileRed_Functions()
-        preds = nrf_local.nile_red_forward_model(617.6, filter_spectra, wavelength_array, pixel_QYs)
-        rgb = np.array([preds["R"], preds["G"], preds["B"]])
+        rgb = nrf_local.predict_rgb(617.6, filter_spectra, wavelength_array, pixel_QYs)
         rgb_err = np.abs(rgb) * 0.02 + 1e-4
         wl, wl_err = NileRedFunctions._fit_nile_red_wavelength_standalone(
-            rgb, preds["sigma_x"], preds["sigma_y"], rgb_err, 1.0, 1.0,
-            filter_spectra, wavelength_array, pixel_QYs, 1.49,
+            rgb, rgb_err, filter_spectra, wavelength_array, pixel_QYs,
         )
         assert not np.isnan(wl)
 
@@ -470,8 +502,8 @@ class TestFitNileRedWavelengthStandalone:
 
         monkeypatch.setattr(NileRedFunctions.NileRed_Functions, "fit_nile_red_wavelength", _raise)
         wl, wl_err = NileRedFunctions._fit_nile_red_wavelength_standalone(
-            np.array([0.5, 0.3, 0.2]), 100.0, 100.0, np.array([0.01, 0.01, 0.01]), 1.0, 1.0,
-            filter_spectra, wavelength_array, pixel_QYs, 1.49,
+            np.array([0.5, 0.3, 0.2]), np.array([0.01, 0.01, 0.01]),
+            filter_spectra, wavelength_array, pixel_QYs,
         )
         assert np.isnan(wl) and np.isnan(wl_err)
 
@@ -497,7 +529,7 @@ class TestFitWavelengthsFromH5:
         with pytest.raises(ValueError, match="missing required columns"):
             nrf.fit_wavelengths_from_h5(str(path), FILTER_NAMES, self._camera_params(optical_system))
 
-    def test_basic_fit_with_snr(self, nrf, optical_system, tmp_path):
+    def test_basic_fit(self, nrf, optical_system, tmp_path):
         df = _synthetic_locs_df(10, nrf, optical_system, with_photons=True, seed=2)
         path = tmp_path / "locs.h5"
         df.to_hdf(path, key="data", mode="w", format="table")
@@ -508,9 +540,9 @@ class TestFitWavelengthsFromH5:
         assert "wl_fit_err" in out.columns
         assert out["wl_fit"].notna().any()
 
-    def test_basic_fit_without_snr_columns(self, nrf, optical_system, tmp_path):
+    def test_basic_fit_without_photons_column(self, nrf, optical_system, tmp_path):
         df = _synthetic_locs_df(8, nrf, optical_system, with_photons=False, seed=3)
-        path = tmp_path / "locs_no_snr.h5"
+        path = tmp_path / "locs_no_photons.h5"
         df.to_hdf(path, key="data", mode="w", format="table")
         out = nrf.fit_wavelengths_from_h5(
             str(path), FILTER_NAMES, self._camera_params(optical_system), verbose=True,
@@ -535,6 +567,16 @@ class TestFitWavelengthsFromH5:
             nrf.fit_wavelengths_from_h5(
                 str(path), FILTER_NAMES, self._camera_params(optical_system),
                 aggregate_id_column="not_a_real_column",
+            )
+
+    def test_aggregate_requires_photons(self, nrf, optical_system, tmp_path):
+        df = _synthetic_locs_df(6, nrf, optical_system, with_photons=False, with_aggregate=True, seed=5)
+        path = tmp_path / "locs_agg_no_photons.h5"
+        df.to_hdf(path, key="data", mode="w", format="table")
+        with pytest.raises(ValueError, match="photons"):
+            nrf.fit_wavelengths_from_h5(
+                str(path), FILTER_NAMES, self._camera_params(optical_system),
+                aggregate_id_column="cluster_id",
             )
 
     def test_aggregate_id_column_two_step_fit(self, nrf, optical_system, tmp_path):
@@ -579,6 +621,18 @@ class TestFitWavelengthsFromH5:
         )
         assert np.isnan(out.loc[0, "wl_fit"])
 
+    def test_nonfinite_error_rows_are_skipped(self, nrf, optical_system, tmp_path):
+        df = _synthetic_locs_df(6, nrf, optical_system, with_photons=True, seed=8)
+        df.loc[1, "A_G_err"] = np.nan
+        df.loc[2, "A_B_err"] = 0.0
+        path = tmp_path / "locs_bad_err.h5"
+        df.to_hdf(path, key="data", mode="w", format="table")
+        out = nrf.fit_wavelengths_from_h5(
+            str(path), FILTER_NAMES, self._camera_params(optical_system), verbose=False,
+        )
+        assert out.loc[[1, 2], "wl_fit"].isna().all()
+        assert out.loc[[0, 3, 4, 5], "wl_fit"].notna().all()
+
 
 # ======================================================================
 # fit_wavelengths_pixelated -- supplementary branches not covered by the
@@ -612,9 +666,19 @@ class TestFitWavelengthsPixelatedSupplementary:
                 pixel_size_nm=200.0, aggregate_id_column="not_a_real_column",
             )
 
-    def test_verbose_without_snr_columns(self, nrf, optical_system, tmp_path):
+    def test_missing_photons_raises(self, nrf, optical_system, tmp_path):
         df = _synthetic_locs_df(10, nrf, optical_system, with_photons=False, seed=10)
-        path = tmp_path / "locs_no_snr.h5"
+        path = tmp_path / "locs_no_photons.h5"
+        df.to_hdf(path, key="data", mode="w", format="table")
+        with pytest.raises(ValueError, match="photons"):
+            nrf.fit_wavelengths_pixelated(
+                str(path), FILTER_NAMES, self._camera_params(optical_system),
+                pixel_size_nm=200.0, min_localisations=2,
+            )
+
+    def test_return_dataframe_only(self, nrf, optical_system, tmp_path):
+        df = _synthetic_locs_df(10, nrf, optical_system, with_photons=True, seed=10)
+        path = tmp_path / "locs_df_only.h5"
         df.to_hdf(path, key="data", mode="w", format="table")
         out = nrf.fit_wavelengths_pixelated(
             str(path), FILTER_NAMES, self._camera_params(optical_system),
@@ -666,30 +730,23 @@ class TestFitWavelengthsPixelatedSupplementary:
         )
         assert np.isnan(out.loc[0, "wl_pixel"])
 
-    def test_aggregate_weighted_average_exception_is_skipped(self, nrf, optical_system, tmp_path, monkeypatch):
+    def test_aggregate_without_usable_rows_is_skipped(self, nrf, optical_system, tmp_path):
         df = _synthetic_locs_df(12, nrf, optical_system, with_photons=True, with_aggregate=True, seed=16)
-        path = tmp_path / "locs_agg_exc.h5"
+        df.loc[df["cluster_id"] == 0.0, "A_R_err"] = np.nan
+        path = tmp_path / "locs_agg_bad.h5"
         df.to_hdf(path, key="data", mode="w", format="table")
-
-        def _raise(*a, **kw):
-            raise ValueError("forced failure")
-
-        monkeypatch.setattr(NileRedFunctions.NileRed_Functions, "_weighted_average_with_error", staticmethod(_raise))
         out, grid_info = nrf.fit_wavelengths_pixelated(
             str(path), FILTER_NAMES, self._camera_params(optical_system),
             pixel_size_nm=200.0, min_localisations=2, aggregate_id_column="cluster_id", verbose=False,
         )
-        assert isinstance(grid_info, dict)
+        assert out.loc[df["cluster_id"] == 0.0, "wl_pixel"].isna().all()
+        assert out.loc[df["cluster_id"] == 1.0, "wl_pixel"].notna().any()
 
-    def test_pixel_weighted_average_exception_is_skipped(self, nrf, optical_system, tmp_path, monkeypatch):
+    def test_unusable_rows_do_not_count_towards_min_localisations(self, nrf, optical_system, tmp_path):
         df = _synthetic_locs_df(12, nrf, optical_system, with_photons=True, seed=17)
-        path = tmp_path / "locs_pix_exc.h5"
+        df["photons"] = np.nan
+        path = tmp_path / "locs_pix_bad.h5"
         df.to_hdf(path, key="data", mode="w", format="table")
-
-        def _raise(*a, **kw):
-            raise ValueError("forced failure")
-
-        monkeypatch.setattr(NileRedFunctions.NileRed_Functions, "_weighted_average_with_error", staticmethod(_raise))
         out, grid_info = nrf.fit_wavelengths_pixelated(
             str(path), FILTER_NAMES, self._camera_params(optical_system),
             pixel_size_nm=200.0, min_localisations=2, verbose=False,
