@@ -251,6 +251,16 @@ class TestLinkLocalisations:
         # extra_numeric_col passed through and averaged, not silently dropped
         assert "extra_numeric_col" in linked.columns
 
+    def test_photoelectrons_summed_like_photons(self):
+        # A linked event's detected signal is its total over the on-time, as for photons
+        df = _base_df()
+        df["photoelectrons"] = [40.0, 44.0, 36.0, 80.0, 84.0, 20.0]
+        linked = lf.link_localisations(df, n_frames=10, r_max=0.5, max_dark_time=1)
+        three = linked[linked["n"] == 3].iloc[0]
+        np.testing.assert_allclose(three["photoelectrons"], 120.0)
+        np.testing.assert_allclose(three["photons"], 300.0)
+        np.testing.assert_allclose(linked.loc[linked["n"] == 2, "photoelectrons"], 164.0)
+
     def test_minimal_columns_no_photons_no_photon_rate(self):
         df = _base_df(n_extra_cols=False)
         linked = lf.link_localisations(df, n_frames=10)
