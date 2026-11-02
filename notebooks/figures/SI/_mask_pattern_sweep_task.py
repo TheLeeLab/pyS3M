@@ -46,6 +46,7 @@ from pyS3M.simulation.multicolour import (
 
 CHIP_SEED = 42
 RANDOM_BAYER_SEED = 123
+MOSAIC_PHASE_SEED = 321
 
 DEFAULT_CALIB_DIR = str(
     Path(__file__).resolve().parents[3] / "Camera_Calibrations" / "Ximea_Camera"
@@ -81,9 +82,26 @@ def sample_chip_patches_batch(
     return pattern[rows, cols]  # (n_samples, patch_size, patch_size)
 
 
+def sample_mosaic_phases_batch(
+    mosaic: np.ndarray, patch_size: int, n_samples: int, rng: np.random.Generator
+) -> np.ndarray:
+    """n_samples (patch_size x patch_size) crops of the tiled mosaic, each at its
+    own random phase within the unit cell -- the pattern moves under the emitter,
+    so every pixel environment of a large unit cell (e.g. X-Trans 6x6) is sampled
+    without enlarging the ROI or moving the emitter off-centre."""
+    uc_h, uc_w = mosaic.shape
+    tiled = np.tile(mosaic, (patch_size // uc_h + 2, patch_size // uc_w + 2))
+    r0 = rng.integers(0, uc_h, size=n_samples)
+    c0 = rng.integers(0, uc_w, size=n_samples)
+    rows = r0[:, None, None] + np.arange(patch_size)[None, :, None]
+    cols = c0[:, None, None] + np.arange(patch_size)[None, None, :]
+    return tiled[rows, cols]  # (n_samples, patch_size, patch_size)
+
+
 def build_registry() -> dict[str, tuple[np.ndarray | None, str]]:
     """name -> (mosaic_unit or None, starting_flag). Random_Bayer's mosaic
-    slot is None -- its masks are per-frame, built in build_camera_parameters."""
+    slot is None -- its masks are per-frame, built in build_camera_parameters,
+    as are X-Trans's (random phase of the 6x6 unit per frame)."""
     return {
         "Bayer": (np.array([["R", "G"], ["G", "B"]]), "bayer_rggb_"),
         "GGBR": (np.array([["G", "G"], ["R", "B"]]), "ggbr_"),
@@ -127,6 +145,13 @@ def build_camera_parameters(
         chip_pattern = build_chip_pattern(gain.shape)
         rng = np.random.default_rng(RANDOM_BAYER_SEED)
         patches = sample_chip_patches_batch(chip_pattern, image_size, n_bootstrap, rng)
+        masks = {"B": patches == "B", "G": patches == "G", "R": patches == "R"}
+        mosaic_unit = None
+    elif mosaic.shape != (2, 2):
+        # Unit cell larger than 2x2: keep the image_size ROI (and the +-1 px emitter
+        # jitter) used for the 2x2 patterns, and move the pattern phase per frame instead.
+        rng = np.random.default_rng(MOSAIC_PHASE_SEED)
+        patches = sample_mosaic_phases_batch(mosaic, image_size, n_bootstrap, rng)
         masks = {"B": patches == "B", "G": patches == "G", "R": patches == "R"}
         mosaic_unit = None
     else:
