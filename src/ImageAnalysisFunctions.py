@@ -1492,7 +1492,11 @@ class Image_Analysis_Functions:
                     pfit_leastsq[i, :max_fit_params] = fit_params[:max_fit_params]
 
                 pfit_leastsq[i, -1] = planes[i]
-                perr_leastsq[i, :] = fit_errors[:err_dim]
+                # A degenerate fit's error can exceed float32's range: store it as inf
+                # (what the cast gives) without numpy's overflow warning for every such fit.
+                errs = np.array(fit_errors[:err_dim], dtype=np.float64)
+                errs[np.abs(errs) > np.finfo(precision_dtype).max] = np.inf
+                perr_leastsq[i, :] = errs
 
             except Exception as e:
                 logging.warning(f"Failed to fit punctum {i}: {e}")
