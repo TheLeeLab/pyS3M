@@ -14,9 +14,11 @@ import _multifov as mf
 
 QDOT_ROOT = "2026_Multicolour_Paper/Ximea/QDots"
 
-# The six-QDot mixture shown in Figure 3, and the position whose image is shown (fov_index 6).
+# The six-QDot mixture shown in Figure 3, and the position whose image is shown: a 70 x 100 px
+# crop of it (PANEL_CROP, camera px of the ROI) holds every QDot, each confidently assigned.
 MIX_FOLDER = f"{QDOT_ROOT}/MixB/1nM525_200pM585_200pM605_50pM655_200pM705_50pM800_514DC_515LP_30p515_1"
-MIX_PANEL_POSITION = "Pos001_001"
+MIX_PANEL_POSITION = "Pos002_000"
+PANEL_CROP = (335, 405), (405, 505)   # x, y
 
 # Single-QDot references, in the GMM's component order. 525/585/605 use their 30 % 515 nm
 # acquisition; 655/705/800 pool the 10 % and 30 % acquisitions (50 positions), as in the paper.
@@ -42,9 +44,14 @@ DRIFT_PARAMS = dict(segmentation=2, intersect_d=0.5, roi_r=3.0)
 # 1,093 molecules on Pos001_001, median 48 vs 45 frames). Brendan's QDotSampler instead
 # re-clustered the mixture with DBSCAN (min. 2 localisations): pass DBSCAN_MIX_PARAMS to
 # cluster_sample to reproduce that.
-# Quality cut: > 50 detected photoelectrons (Methods); `photons` (A_B + A_G + A_R) overcounts them 2-4x.
-CLUSTER_PARAMS = dict(clustering_method="HDBSCAN", min_cluster_size=10, chi_val=2,
-                      max_localisation_error=1.0, min_photons=0, max_photons=1e6, min_photoelectrons=50)
+# Quality cuts, on the mixture and the references alike: > 50 detected photoelectrons (Methods;
+# `photons` = A_B + A_G + A_R overcounts them 2-4x); chi^2 < 3; PSF sigma 75-250 nm; colour and
+# background errors < 0.05. The colour-error cut matters most: with it the synthetic six-QDot
+# mixture is 96.5 % correctly sorted, without it 92.8 % (the old 0.15 cut removed almost nothing).
+CLUSTER_PARAMS = dict(clustering_method="HDBSCAN", min_cluster_size=10, chi_val=3,
+                      max_localisation_error=1.0, max_colour_error=0.05,
+                      min_sigma=75 / mf.PIXEL_SIZE_NM, max_sigma=250 / mf.PIXEL_SIZE_NM,
+                      min_photons=0, max_photons=1e6, min_photoelectrons=50)
 # DBSCAN eps = epsilon_multiplier x mean localisation error; 1.0 matches QDotSampler's counts
 # (4,286 vs 4,677 molecules on Pos001_001); the function's default 0.5 splits single QDots.
 DBSCAN_MIX_PARAMS = dict(CLUSTER_PARAMS, clustering_method="DBSCAN", min_cluster_size=2,
