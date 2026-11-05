@@ -83,7 +83,7 @@ def create_synthetic_localization_data(n_molecules, frames_per_molecule, rng):
             bg_B_err = 0.05
 
             # PSF widths (within FilteringConstants' MIN/MAX_SIGMA_NM bounds at
-            # the default 69 nm/px pixel size: 75-160 nm -> ~1.09-2.32 px)
+            # the default 69 nm/px pixel size: 75-250 nm -> ~1.09-3.62 px)
             s_x = rng.uniform(1.2, 1.5)
             s_y = rng.uniform(1.2, 1.5)
             # PSF width errors, well under MAX_SIGMA_ERROR_NM=40nm -> ~0.58px
@@ -284,3 +284,38 @@ def test_full_workflow(fov_files, tmp_path):
     assert len(sm_loaded) == len(sm_db), "Single molecule database size mismatch after reload"
     assert len(sf_loaded) == len(sf_db), "Single frame database size mismatch after reload"
     assert len(pa_loaded) == len(pa_db), "Photon accumulation database size mismatch after reload"
+
+
+def test_max_background_error_separates_background_cut():
+    """max_colour_error cuts only A_*_err; bg_*_err is cut only by max_background_error."""
+    import numpy as np
+    import pandas as pd
+    from pyS3M.SM_extractionfunctions import extract_SMs
+    from pyS3M.Constants import FilteringCriteria
+
+    n = 4
+    df = pd.DataFrame({
+        "xc": np.arange(n, dtype=float), "yc": np.zeros(n), "frame": np.arange(n),
+        "chi_sqr": np.ones(n), "xc_err": np.full(n, 0.1), "yc_err": np.full(n, 0.1),
+        "s_x": np.full(n, 1.5), "s_y": np.full(n, 1.5),
+        "s_x_err": np.full(n, 0.1), "s_y_err": np.full(n, 0.1),
+        "A_R": np.full(n, 0.5), "A_G": np.full(n, 0.3), "A_B": np.full(n, 0.2),
+        "A_R_err": np.full(n, 0.05), "A_G_err": np.full(n, 0.05), "A_B_err": np.full(n, 0.05),
+        "bg_R": np.full(n, 0.5), "bg_G": np.full(n, 0.5), "bg_B": np.zeros(n),
+        "bg_R_err": [0.1, 5.0, 20.0, 0.1], "bg_G_err": np.full(n, 0.1),
+        "bg_B_err": np.full(n, 0.1), "photons": np.full(n, 1000.0),
+    })
+    sm = extract_SMs()
+    kw = dict(chi_val=3, max_colour_error=1.0, min_photons=0)
+    assert len(sm.filter_quality_localisations(df, **kw)) == 4
+    assert len(sm.filter_quality_localisations(df, max_background_error=10, **kw)) == 3
+    assert len(sm.filter_quality_localisations(df, max_background_error=1, **kw)) == 2
+    assert len(sm.filter_quality_localisations(df, max_background_error=np.inf, **kw)) == 4
+    crit = FilteringCriteria(chi_val=3, max_colour_error=1.0, min_photons=0,
+                             max_background_error=1.0)
+    assert len(sm.filter_quality_localisations(df, criteria=crit)) == 2
+    crit = FilteringCriteria(chi_val=3, max_colour_error=1.0, min_photons=0)
+    assert len(sm.filter_quality_localisations(df, criteria=crit)) == 4
+    # A colour error above max_colour_error is still cut.
+    df.loc[0, "A_R_err"] = 2.0
+    assert len(sm.filter_quality_localisations(df, **kw)) == 3
