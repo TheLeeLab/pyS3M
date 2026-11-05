@@ -51,8 +51,10 @@ DYES = {
 FIT_PARAMS = dict(pfa=1e-3, sigma=1.5, fraction_true=0.05, ROI_size=12, NA=1.49, pixel_size=0.069)
 # Molecules = HDBSCAN clusters of >= 10 localisations (paper's Methods).
 # Quality cuts: > 50 detected photoelectrons (Methods; `photons` = A_B + A_G + A_R overcounts them 2-4x);
-# chi^2 < 3; colour and background errors < 1 (100 %: the fitter's errors are realistic, so the
-# library's 0.15 default would drop well-measured dim molecules); localisation error < 1 px.
+# chi^2 < 3; colour errors < 1 (100 %: the fitter's errors are realistic, so the library's 0.15
+# default would drop well-measured dim molecules); no cut on the background colour errors (the
+# library default: they say nothing about the spot and are often > 1); localisation error < 1 px;
+# PSF sigma 75-250 nm (the library default).
 CLUSTER_PARAMS = dict(clustering_method="HDBSCAN", min_cluster_size=10, chi_val=3,
                       max_localisation_error=1.0, max_colour_error=1.0,
                       min_photons=0, max_photons=1e6, min_photoelectrons=50)

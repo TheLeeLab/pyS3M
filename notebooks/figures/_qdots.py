@@ -46,10 +46,11 @@ DRIFT_PARAMS = dict(segmentation=2, intersect_d=0.5, roi_r=3.0)
 # cluster_sample to reproduce that.
 # Quality cuts, on the mixture and the references alike: > 50 detected photoelectrons (Methods;
 # `photons` = A_B + A_G + A_R overcounts them 2-4x); chi^2 < 3; PSF sigma 75-250 nm; colour and
-# background errors < 0.05. The colour-error cut matters most: with it the synthetic six-QDot
-# mixture is 96.5 % correctly sorted, without it 92.8 % (the old 0.15 cut removed almost nothing).
+# background errors < 0.05 (each set explicitly: the library cuts the background errors only when
+# asked). The colour-error cut matters most: with it the synthetic six-QDot mixture is 96.5 %
+# correctly sorted, without it 92.8 % (the old 0.15 cut removed almost nothing).
 CLUSTER_PARAMS = dict(clustering_method="HDBSCAN", min_cluster_size=10, chi_val=3,
-                      max_localisation_error=1.0, max_colour_error=0.05,
+                      max_localisation_error=1.0, max_colour_error=0.05, max_background_error=0.05,
                       min_sigma=75 / mf.PIXEL_SIZE_NM, max_sigma=250 / mf.PIXEL_SIZE_NM,
                       min_photons=0, max_photons=1e6, min_photoelectrons=50)
 # DBSCAN eps = epsilon_multiplier x mean localisation error; 1.0 matches QDotSampler's counts
