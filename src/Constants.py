@@ -110,7 +110,7 @@ class FilteringConstants:
     MAX_COLOUR_ERROR: float = 0.15              # fractional amplitude error
     MAX_LOCALISATION_ERROR_PX: float = 1.0      # pixels
     MIN_SIGMA_NM: float = 75.0                  # nm — minimum PSF sigma
-    MAX_SIGMA_NM: float = 160.0                 # nm — maximum PSF sigma
+    MAX_SIGMA_NM: float = 250.0                 # nm — maximum PSF sigma
     MAX_SIGMA_ERROR_NM: float = 40.0            # nm — maximum fitted sigma error
     MIN_PHOTONS: int = 500                      # photon count lower bound
 
@@ -277,6 +277,7 @@ class FilteringCriteria:
     max_photons: Optional[float] = None
     min_photoelectrons: Optional[float] = None  # detected pe (sum_p f_p A_p); None → no cut
     max_photoelectrons: Optional[float] = None
+    max_background_error: Optional[float] = None  # bg_*_err cut; None → no cut
 
 
 @dataclass

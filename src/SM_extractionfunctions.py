@@ -81,6 +81,7 @@ class extract_SMs(HDBSCANMixin, DBSCANMixin, LinkedMixin, BatchMixin,
         max_photons=None,
         min_photoelectrons=None,
         max_photoelectrons=None,
+        max_background_error=None,
         criteria: FilteringCriteria = None,
     ):
         """Apply quality filters to localisation data.
@@ -94,7 +95,11 @@ class extract_SMs(HDBSCANMixin, DBSCANMixin, LinkedMixin, BatchMixin,
             chi_val: Chi-squared threshold (localisations with ``chi_sqr`` at or
                 above this are dropped); ``None`` → no chi-squared filtering.
             max_localisation_error: Maximum localisation precision (pixels).
-            max_colour_error: Maximum amplitude error fraction.
+            max_colour_error: Maximum error of the colour fractions (A_R, A_G, A_B) only.
+            max_background_error: Maximum error of the background colour fractions
+                (bg_R, bg_G, bg_B); ``None`` → no cut. Separate from ``max_colour_error``:
+                these errors say little about the spot and are often large (the background
+                colour is poorly constrained when one channel is near zero).
             min_sigma, max_sigma, max_sigma_error: PSF sigma bounds (pixels);
                 ``None`` → derived from ``FilteringConstants`` / pixel size.
             min_photons, max_photons: Bounds on ``photons`` (A_B + A_G + A_R, which overcounts
@@ -117,6 +122,7 @@ class extract_SMs(HDBSCANMixin, DBSCANMixin, LinkedMixin, BatchMixin,
             max_photons           = criteria.max_photons
             min_photoelectrons    = criteria.min_photoelectrons
             max_photoelectrons    = criteria.max_photoelectrons
+            max_background_error  = criteria.max_background_error
         # Resolve sigma bounds from camera pixel size if not explicitly provided
         pixel_size_nm = self.pixel_size * 1000  # µm → nm
         if min_sigma is None:
@@ -137,8 +143,11 @@ class extract_SMs(HDBSCANMixin, DBSCANMixin, LinkedMixin, BatchMixin,
             filtered_data = filtered_data[filtered_data["chi_sqr"] < chi_val]
         filtered_data = filtered_data[filtered_data["xc_err"] < max_localisation_error]
         filtered_data = filtered_data[filtered_data["yc_err"] < max_localisation_error]
-        for key in ['A_R_err', 'A_G_err', 'A_B_err', 'bg_R_err', 'bg_G_err', 'bg_B_err']:
+        for key in ['A_R_err', 'A_G_err', 'A_B_err']:
             filtered_data = filtered_data[filtered_data[key] < max_colour_error]
+        if max_background_error is not None:
+            for key in ['bg_R_err', 'bg_G_err', 'bg_B_err']:
+                filtered_data = filtered_data[filtered_data[key] < max_background_error]
         for key in ['s_x_err', 's_y_err']:
             filtered_data = filtered_data[filtered_data[key] < max_sigma_error]
         for key in ['s_x', 's_y']:

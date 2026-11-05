@@ -42,6 +42,7 @@ class LinkedMixin:
         max_photons: float | None = None,
         min_photoelectrons: float | None = None,
         max_photoelectrons: float | None = None,
+        max_background_error: float | None = None,
         start_frame: int = 0,
         config: ClusteringConfig = None,
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -81,6 +82,7 @@ class LinkedMixin:
             min_sigma, max_sigma, max_sigma_error,
             min_photons, max_photons,
             min_photoelectrons, max_photoelectrons,
+            max_background_error=max_background_error,
         )
 
         loc_data_sorted = loc_data.sort_values("frame")
@@ -325,6 +327,7 @@ class LinkedMixin:
         max_photons: float | None = None,
         min_photoelectrons: float | None = None,
         max_photoelectrons: float | None = None,
+        max_background_error: float | None = None,
         D_prior: float | None = None,
         dt: float = 1.0,
         sigma_loc: float = 0.0,
@@ -396,6 +399,7 @@ class LinkedMixin:
             max_photons=max_photons,
             min_photoelectrons=min_photoelectrons,
             max_photoelectrons=max_photoelectrons,
+            max_background_error=max_background_error,
             max_colour_error=max_colour_error,
             min_sigma=min_sigma,
             max_sigma=max_sigma,

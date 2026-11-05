@@ -35,6 +35,7 @@ class DBSCANMixin:
         max_photons: float | None = None,
         min_photoelectrons: float | None = None,
         max_photoelectrons: float | None = None,
+        max_background_error: float | None = None,
         epsilon_multiplier: float = 1.0,
         start_frame: int = 0,
         config: ClusteringConfig = None,
@@ -70,6 +71,7 @@ class DBSCANMixin:
             min_sigma, max_sigma, max_sigma_error,
             min_photons, max_photons,
             min_photoelectrons, max_photoelectrons,
+            max_background_error=max_background_error,
         )
 
         if not self._check_min_locs(loc_data, min_cluster_size):
