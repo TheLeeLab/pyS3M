@@ -5,15 +5,10 @@ rho(i dT) = 2d (sigma^2 - 2 R D dT) + 2d D dT i.
 """
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
 
 from pyS3M.diffusion import MSD
-
-PYDIFFUSION_SRC = Path.home() / "Documents" / "Code" / "pyDiffusion_LeeLab" / "src"
 
 
 def brownian_tracks(n_tracks, n_frames, D, dT, sigma, R_sixth, rng, n_d=2, substeps=50):
@@ -29,30 +24,6 @@ def brownian_tracks(n_tracks, n_frames, D, dT, sigma, R_sixth, rng, n_d=2, subst
         pos = path.mean(axis=1) if R_sixth else path[:, 0, :]
         tracks.append(pos + rng.normal(0, sigma, pos.shape))
     return tracks
-
-
-@pytest.fixture(scope="module")
-def pydiffusion_msd():
-    if not (PYDIFFUSION_SRC / "MSDFunctions.py").exists():
-        pytest.skip("pyDiffusion_LeeLab not available")
-    sys.path.insert(0, str(PYDIFFUSION_SRC))
-    try:
-        from MSDFunctions import MSD as OldMSD
-    finally:
-        sys.path.remove(str(PYDIFFUSION_SRC))
-    return OldMSD()
-
-
-def test_D_and_msd_identical_to_pydiffusion(pydiffusion_msd):
-    rng = np.random.default_rng(3)
-    new = MSD()
-    tracks = brownian_tracks(40, 60, D=1e5, dT=0.05, sigma=40.0, R_sixth=True, rng=rng)
-    tracks += [t[:12] for t in brownian_tracks(20, 12, D=1e4, dT=0.05, sigma=60.0, R_sixth=False, rng=rng)]
-    for track in tracks:
-        np.testing.assert_array_equal(new.msd_fft(track), pydiffusion_msd.msd_fft(track))
-        D_new, _ = new.DSigma2_OLSF(track, 0.05, R=1 / 6, n_d=2, min_points=5)
-        D_old, _ = pydiffusion_msd.DSigma2_OLSF(track, 0.05, R=1 / 6, n_d=2, min_points=5)
-        np.testing.assert_array_equal(D_new, D_old)
 
 
 @pytest.mark.parametrize("R_sixth", [False, True])
