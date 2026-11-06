@@ -1619,3 +1619,103 @@ class TestStochasticPhotonColourStatistics:
         np.testing.assert_allclose(stoch.var(0) / stoch.mean(0), 1.0, atol=0.1)
         frac_s, frac_d = stoch.sum(0) / stoch.sum(), determ.sum(0) / determ.sum()
         np.testing.assert_allclose(frac_s, frac_d, atol=0.002)    # old code: G off by ~0.008
+
+
+# ======================================================================
+# Remaining branches: Gaussian-PSF extras, dipole positions without a
+# molecule axis, spectra helpers, sweeps with the Gaussian PSF, chip repair
+# ======================================================================
+
+class TestRemainingBranches:
+    def test_error_maps_with_grayscale(self, sim):
+        smoothed = np.array([[[-1.0, 3.0], [0.0, 8.0]]])
+        weights, weights_gray = sim._compute_error_maps(
+            smoothed, smoothed[..., 0], types.SimpleNamespace(readnoise=2.0))
+        np.testing.assert_allclose(weights, 1.0 / (np.clip(smoothed, 0, None) + 1.0 + 4.0))
+        np.testing.assert_allclose(weights_gray, 1.0 / (np.clip(smoothed[..., 0], 0, None) + 1.0 + 4.0))
+
+    def test_unknown_psf_model_raises(self, sim, camera_parameters, wavelength_and_qys):
+        wl, _ = wavelength_and_qys
+        x0y0, n_photons = _minimal_x0y0_photons()
+        with pytest.raises(SimulationValidationError, match="psf_model"):
+            sim.gen_camera_image_stack(camera_parameters, wl, 660.0, np.array([0.2, 0.3, 0.5]),
+                                       n_photons, x0y0, psf_model="airy")
+
+    def test_gaussian_psf_two_moving_molecules(self, sim, camera_parameters, wavelength_and_qys, smoothing_function):
+        wl, _ = wavelength_and_qys
+        x0y0 = {"dye": np.zeros((2, 2, 2))}
+        x0y0["dye"][:, :, 0] = 3.0 * sim.pixel_size * 1000
+        x0y0["dye"][:, :, 1] = 5.0 * sim.pixel_size * 1000
+        n_photons = {"dye": np.full(2, 2000)}
+        bayer, _, _ = sim.gen_camera_image_stack(
+            camera_parameters, wl, 660.0, np.array([0.2, 0.3, 0.5]), n_photons, x0y0,
+            smoothing_function=smoothing_function, motion_velocity_nm_per_s=500.0,
+            psf_model="gaussian", return_normal_image=True,
+        )
+        assert bayer.shape == (2, 8, 8)
+
+    def test_dipole_positions_without_a_molecule_axis(self, sim, camera_parameters, wavelength_and_qys, smoothing_function):
+        wl, _ = wavelength_and_qys
+        x0y0 = {"dye": np.full((2, 2), 4.0 * sim.pixel_size * 1000)}   # (n_bootstrap, 2)
+        n_photons = {"dye": np.full(2, 2000)}
+        bayer, _, _ = sim.gen_camera_image_stack(
+            camera_parameters, wl, 660.0, np.array([0.2, 0.3, 0.5]), n_photons, x0y0,
+            smoothing_function=smoothing_function, emission_spectra=_spectra(x0y0, wl),
+        )
+        assert bayer.shape == (2, 8, 8)
+
+    def test_spectra_helpers(self, wavelength_and_qys):
+        wl, _ = wavelength_and_qys
+        spectra = MultiC_Sim_Funcs_Refactored.emission_spectra_for([DYE], FILTERS, wl)
+        np.testing.assert_allclose(
+            spectra[DYE], MultiC_Sim_Funcs_Refactored.filtered_emission_spectrum(DYE, FILTERS, wl))
+        own = np.exp(-0.5 * ((wl - 600.0) / 30.0) ** 2)
+        np.testing.assert_allclose(
+            MultiC_Sim_Funcs_Refactored.filtered_emission_spectrum("ignored", None, wl, single_dye_spectrum=own),
+            own)
+
+    def test_2d_sweep_gaussian_psf_deterministic_colour(self, sim, camera_parameters, wavelength_and_qys,
+                                                       smoothing_function, tmp_path):
+        wl, _ = wavelength_and_qys
+        config = SimulationConfig(n_bootstrap=2, save_raw_results=True, verbose=False,
+                                  use_stochastic_photons=False, n_unit_cells=0, psf_model="gaussian")
+        sim.test_simulation_method_2d_sweep(
+            dye=DYE, filters=FILTERS, wavelength=wl, camera_parameters=camera_parameters,
+            save_folder=str(tmp_path), n_photon_space=np.array([2000.0]),
+            smoothing_function=smoothing_function, strategy=FittingStrategy.STANDARD,
+            read_noise_space=np.array([1.0]), peak_qy_space=np.array([1.0]), config=config,
+        )
+        assert any(tmp_path.glob("*rawresults.h5"))
+
+    def test_simulation_method_gaussian_psf_stochastic_photons(self, sim, camera_parameters, wavelength_and_qys,
+                                                               smoothing_function, tmp_path):
+        wl, _ = wavelength_and_qys
+        config = SimulationConfig(n_bootstrap=2, background_photons=5.0, save_raw_results=True,
+                                  save_summary_csvs=False, verbose=False, use_stochastic_photons=True,
+                                  n_unit_cells=0, psf_model="gaussian")
+        sim.test_simulation_method(
+            dye=DYE, filters=FILTERS, wavelength=wl, camera_parameters=camera_parameters,
+            save_folder=str(tmp_path), n_photon_space=np.array([2000.0]),
+            smoothing_function=smoothing_function, strategy=FittingStrategy.STANDARD, config=config,
+        )
+        assert any(tmp_path.glob("*rawresults.h5"))
+
+    def test_full_chip_calibration_repairs_invalid_pixels(self, sim, wavelength_and_qys, smoothing_function,
+                                                          tmp_path, caplog):
+        import logging
+        wl, pixel_QYs = wavelength_and_qys
+        cp = _camera_params_dict(size=8, mosaic_unit=sim.mosaic_unit, pixel_QYs=pixel_QYs)
+        chip = _chip_maps()
+        chip["gain"][3, 4] = 0.0          # dead pixel
+        chip["variance"][10, 10] = np.nan
+        cp["full_chip_calibration"] = chip
+        config = SimulationConfig(n_bootstrap=2, background_photons=5.0, save_raw_results=False,
+                                  save_summary_csvs=False, verbose=False, use_stochastic_photons=False,
+                                  n_unit_cells=4, chip_sampling_seed=7)
+        with caplog.at_level(logging.INFO):
+            sim.test_simulation_method(
+                dye=DYE, filters=FILTERS, wavelength=wl, camera_parameters=cp,
+                save_folder=str(tmp_path), n_photon_space=np.array([2000.0]),
+                smoothing_function=smoothing_function, strategy=FittingStrategy.STANDARD, config=config,
+            )
+        assert "replaced 2 invalid pixel(s)" in caplog.text

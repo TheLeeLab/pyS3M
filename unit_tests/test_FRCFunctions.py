@@ -303,8 +303,10 @@ def test_fire_accepts_dataframe():
     """fire() accepts a pandas DataFrame with xc, yc, frame columns."""
     import pandas as pd
     sz = 64
+    # Own generator and a seeded half-split: with the shared RNG's state and fire's unseeded
+    # split, about 1 run in 13 drew an FRC that never crossed the threshold (NaN).
     signal = gaussian_filter(
-        RNG.random((sz, sz)).astype(np.float32) * 1000, sigma=4
+        np.random.default_rng(1008).random((sz, sz)).astype(np.float32) * 1000, sigma=4
     )
     y_idx, x_idx = np.where(signal > signal.mean())
     df = pd.DataFrame({
@@ -312,7 +314,7 @@ def test_fire_accepts_dataframe():
         'yc': y_idx.astype(float),
         'frame': np.arange(len(x_idx), dtype=float),
     })
-    res_nm, _, _, _ = fire(df, nx=sz, ny=sz, zoom=1.0, n_blocks=5, reps=2)
+    res_nm, _, _, _ = fire(df, nx=sz, ny=sz, zoom=1.0, n_blocks=5, reps=2, rng=0)
     assert np.isfinite(res_nm)
 
 
