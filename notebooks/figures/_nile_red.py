@@ -72,3 +72,54 @@ def colour_scale(pixels, n_sd=SCALE_SD):
     """(mean, SD, lower, upper) of the per-pixel relative pixel 3 QE; the scale is mean +- n_sd SD."""
     m, s = pixels["red_share"].mean(), pixels["red_share"].std()
     return m, s, m - n_sd * s, m + n_sd * s
+
+
+def sized_image(img, height_pt, pixel_nm, scalebar_nm, scalebar_label, scalebar_pt=1.5, scalebar_fontsize=6,
+                cbar=None, margin_pt=1.5):
+    """A rendered RGB image drawn at an exact size (pt), as placed in the paper's figure.
+
+    The image (origin lower) is ``height_pt`` tall and as wide as its aspect ratio makes it, with a
+    white scale bar ``margin_pt`` from its lower-right corner, the label centred above it. ``cbar``
+    (optional) adds a colour bar beside it: dict(c_min, c_max, label, width_pt, gap_pt, tick_fontsize,
+    label_fontsize=8, cmap="jet"). Save with ``bbox_inches="tight"``: the sizes are unchanged.
+
+    Returns:
+        (fig, ax) with ax in image pixel coordinates.
+    """
+    import matplotlib.pyplot as plt
+
+    pt = 1 / 72
+    h, w = img.shape[:2]
+    img_h = height_pt
+    img_w = height_pt * w / h
+    extra = (cbar["gap_pt"] + cbar["width_pt"] + 40) if cbar else 0
+    fig = plt.figure(figsize=((img_w + extra + 2) * pt, (img_h + 2) * pt))
+    fig.set_layout_engine("none")
+    W, H = fig.get_size_inches() / pt
+    ax = fig.add_axes([1 / W, 1 / H, img_w / W, img_h / H])
+    ax.imshow(img, origin="lower", interpolation="none", aspect="auto")
+    ax.set_axis_off()
+
+    # scale bar in data (image pixel) units, offsets converted from pt
+    px_per_pt = w / img_w
+    length = scalebar_nm / pixel_nm
+    x1 = w - margin_pt * px_per_pt
+    y0 = margin_pt * px_per_pt
+    ax.add_patch(plt.Rectangle((x1 - length, y0), length, scalebar_pt * px_per_pt, color="white", lw=0))
+    # label centred over the bar, unless that would run it past the image's right edge
+    label_w = 0.55 * scalebar_fontsize * len(scalebar_label) * px_per_pt   # rough text width
+    x_label, ha = (x1 - length / 2, "center") if label_w / 2 <= length / 2 + margin_pt * px_per_pt else (x1, "right")
+    ax.text(x_label, y0 + (scalebar_pt + 1.0) * px_per_pt, scalebar_label, color="white",
+            fontsize=scalebar_fontsize, ha=ha, va="bottom")
+    ax.set_xlim(-0.5, w - 0.5)
+    ax.set_ylim(-0.5, h - 0.5)
+
+    if cbar:
+        cax = fig.add_axes([(1 + img_w + cbar["gap_pt"]) / W, 1 / H, cbar["width_pt"] / W, img_h / H])
+        sm = plt.cm.ScalarMappable(cmap=cbar.get("cmap", "jet"),
+                                   norm=plt.Normalize(vmin=cbar["c_min"], vmax=cbar["c_max"]))
+        cb = fig.colorbar(sm, cax=cax)
+        cb.ax.tick_params(labelsize=cbar["tick_fontsize"], length=2, width=0.5, pad=1)
+        cb.outline.set_linewidth(0.5)
+        cb.set_label(cbar["label"], fontsize=cbar.get("label_fontsize", 8), labelpad=2)
+    return fig, ax
