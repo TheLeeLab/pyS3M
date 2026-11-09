@@ -75,13 +75,14 @@ def colour_scale(pixels, n_sd=SCALE_SD):
 
 
 def sized_image(img, height_pt, pixel_nm, scalebar_nm, scalebar_label, scalebar_pt=1.5, scalebar_fontsize=6,
-                cbar=None, margin_pt=1.5, panel_label=None, panel_label_fontsize=8):
+                cbar=None, margin_pt=1.5, panel_label=None, panel_label_fontsize=8, width_pt=None):
     """A rendered RGB image drawn at an exact size (pt), as placed in the paper's figure.
 
     The image (origin lower) is ``height_pt`` tall and as wide as its aspect ratio makes it, with a
     white scale bar ``margin_pt`` from its lower-right corner, the label centred above it. ``cbar``
     (optional) adds a colour bar beside it: dict(c_min, c_max, label, width_pt, gap_pt, tick_fontsize,
-    label_fontsize=8, cmap="jet"). ``panel_label`` (optional) is drawn bold, white, top left. Save with ``bbox_inches="tight"``: the sizes are unchanged.
+    label_fontsize=8, cmap="jet"). ``panel_label`` (optional) is drawn bold, white, top left. ``width_pt`` forces
+    the width (for a slot whose aspect the pixel grid can only approximate). Save with ``bbox_inches="tight"``: the sizes are unchanged.
 
     Returns:
         (fig, ax) with ax in image pixel coordinates.
@@ -91,7 +92,7 @@ def sized_image(img, height_pt, pixel_nm, scalebar_nm, scalebar_label, scalebar_
     pt = 1 / 72
     h, w = img.shape[:2]
     img_h = height_pt
-    img_w = height_pt * w / h
+    img_w = width_pt if width_pt is not None else height_pt * w / h   # width_pt: exact slot width
     extra = (cbar["gap_pt"] + cbar["width_pt"] + 40) if cbar else 0
     fig = plt.figure(figsize=((img_w + extra + 2) * pt, (img_h + 2) * pt))
     fig.set_layout_engine("none")
@@ -101,7 +102,7 @@ def sized_image(img, height_pt, pixel_nm, scalebar_nm, scalebar_label, scalebar_
     ax.set_axis_off()
 
     # scale bar in data (image pixel) units, offsets converted from pt
-    px_per_pt = w / img_w
+    px_per_pt = h / img_h
     length = scalebar_nm / pixel_nm
     x1 = w - margin_pt * px_per_pt
     y0 = margin_pt * px_per_pt
