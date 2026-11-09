@@ -24,7 +24,7 @@ import pyS3M.IOFunctions as IOFunctions
 import pyS3M.HelperFunctions as HelperFunctions
 import pyS3M.MaskFunctions as MaskFunctions
 import pyS3M.ImageAnalysisFunctions as ImageAnalysisFunctions
-from pyS3M.ImageAnalysisFunctions import FittingStrategy, FittingConstants
+from pyS3M.ImageAnalysisFunctions import FittingStrategy, FittingConstants, median_of_arrays
 import pyS3M.SpotDetectionFunctions as SpotDetectionFunctions
 from pyS3M.PlottingBase import PublicationPlotter
 import pyS3M.sCMOSFunctions as sCMOSFunctions
@@ -154,8 +154,10 @@ class SuperRes_Functions:
         if len(planes) == len(fit_results):
             fit_results["frame"] = planes
 
-        # Sort by frame for consistent ordering in saved files
-        fit_results = fit_results.sort_values("frame").reset_index(drop=True)
+        # Sort by frame for consistent ordering in saved files; stable, so localisations in the same frame
+        # stay in detection order (the default quicksort ordered them arbitrarily, and differently
+        # depending on how many frames were sorted together)
+        fit_results = fit_results.sort_values("frame", kind="mergesort").reset_index(drop=True)
 
         # Apply filtering - this will automatically filter both fits AND quality metrics
         # Failed fits (NaN values) will be removed along with their quality metrics
@@ -275,6 +277,20 @@ class SuperRes_Functions:
                 readnoise_roi), with readnoise_roi the ROI's read noise (e-) per pixel
                           Returns None if ROI is invalid (not square)
         """
+        extracted = self._extract_raw_roi(
+            raw_data, detected_puncta, i, width, height, ROI_size, is_multi_frame
+        )
+        if extracted is None:
+            return None
+        raw_roi, bounds, frame = extracted
+        return self._build_roi(
+            raw_roi, bounds, frame, smoothing_function, read_noise, masks,
+            gain_map=gain_map, offset_map=offset_map, rqe=rqe, frame_offset=frame_offset,
+        )
+
+    def _extract_raw_roi(self, raw_data, detected_puncta, i, width, height, ROI_size, is_multi_frame=False):
+        """The raw (ADU) ROI of detected punctum ``i``: (raw_roi view, (xmin, xmax, ymin, ymax), frame),
+        or None if its ROI is invalid (outside the image, or not square). First half of _process_roi."""
         # detected_puncta stores [row, col, frame] from np.where()
         # row = y, col = x (confirmed by test_real_spot_detection.py)
         ycentre = detected_puncta[i, 0]  # First index is row (y)
@@ -313,6 +329,14 @@ class SuperRes_Functions:
             logging.warning(f"  Image dims: width={width}, height={height}")
             logging.warning(f"  Center: ({xcentre}, {ycentre}), ROI_size={ROI_size}")
             return None
+        return raw_roi, bounds, frame
+
+    def _build_roi(self, raw_roi, bounds, frame, smoothing_function, read_noise, masks,
+                   gain_map=1.0, offset_map=0.0, rqe=1.0, frame_offset=0):
+        """Fitting inputs from one raw ROI (second half of _process_roi): (photoelectron_roi,
+        smoothed_roi, weights_roi, mask_roi, coords, plane, readnoise_roi). Everything is computed from
+        the ROI alone (smoothing included), so it can be rebuilt later from a stored raw ROI."""
+        xmin, xmax, ymin, ymax = bounds
 
         # Extract camera parameter ROIs for conversion (arrays are [y, x])
         gain_roi = (
@@ -1112,6 +1136,7 @@ class SuperRes_Functions:
             raw_stack = self.io.read_tiff(file, dtype="float32", frame=frames_to_load)
             if raw_stack.ndim == 2:
                 raw_stack = raw_stack[np.newaxis, :, :]
+            frame_shape = raw_stack.shape[1:]
             summed_data = np.sum(raw_stack, axis=0)
             del raw_stack
 
@@ -1184,16 +1209,6 @@ class SuperRes_Functions:
             total_rois = sum(len(frames) for frames in frames_to_fit.values())
             logger.info(f"  {n_detected} spots, {len(frames_to_fit)} with CPs, {total_rois} ROIs to fit")
 
-            # Accumulate ROIs for fitting
-            puncta_tofit = []
-            smoothed_puncta_tofit = []
-            masks_tofit = []
-            weights_tofit = []
-            readnoise_tofit = []
-            relative_coords = []
-            puncta_ids = []
-            frame_indices = []
-
             # Pre-compute ROI bounds for puncta that passed change point filter
             puncta_bounds = {}
             for puncta_idx in frames_to_fit.keys():
@@ -1212,10 +1227,47 @@ class SuperRes_Functions:
                 continue
 
             max_frame = max(all_frames_needed)
-
-            # Process in chunks
             chunk_size = 500
-            for chunk_start in tqdm(range(0, max_frame + 1, chunk_size), desc="Loading frames"):
+
+            # Which (punctum, frame) ROIs are fitted, and in what order, is fixed by the change points, so
+            # the fit gate's setting for the whole position (first ROI's size and mask, median read noise
+            # over all ROIs) is known before any ROI is built. Each chunk is then built, fitted and written
+            # on its own: results and row order are those of fitting the whole position at once, without
+            # holding every ROI of the position in memory.
+            readnoise_frame = np.broadcast_to(np.asarray(read_noise_crop, dtype=np.float32), frame_shape)
+            readnoise_crops, gate_roi = [], None
+            for chunk_start in range(0, max_frame + 1, chunk_size):
+                n_loaded = min(chunk_start + chunk_size, max_frame + 1, total_frames) - chunk_start
+                if n_loaded <= 0:
+                    continue
+                for puncta_idx, frames_array in frames_to_fit.items():
+                    bounds = puncta_bounds[puncta_idx]
+                    if bounds is None:
+                        continue
+                    xmin, xmax, ymin, ymax = bounds
+                    crop = readnoise_frame[ymin:ymax, xmin:xmax]
+                    for frame in frames_array:
+                        if chunk_start <= frame < chunk_start + n_loaded:
+                            readnoise_crops.append(crop)        # the same view each time: counted, not copied
+                            if gate_roi is None:
+                                gate_roi = (crop.shape[0], masks_stacked[ymin:ymax, xmin:xmax, :])
+            total_rois = len(readnoise_crops)
+            logger.info(f"  {total_rois} ROIs to fit")
+            if total_rois == 0:
+                continue
+            gate_setting = (gate_roi[0], float(median_of_arrays(readnoise_crops)), gate_roi[1])
+            del readnoise_crops
+
+            result_columns = [
+                "xc", "yc", "s_x", "s_y",
+                "bg_B", "bg_G", "bg_R",
+                "A_B", "A_G", "A_R",
+                "chi_sqr",
+            ]
+            error_columns = [f"{col}_err" for col in result_columns[:-1]]
+            n_saved, written = 0, False
+
+            for chunk_start in tqdm(range(0, max_frame + 1, chunk_size), desc="Fitting frames"):
                 chunk_end = min(chunk_start + chunk_size, max_frame + 1)
 
                 # Find frames in this chunk that are actually needed
@@ -1245,6 +1297,15 @@ class SuperRes_Functions:
                 # Compute weights
                 weights_data = 1.0 / (read_noise_crop**2 + np.maximum(photoelectrons, 0) / gain_map_crop)
 
+                puncta_tofit = []
+                smoothed_puncta_tofit = []
+                masks_tofit = []
+                weights_tofit = []
+                readnoise_tofit = []
+                relative_coords = []
+                puncta_ids = []
+                frame_indices = []
+
                 # Extract ROIs for each puncta at frames in this chunk
                 for puncta_idx, frames_array in frames_to_fit.items():
                     bounds = puncta_bounds[puncta_idx]
@@ -1272,58 +1333,51 @@ class SuperRes_Functions:
                         frame_indices.append(frame)
 
                 del raw_data, photoelectrons, smoothed, weights_data
+                if len(puncta_tofit) == 0:
+                    continue
+
+                fit_results, fit_errors = self.image_analysis.fit_puncta_parallel_method(
+                    puncta_tofit,
+                    smoothed_puncta_tofit,
+                    weights_tofit,
+                    relative_coords,
+                    list(range(len(puncta_tofit))),
+                    FittingStrategy.STANDARD_DATA,
+                    masks=masks_tofit,
+                    readnoise_maps=readnoise_tofit,
+                    gate_setting=gate_setting,
+                )
+                del puncta_tofit, smoothed_puncta_tofit, masks_tofit, weights_tofit, readnoise_tofit
+
+                # Build result DataFrame
+                fit_df = pd.DataFrame(fit_results, columns=result_columns + ["_dummy"])
+                fit_df = fit_df.drop(columns=["_dummy"])
+
+                if fit_errors is not None and len(fit_errors) > 0:
+                    err_df = pd.DataFrame(fit_errors, columns=error_columns)
+                    fit_df = pd.concat([fit_df, err_df], axis=1)
+
+                # Add puncta_id and frame columns
+                fit_df["puncta_id"] = puncta_ids
+                fit_df["frame"] = frame_indices
+
+                # Filter results
+                fit_df = self._filter_fit_results(
+                    fit_df, width, height, min_sigma=fit_min_sigma, max_sigma=fit_max_sigma
+                )
+
+                # Save: the first chunk replaces any old file; later chunks follow it, in fitting order
+                if len(fit_df):
+                    self.io.write_h5_database(fit_df, fit_savename, append=written, sort_on_append=False)
+                    written = True
+                    n_saved += len(fit_df)
+
+                del fit_results, fit_errors, fit_df, relative_coords, puncta_ids, frame_indices
                 gc.collect()
 
-            logger.info(f"  Accumulated {len(puncta_tofit)} ROIs for fitting")
+            logger.info(f"  Saved {n_saved} fits to {Path(fit_savename).name}")
 
-            if len(puncta_tofit) == 0:
-                continue
-
-            fit_results, fit_errors = self.image_analysis.fit_puncta_parallel_method(
-                puncta_tofit,
-                smoothed_puncta_tofit,
-                weights_tofit,
-                relative_coords,
-                list(range(len(puncta_tofit))),
-                FittingStrategy.STANDARD_DATA,
-                masks=masks_tofit,
-                readnoise_maps=readnoise_tofit,
-            )
-
-            # Build result DataFrame
-            result_columns = [
-                "xc", "yc", "s_x", "s_y",
-                "bg_B", "bg_G", "bg_R",
-                "A_B", "A_G", "A_R",
-                "chi_sqr",
-            ]
-            error_columns = [f"{col}_err" for col in result_columns[:-1]]
-
-            fit_df = pd.DataFrame(fit_results, columns=result_columns + ["_dummy"])
-            fit_df = fit_df.drop(columns=["_dummy"])
-
-            if fit_errors is not None and len(fit_errors) > 0:
-                err_df = pd.DataFrame(fit_errors, columns=error_columns)
-                fit_df = pd.concat([fit_df, err_df], axis=1)
-
-            # Add puncta_id and frame columns
-            fit_df["puncta_id"] = puncta_ids
-            fit_df["frame"] = frame_indices
-
-            # Filter results
-            fit_df = self._filter_fit_results(
-                fit_df, width, height, min_sigma=fit_min_sigma, max_sigma=fit_max_sigma
-            )
-
-            # Save to HDF5 database
-            self.io.write_h5_database(fit_df, fit_savename, append=False)
-            logger.info(f"  Saved {len(fit_df)} fits to {Path(fit_savename).name}")
-
-            # Cleanup
-            del (
-                puncta_tofit, smoothed_puncta_tofit, masks_tofit, weights_tofit,
-                relative_coords, puncta_ids, frame_indices, fit_df, detected_puncta
-            )
+            del detected_puncta
             gc.collect()
 
         return
@@ -1839,6 +1893,9 @@ class SuperRes_Functions:
 
         if combined_output:
             fit_savename = Path(image_folder) / "Localisations.h5"
+        # read-noise crops are taken from one float32 copy of the map (the values the fitter gets anyway)
+        read_noise_32 = (read_noise if isinstance(read_noise, (int, float))
+                         else np.asarray(read_noise, dtype=np.float32))
 
         total_frames = 0
         for FOVn, file in enumerate(image_files):
@@ -1846,19 +1903,16 @@ class SuperRes_Functions:
                 fit_savename = str(Path(file).with_name(Path(file).name.split(".")[0] + ".h5"))
 
             file_frames = self.io.get_num_pages_in_TIF(file)
-
             chunk_size = 1000
-            all_puncta_tofit = []
-            all_smoothed_puncta_tofit = []
-            all_masks_tofit = []
-            all_readnoise_tofit = []
-            all_weights_tofit = []
-            all_relative_coords = []
-            all_planes = []
-            all_quality_metrics = []
-
             logger.info(f"Processing file {FOVn+1}/{len(image_files)}: {file_frames} frames in chunks of {chunk_size}")
 
+            # Pass 1: detect in every chunk, keeping only each ROI's raw crop (not the photoelectron,
+            # smoothed, weight, read-noise and mask crops built from it: ~5x the memory). The fit gate is
+            # prepared with the file's first ROI and the median read noise over all its ROIs, so that is
+            # gathered here, before anything is fitted.
+            chunks = []
+            readnoise_crops = []
+            gate_roi = None
             for chunk_start in range(0, file_frames, chunk_size):
                 chunk_end = min(chunk_start + chunk_size, file_frames)
                 chunk_frames = list(range(chunk_start, chunk_end))
@@ -1890,106 +1944,107 @@ class SuperRes_Functions:
                 )
 
                 frame_offset = (total_frames if accumulate_frame_numbers else 0) + chunk_start
-
-                (
-                    chunk_puncta,
-                    chunk_smoothed,
-                    chunk_masks,
-                    chunk_weights,
-                    chunk_coords,
-                    chunk_planes,
-                    filtered_quality_metrics,
-                    chunk_readnoise,
-                ) = self._process_detected_puncta_batch(
-                    raw_data,
-                    detected_puncta,
-                    width,
-                    height,
-                    ROI_size,
-                    smoothing_function,
-                    read_noise,
-                    masks,
-                    gain_map=gain_map,
-                    offset_map=offset_map,
-                    rqe=rqe,
-                    frame_offset=frame_offset,
-                    is_multi_frame=True,
-                    quality_metrics=quality_metrics,
-                )
-
-                all_puncta_tofit.extend(chunk_puncta)
-                all_smoothed_puncta_tofit.extend(chunk_smoothed)
-                all_masks_tofit.extend(chunk_masks)
-                all_readnoise_tofit.extend(chunk_readnoise)
-                all_weights_tofit.extend(chunk_weights)
-                all_relative_coords.extend(chunk_coords)
-                all_planes.extend(chunk_planes)
-                if filtered_quality_metrics is not None:
-                    all_quality_metrics.append(filtered_quality_metrics)
+                rois, valid = [], []
+                for i in range(len(detected_puncta)):
+                    extracted = self._extract_raw_roi(
+                        raw_data, detected_puncta, i, width, height, ROI_size, is_multi_frame=True
+                    )
+                    if extracted is None:
+                        continue
+                    raw_roi, bounds, frame = extracted
+                    rois.append((raw_roi.copy(), bounds, frame))   # copy: a view would keep the chunk alive
+                    valid.append(i)
+                    xmin, xmax, ymin, ymax = bounds
+                    rn = read_noise_32 if isinstance(read_noise_32, (int, float)) else read_noise_32[ymin:ymax, xmin:xmax]
+                    readnoise_crops.append(np.broadcast_to(np.asarray(rn, dtype=np.float32), raw_roi.shape))
+                    if gate_roi is None:
+                        gate_roi = (raw_roi.shape[0], masks[ymin:ymax, xmin:xmax, :])
+                chunks.append((rois, frame_offset, self._filter_quality_metrics(quality_metrics, detected_puncta, valid)))
 
                 del raw_data, detected_puncta, quality_metrics, image_to_analyse
                 gc.collect()
 
-            logger.info(f"  Found {len(all_puncta_tofit)} puncta across all chunks")
+            n_rois = sum(len(c[0]) for c in chunks)
+            logger.info(f"  Found {n_rois} puncta across all chunks")
+            gate_setting = None
+            if gate_roi is not None:
+                gate_setting = (gate_roi[0], float(median_of_arrays(readnoise_crops)), gate_roi[1])
+            del readnoise_crops
 
-            combined_quality_metrics = {}
-            if all_quality_metrics:
-                for quality_dict in all_quality_metrics:
-                    if quality_dict:
-                        for key in quality_dict.keys():
-                            combined_quality_metrics[key] = []
-                        break
-                for quality_dict in all_quality_metrics:
-                    if quality_dict:
-                        for key in combined_quality_metrics.keys():
-                            if key in quality_dict:
-                                combined_quality_metrics[key].append(quality_dict[key])
-                for key in combined_quality_metrics.keys():
-                    if combined_quality_metrics[key]:
-                        combined_quality_metrics[key] = np.concatenate(combined_quality_metrics[key])
-
-            fit_results_array, fit_errors_array = self.image_analysis.fit_puncta_parallel_method(
-                all_puncta_tofit,
-                all_smoothed_puncta_tofit,
-                all_weights_tofit,
-                all_relative_coords,
-                all_planes,
-                strategy,
-                masks=all_masks_tofit,
-                readnoise_maps=all_readnoise_tofit,
-            )
-
-            fit_results = self._postprocess_fit_results(
-                fit_results_array,
-                fit_errors_array,
-                result_params,
-                all_planes,
-                width,
-                height,
-                quality_metrics=combined_quality_metrics,
-                min_sigma=fit_min_sigma,
-                max_sigma=fit_max_sigma,
-            )
-
+            # Pass 2: rebuild, fit and write one chunk at a time. Results are identical to fitting the
+            # whole file at once: each ROI is fitted on its own, the gate setting is the file's, and the
+            # chunks cover increasing frames, so appending them in order gives the file's table.
             append = combined_output and FOVn > 0
-            self.io.write_h5_database(fit_results, fit_savename, append=append)
+            for k in range(len(chunks)):
+                rois, frame_offset, chunk_quality = chunks[k]
+                chunks[k] = None                                   # release this chunk's raw ROIs once fitted
+                if not rois:
+                    continue
+                built = [
+                    self._build_roi(
+                        raw_roi, bounds, frame, smoothing_function, read_noise, masks,
+                        gain_map=gain_map, offset_map=offset_map, rqe=rqe, frame_offset=frame_offset,
+                    )
+                    for raw_roi, bounds, frame in rois
+                ]
+                del rois
+                puncta, smoothed, weights, roi_masks, coords, planes, readnoise_maps = (
+                    [b[j] for b in built] for j in (0, 1, 2, 3, 4, 5, 6)
+                )
+                del built
+
+                fit_results_array, fit_errors_array = self.image_analysis.fit_puncta_parallel_method(
+                    puncta,
+                    smoothed,
+                    weights,
+                    coords,
+                    planes,
+                    strategy,
+                    masks=roi_masks,
+                    readnoise_maps=readnoise_maps,
+                    gate_setting=gate_setting,
+                )
+                del puncta, smoothed, weights, roi_masks, coords, readnoise_maps
+
+                fit_results = self._postprocess_fit_results(
+                    fit_results_array,
+                    fit_errors_array,
+                    result_params,
+                    planes,
+                    width,
+                    height,
+                    quality_metrics=chunk_quality,
+                    min_sigma=fit_min_sigma,
+                    max_sigma=fit_max_sigma,
+                )
+                if len(fit_results):
+                    self.io.write_h5_database(fit_results, fit_savename, append=append)
+                    append = True                                  # later chunks continue this file's rows
+                del fit_results_array, fit_errors_array, fit_results, planes
+                gc.collect()
 
             if accumulate_frame_numbers:
                 total_frames += file_frames
-
-            del (
-                fit_results_array,
-                fit_results,
-                fit_errors_array,
-                all_puncta_tofit,
-                all_smoothed_puncta_tofit,
-                all_masks_tofit,
-                all_readnoise_tofit,
-                all_weights_tofit,
-                all_relative_coords,
-                all_planes,
-            )
+            del chunks
             gc.collect()
+
+    @staticmethod
+    def _filter_quality_metrics(quality_metrics, detected_puncta, valid_indices):
+        """Quality metrics of the ROIs kept (``valid_indices`` into ``detected_puncta``), as
+        _process_detected_puncta_batch filters them; None without metrics."""
+        if quality_metrics is None or len(quality_metrics) == 0:
+            return None
+        idx = np.array(valid_indices, dtype=int)
+        out = {}
+        for key, values in quality_metrics.items():
+            if len(values) == len(detected_puncta):
+                out[key] = values[idx]
+            else:
+                logger.warning(
+                    f"Quality metric '{key}' length ({len(values)}) doesn't match "
+                    f"detected_puncta length ({len(detected_puncta)}). Skipping."
+                )
+        return out
 
     def fit_tracking_data(
         self,
@@ -2051,194 +2106,16 @@ class SuperRes_Functions:
                 xc, yc, s_x, s_y, theta, bg_B, bg_G, bg_R, A_B, A_G, A_R,
                 chi_sqr, frame  [+ per-parameter errors]
         """
-        from pyS3M.ImageAnalysisFunctions import FittingStrategy
-
-        if use_elliptical:
-            strategy = FittingStrategy.ELLIPTICAL
-            result_params = ResultColumns.get_elliptical_columns()
-        else:
-            strategy = FittingStrategy.STANDARD_DATA
-            result_params = ResultColumns.get_all_columns()
-
-        if pixel_size is None:
-            pixel_size = self.pixel_size
-
-        image_files = self.helper.file_search(image_folder, image_type, "")
-        start_x, start_y, width, height = self.helper.load_metadata_roi(
-            image_folder, self.io, use_fallback=False
+        # The same pipeline as fit_SM_data (frames restart in each file, one .h5 beside each TIFF),
+        # with the elliptical model by default.
+        self._fit_files(
+            image_folder, smoothing_function, gain_map, offset_map, rqe, read_noise, variance,
+            pfa=pfa, ROI_size=ROI_size, peak_wavelength=peak_wavelength, NA=NA, pixel_size=pixel_size,
+            sigma=sigma, fraction_true=fraction_true, image_type=image_type,
+            use_variance_aware_demosaic=use_variance_aware_demosaic, use_elliptical=use_elliptical,
+            accumulate_frame_numbers=False, combined_output=False,
+            fit_min_sigma=fit_min_sigma, fit_max_sigma=fit_max_sigma,
         )
-
-        masks = self.mask.get_stacked_masks(
-            start_x, start_y, width, height, self.mosaic_unit
-        )
-        cropped_maps = self.helper.crop_calibration_maps(
-            {
-                "gain_map": gain_map,
-                "offset_map": offset_map,
-                "read_noise": read_noise,
-                "rqe": rqe,
-                "variance": variance,
-            },
-            start_x,
-            start_y,
-            width,
-            height,
-        )
-        gain_map = cropped_maps["gain_map"]
-        offset_map = cropped_maps["offset_map"]
-        read_noise = cropped_maps["read_noise"]
-        rqe = cropped_maps["rqe"]
-        variance = cropped_maps["variance"]
-
-        for FOVn, file in enumerate(image_files):
-            fit_savename = str(Path(file).with_name(Path(file).name.split(".")[0] + ".h5"))
-
-            total_frames = self.io.get_num_pages_in_TIF(file)
-
-            chunk_size = 1000
-            all_puncta_tofit = []
-            all_smoothed_puncta_tofit = []
-            all_masks_tofit = []
-            all_readnoise_tofit = []
-            all_weights_tofit = []
-            all_relative_coords = []
-            all_planes = []
-            all_quality_metrics = []
-
-            logger.info(f"Processing file {FOVn+1}/{len(image_files)}: {total_frames} frames " f"in chunks of {chunk_size} (strategy: {strategy.value})")
-
-            for chunk_start in range(0, total_frames, chunk_size):
-                chunk_end = min(chunk_start + chunk_size, total_frames)
-                chunk_frames = list(range(chunk_start, chunk_end))
-
-                logger.info(f"  Processing chunk: frames {chunk_start}-{chunk_end-1}")
-
-                raw_data = self.io.read_tiff(file, dtype="float32", frame=chunk_frames)
-
-                if raw_data.ndim == 2:
-                    raw_data = raw_data[np.newaxis, :, :]
-
-                image_to_analyse = self._demosaic_image(
-                    raw_data,
-                    use_variance_aware=use_variance_aware_demosaic,
-                    gain_map=gain_map,
-                    offset_map=offset_map,
-                    variance=variance,
-                )
-
-                detected_puncta, quality_metrics = (
-                    self.spot_detection.detect_puncta_in_stack_parallel(
-                        image_to_analyse,
-                        pfa=pfa,
-                        variance=variance,
-                        wavelength=peak_wavelength,
-                        pixel_size=pixel_size,
-                        NA=NA,
-                        sigma=sigma,
-                        fraction_true=fraction_true,
-                        return_quality=True,
-                    )
-                )
-
-                (
-                    chunk_puncta,
-                    chunk_smoothed,
-                    chunk_masks,
-                    chunk_weights,
-                    chunk_coords,
-                    chunk_planes,
-                    filtered_quality_metrics,
-                    chunk_readnoise,
-                ) = self._process_detected_puncta_batch(
-                    raw_data,
-                    detected_puncta,
-                    width,
-                    height,
-                    ROI_size,
-                    smoothing_function,
-                    read_noise,
-                    masks,
-                    gain_map=gain_map,
-                    offset_map=offset_map,
-                    rqe=rqe,
-                    frame_offset=chunk_start,
-                    is_multi_frame=True,
-                    quality_metrics=quality_metrics,
-                )
-
-                all_puncta_tofit.extend(chunk_puncta)
-                all_smoothed_puncta_tofit.extend(chunk_smoothed)
-                all_masks_tofit.extend(chunk_masks)
-                all_readnoise_tofit.extend(chunk_readnoise)
-                all_weights_tofit.extend(chunk_weights)
-                all_relative_coords.extend(chunk_coords)
-                all_planes.extend(chunk_planes)
-                if filtered_quality_metrics is not None:
-                    all_quality_metrics.append(filtered_quality_metrics)
-
-                del raw_data, detected_puncta, quality_metrics, image_to_analyse
-                gc.collect()
-
-            logger.info(f"  Found {len(all_puncta_tofit)} puncta across all chunks")
-
-            combined_quality_metrics = {}
-            if len(all_quality_metrics) > 0:
-                for quality_dict in all_quality_metrics:
-                    if len(quality_dict) > 0:
-                        for key in quality_dict.keys():
-                            combined_quality_metrics[key] = []
-                        break
-                for quality_dict in all_quality_metrics:
-                    if len(quality_dict) > 0:
-                        for key in combined_quality_metrics.keys():
-                            if key in quality_dict:
-                                combined_quality_metrics[key].append(quality_dict[key])
-                for key in combined_quality_metrics.keys():
-                    if len(combined_quality_metrics[key]) > 0:
-                        combined_quality_metrics[key] = np.concatenate(
-                            combined_quality_metrics[key]
-                        )
-
-            fit_results_array, fit_errors_array = (
-                self.image_analysis.fit_puncta_parallel_method(
-                    all_puncta_tofit,
-                    all_smoothed_puncta_tofit,
-                    all_weights_tofit,
-                    all_relative_coords,
-                    all_planes,
-                    strategy,
-                    masks=all_masks_tofit,
-                    readnoise_maps=all_readnoise_tofit,
-                )
-            )
-
-            fit_results = self._postprocess_fit_results(
-                fit_results_array,
-                fit_errors_array,
-                result_params,
-                all_planes,
-                width,
-                height,
-                quality_metrics=combined_quality_metrics,
-                min_sigma=fit_min_sigma,
-                max_sigma=fit_max_sigma,
-            )
-
-            self.io.write_h5_database(fit_results, fit_savename, append=False)
-            del (
-                fit_results_array,
-                fit_results,
-                fit_errors_array,
-                all_puncta_tofit,
-                all_smoothed_puncta_tofit,
-                all_masks_tofit,
-                all_readnoise_tofit,
-                all_weights_tofit,
-                all_relative_coords,
-                all_planes,
-            )
-            gc.collect()
-        return
 
     def _demosaic_image(
         self,
@@ -2445,7 +2322,9 @@ class SuperRes_Functions:
                             frames_to_fit[puncta_idx] = np.arange(last_real_cp)
                     pbar.update(1)
 
-        return frames_to_fit
+        # by punctum index: as_completed returns batches in whatever order the workers finish, which made
+        # the fitting order (and the fit gate's first ROI) differ from run to run
+        return dict(sorted(frames_to_fit.items()))
 
     def fit_imaging_data(
         self,

@@ -118,7 +118,7 @@ class IO_Functions:
         """
         return pd.read_hdf(filepath, key=key)
 
-    def write_h5_database(self, df: pd.DataFrame, filepath: Path | str, append: bool = False, normalise_photons: bool = True, verbose: bool = True, key: str = "data") -> None:
+    def write_h5_database(self, df: pd.DataFrame, filepath: Path | str, append: bool = False, normalise_photons: bool = True, verbose: bool = True, key: str = "data", sort_on_append: bool = True) -> None:
         """Write localisation DataFrame to HDF5 with optional photon normalisation and frame sorting.
 
         Args:
@@ -133,6 +133,9 @@ class IO_Functions:
                 real results in the same folder -- e.g. simulation ground truth --
                 should use a different key so they're skipped (via the existing
                 ``KeyError`` handling) rather than misread as fit results.
+            sort_on_append (bool): If False, an append adds the rows after the existing ones, in their
+                order (the index continues 0..N-1), with no sorting by frame: for writing one table in
+                parts whose order is not by frame (e.g. FRET fits, by punctum).
         """
         if df.shape[0] > 0:
             # first, remove any rows that are all NaN
@@ -154,8 +157,12 @@ class IO_Functions:
                 # out-of-order append (e.g. simulation photon levels, whose frames restart) rewrites the
                 # whole table: reading it back holds several copies in memory and costs time quadratic
                 # in the number of appends.
-                in_order = "frame" not in df.columns
-                if not in_order:
+                in_order = "frame" not in df.columns or not sort_on_append
+                if not sort_on_append:
+                    with pd.HDFStore(filepath, mode="r") as store:
+                        nrows = store.get_storer(key).nrows if key in store else 0
+                    df.index = pd.RangeIndex(nrows, nrows + len(df))
+                elif not in_order:
                     df = df.sort_values(by="frame", kind="mergesort")
                     last_frame, nrows = self._sorted_last_frame(filepath, key)
                     in_order = last_frame is not None and (len(df) == 0 or df["frame"].iloc[0] >= last_frame)

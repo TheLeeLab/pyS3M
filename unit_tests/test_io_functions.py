@@ -240,6 +240,19 @@ class TestReadWriteH5Database:
         assert list(out["frame"]) == [0, 5, 6, 6, 7, 7, 8, 9, 20]
         assert list(out.index) == list(range(9))
 
+    def test_append_without_sorting_keeps_the_given_order(self, io, tmp_path):
+        # sort_on_append=False: rows follow the existing ones as given (FRET fits are in punctum order)
+        path = tmp_path / "locs.h5"
+        df1 = _loc_df(3)
+        df1["frame"] = [7, 2, 5]
+        io.write_h5_database(df1, path)
+        df2 = _loc_df(3)
+        df2["frame"] = [9, 1, 4]
+        io.write_h5_database(df2, path, append=True, sort_on_append=False)
+        out = io.read_h5_database(path)
+        assert list(out["frame"]) == [7, 2, 5, 9, 1, 4]
+        assert list(out.index) == list(range(6))
+
     def test_append_to_nonexistent_file_writes_fresh(self, io, tmp_path):
         path = tmp_path / "new.h5"
         df = _loc_df(3)

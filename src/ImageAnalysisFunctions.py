@@ -53,6 +53,56 @@ def _lm_stuck(pfit: np.ndarray, x0: np.ndarray) -> bool:
     return bool(np.array_equal(np.asarray(pfit), np.asarray(x0)))
 
 
+def median_of_arrays(arrays, batch_values: int = 4_000_000):
+    """``np.median(np.concatenate([np.ravel(a) for a in arrays]))``, without the concatenation.
+
+    The fitters take the fit gate's read noise as this median over every ROI's read-noise crop; for
+    millions of ROIs the concatenated copy alone is GBs. Here the values are counted in batches
+    (``np.unique``, merged as they come; the same array object listed several times is counted, not
+    copied), so memory scales with the number of distinct values, and the median is read off the
+    counts exactly as ``np.median`` takes it: the middle value, or the mean of the two middle values
+    in the arrays' common dtype. NaN anywhere gives NaN, as ``np.median``.
+    """
+    groups = {}
+    for a in arrays:
+        k = id(a)
+        if k in groups:
+            groups[k][1] += 1
+        else:
+            groups[k] = [a, 1]
+    if not groups:
+        return np.float64(np.nan)
+    dtype = np.result_type(*[np.asarray(a).dtype for a, _ in groups.values()])
+    values = np.empty(0, dtype=dtype)
+    counts = np.empty(0, dtype=np.int64)
+
+    def merge(vals, wts):
+        u, inv = np.unique(np.concatenate([values, vals]), return_inverse=True)
+        return u, np.bincount(inv.ravel(), weights=np.concatenate([counts, wts]), minlength=len(u)).astype(np.int64)
+
+    buf_v, buf_w, n_buf = [], [], 0
+    for a, c in groups.values():
+        v = np.ravel(np.asarray(a)).astype(dtype, copy=False)
+        buf_v.append(v)
+        buf_w.append(np.full(v.size, c, dtype=np.int64))
+        n_buf += v.size
+        if n_buf >= batch_values:
+            values, counts = merge(np.concatenate(buf_v), np.concatenate(buf_w))
+            buf_v, buf_w, n_buf = [], [], 0
+    if buf_v:
+        values, counts = merge(np.concatenate(buf_v), np.concatenate(buf_w))
+    n = int(counts.sum())
+    if n == 0:
+        return dtype.type(np.nan)
+    if np.issubdtype(dtype, np.inexact) and np.isnan(values[-1]):   # np.unique sorts NaN last
+        return dtype.type(np.nan)
+    cum = np.cumsum(counts)
+    at = lambda k: values[np.searchsorted(cum, k, side="right")]     # k-th value (0-based) of the sorted data
+    if n % 2:
+        return np.mean(np.array([at(n // 2)], dtype=dtype))
+    return np.mean(np.array([at(n // 2 - 1), at(n // 2)], dtype=dtype))
+
+
 class FittingStrategy(Enum):
     """Enumeration for different fitting strategies.
 
@@ -1347,18 +1397,33 @@ class Image_Analysis_Functions:
         for strategy in self._GATED_STRATEGIES:
             self.processors[strategy].gate = self.gate
 
-    def _prepare_gate(self, strategy: FittingStrategy, puncta, masks, readnoise_maps) -> None:
-        """Load (or calibrate, once, and cache) the delta-chi^2 gate's thresholds for this
-        strategy, ROI size and read noise before fitting."""
-        gate = getattr(self.processors[strategy], "gate", None)
-        if (self._skip_gate_prepare or not isinstance(gate, FitGate.DeltaChi2Gate)
-                or len(puncta) == 0 or masks is None):
-            return
+    def gate_setting(self, strategy: FittingStrategy, puncta, masks, readnoise_maps):
+        """(ROI size, read noise, mask) the fit gate is prepared with for this batch of puncta: the
+        first punctum's size and mask, and the median read noise over all their read-noise crops
+        (the processor's scalar read noise without crops). None when there is nothing to fit or no
+        masks. A caller that fits one batch in several parts passes the whole batch's setting to
+        each part (``gate_setting=``), so the parts are gated exactly as the whole would be."""
+        if len(puncta) == 0 or masks is None:
+            return None
         if readnoise_maps is not None and len(readnoise_maps) > 0:
-            readnoise = float(np.median(np.concatenate([np.ravel(r) for r in readnoise_maps])))
+            readnoise = float(median_of_arrays(readnoise_maps))
         else:
             readnoise = float(getattr(self.processors[strategy], "readnoise", 1.5))
-        gate.prepare(strategy, int(np.shape(puncta[0])[0]), readnoise, np.asarray(masks[0]))
+        return int(np.shape(puncta[0])[0]), readnoise, np.asarray(masks[0])
+
+    def _prepare_gate(self, strategy: FittingStrategy, puncta, masks, readnoise_maps,
+                      gate_setting=None) -> None:
+        """Load (or calibrate, once, and cache) the delta-chi^2 gate's thresholds for this
+        strategy, ROI size and read noise before fitting (``gate_setting``: see gate_setting)."""
+        gate = getattr(self.processors[strategy], "gate", None)
+        if self._skip_gate_prepare or not isinstance(gate, FitGate.DeltaChi2Gate):
+            return
+        if gate_setting is None:
+            gate_setting = self.gate_setting(strategy, puncta, masks, readnoise_maps)
+        if gate_setting is None:
+            return
+        roi_size, readnoise, mask = gate_setting
+        gate.prepare(strategy, int(roi_size), float(readnoise), np.asarray(mask))
 
     def _processor_state(self, strategy: FittingStrategy) -> dict:
         """Settings of this strategy's processor that worker processes must copy."""
@@ -1376,6 +1441,7 @@ class Image_Analysis_Functions:
         strategy: FittingStrategy,
         masks: Optional[List[np.ndarray]] = None,
         readnoise_maps: Optional[List[np.ndarray]] = None,
+        gate_setting: Optional[Tuple[int, float, np.ndarray]] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Fit puncta using specified strategy.
 
@@ -1415,7 +1481,7 @@ class Image_Analysis_Functions:
                 strategy=FittingStrategy.NOCOLOUR
             )
         """
-        self._prepare_gate(strategy, puncta, masks, readnoise_maps)
+        self._prepare_gate(strategy, puncta, masks, readnoise_maps, gate_setting)
 
         # Create and validate parameters
         params = FittingParameters(
@@ -1516,6 +1582,7 @@ class Image_Analysis_Functions:
         masks: Optional[List[np.ndarray]] = None,
         asynch: bool = False,
         readnoise_maps: Optional[List[np.ndarray]] = None,
+        gate_setting: Optional[Tuple[int, float, np.ndarray]] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Fit puncta in parallel using specified strategy.
 
@@ -1531,6 +1598,8 @@ class Image_Analysis_Functions:
             strategy: Fitting strategy to use.
             masks: Optional list of 3D arrays containing colour masks.
             asynch: If True, return futures for asynchronous processing.
+            gate_setting: (ROI size, read noise, mask) to prepare the fit gate with, instead of
+                this batch's own (see gate_setting); for fitting one batch in several parts.
 
         Returns:
             Tuple containing fit parameters and errors arrays.
@@ -1556,7 +1625,7 @@ class Image_Analysis_Functions:
             )
         )
 
-        self._prepare_gate(strategy, puncta, masks, readnoise_maps)
+        self._prepare_gate(strategy, puncta, masks, readnoise_maps, gate_setting)
 
         # Worker processes build their own fitter, so copy this processor's settings
         # (scalar read noise, fit gate) across rather than falling back to defaults

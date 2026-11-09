@@ -1278,3 +1278,51 @@ class TestDeltaChi2GateCalibration:
                                             [masks] * len(pe), [np.full((10, 10), 9.0, np.float32)] * len(pe), state)
         assert len(list(tmp_path.glob("*.json"))) == n_files
         assert np.mean(~np.isnan(out[0][:, 0])) > 0.5
+
+
+# ---------------------------------------------------------------------------
+# Memory-lean batch statistics: exact median without concatenation; gate setting
+# ---------------------------------------------------------------------------
+class TestMedianOfArrays:
+    @pytest.mark.parametrize("dtype", [np.float32, np.float64])
+    def test_equals_np_median_of_the_concatenation(self, dtype):
+        rng = np.random.default_rng(3)
+        for _ in range(300):
+            pool = [(rng.integers(0, 5, (s, s)) * 0.3 + 1.0).astype(dtype) if rng.random() < 0.5
+                    else rng.normal(1.5, 0.3, (s, s)).astype(dtype) for s in rng.integers(1, 5, rng.integers(1, 6))]
+            arrays = [pool[i] for i in rng.integers(0, len(pool), rng.integers(1, 12))]   # repeats included
+            ref = np.median(np.concatenate([np.ravel(a) for a in arrays]))
+            got = iaf.median_of_arrays(arrays, batch_values=int(rng.integers(1, 30)))
+            assert got == ref and np.asarray(got).dtype == np.asarray(ref).dtype
+
+    def test_nan_and_empty(self):
+        assert np.isnan(iaf.median_of_arrays([np.array([1.0, np.nan, 2.0])]))
+        assert np.isnan(iaf.median_of_arrays([]))
+
+
+class TestGateSettingOverride:
+    def _batch(self, n, rn_value):
+        rng = np.random.default_rng(0)
+        masks = np.zeros((SIZE, SIZE, 3), bool)
+        masks[::2, ::2, 0] = masks[1::2, 1::2, 2] = True
+        masks[::2, 1::2, 1] = masks[1::2, ::2, 1] = True
+        puncta = [rng.poisson(5.0, (SIZE, SIZE)).astype(np.float32) for _ in range(n)]
+        return puncta, [masks] * n, [np.full((SIZE, SIZE), rn_value, np.float32) for _ in range(n)]
+
+    def test_gate_setting_is_first_roi_and_median_readnoise(self):
+        ia = Image_Analysis_Functions()
+        puncta, masks, rn = self._batch(3, 1.25)
+        roi, readnoise, mask = ia.gate_setting(FittingStrategy.STANDARD_DATA, puncta, masks, rn)
+        assert roi == SIZE and readnoise == 1.25 and mask is not None
+        assert ia.gate_setting(FittingStrategy.STANDARD_DATA, [], masks, rn) is None
+
+    def test_prepare_uses_the_given_setting(self, monkeypatch):
+        ia = Image_Analysis_Functions()
+        gate = ia.processors[FittingStrategy.STANDARD_DATA].gate
+        assert isinstance(gate, DeltaChi2Gate)
+        seen = []
+        monkeypatch.setattr(gate, "prepare", lambda strategy, roi, rn, mask: seen.append((roi, rn)))
+        puncta, masks, rn = self._batch(2, 1.25)
+        ia._prepare_gate(FittingStrategy.STANDARD_DATA, puncta, masks, rn)
+        ia._prepare_gate(FittingStrategy.STANDARD_DATA, puncta, masks, rn, gate_setting=(SIZE, 2.5, masks[0]))
+        assert seen == [(SIZE, 1.25), (SIZE, 2.5)]
