@@ -75,13 +75,13 @@ def colour_scale(pixels, n_sd=SCALE_SD):
 
 
 def sized_image(img, height_pt, pixel_nm, scalebar_nm, scalebar_label, scalebar_pt=1.5, scalebar_fontsize=6,
-                cbar=None, margin_pt=1.5):
+                cbar=None, margin_pt=1.5, panel_label=None, panel_label_fontsize=8):
     """A rendered RGB image drawn at an exact size (pt), as placed in the paper's figure.
 
     The image (origin lower) is ``height_pt`` tall and as wide as its aspect ratio makes it, with a
     white scale bar ``margin_pt`` from its lower-right corner, the label centred above it. ``cbar``
     (optional) adds a colour bar beside it: dict(c_min, c_max, label, width_pt, gap_pt, tick_fontsize,
-    label_fontsize=8, cmap="jet"). Save with ``bbox_inches="tight"``: the sizes are unchanged.
+    label_fontsize=8, cmap="jet"). ``panel_label`` (optional) is drawn bold, white, top left. Save with ``bbox_inches="tight"``: the sizes are unchanged.
 
     Returns:
         (fig, ax) with ax in image pixel coordinates.
@@ -111,6 +111,9 @@ def sized_image(img, height_pt, pixel_nm, scalebar_nm, scalebar_label, scalebar_
     x_label, ha = (x1 - length / 2, "center") if label_w / 2 <= length / 2 + margin_pt * px_per_pt else (x1, "right")
     ax.text(x_label, y0 + (scalebar_pt + 1.0) * px_per_pt, scalebar_label, color="white",
             fontsize=scalebar_fontsize, ha=ha, va="bottom")
+    if panel_label is not None:   # bold white, top left (as the published Figure 5l numbers)
+        ax.text(margin_pt * px_per_pt, h - margin_pt * px_per_pt, str(panel_label), color="white",
+                fontsize=panel_label_fontsize, fontweight="bold", ha="left", va="top")
     ax.set_xlim(-0.5, w - 0.5)
     ax.set_ylim(-0.5, h - 0.5)
 
@@ -166,3 +169,43 @@ def aggregate_red_share(df, aggregate_id_column="cluster_id"):
                       "wR": np.where(valid, pe * f[:, 0], 0.0),
                       "wtot": np.where(valid, pe * f.sum(axis=1), 0.0)}).groupby("agg")[["wR", "wtot"]].sum()
     return (s["wR"] / s["wtot"]).rename("red_share")
+
+
+def slot_crop(image, x_px, y_px, oversampling, slot_w_pt, slot_h_pt, pad=1.25):
+    """Crop of a render around some localisations with exactly a figure slot's aspect ratio.
+
+    Centred on the localisations' bounding box, scaled so the box times ``pad`` just fits the slot;
+    parts outside the render are black.
+
+    Args:
+        image: Render (rows, cols[, 3]) with ``oversampling`` render px per camera px.
+        x_px, y_px: The localisations' camera-px coordinates (``xc``, ``yc``).
+        slot_w_pt, slot_h_pt: The slot's size in the figure (pt).
+
+    Returns:
+        The crop, (rows, cols[, 3]); draw it with ``sized_image(height_pt=slot_h_pt)``.
+    """
+    x0, x1 = np.min(x_px) * oversampling, np.max(x_px) * oversampling
+    y0, y1 = np.min(y_px) * oversampling, np.max(y_px) * oversampling
+    px_per_pt = pad * max((x1 - x0) / slot_w_pt, (y1 - y0) / slot_h_pt, 1e-9)
+    w, h = int(round(slot_w_pt * px_per_pt)), int(round(slot_h_pt * px_per_pt))
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    c0, r0 = int(round(cx - w / 2)), int(round(cy - h / 2))
+    out = np.zeros((h, w) + image.shape[2:], dtype=image.dtype)
+    rs, cs = max(0, r0), max(0, c0)
+    re_, ce = min(image.shape[0], r0 + h), min(image.shape[1], c0 + w)
+    if re_ > rs and ce > cs:
+        out[rs - r0:re_ - r0, cs - c0:ce - c0] = image[rs:re_, cs:ce]
+    return out
+
+
+def rebrighten(colour, grey, lo_pct=1.0, hi_pct=99.5, occupied_only=False):
+    """``colour`` with its brightness set again from the density ``grey``, clipped to its
+    ``lo_pct``-``hi_pct`` percentiles (over all pixels, or only those with any density)."""
+    from matplotlib import colors as mcolors
+
+    vals = grey[grey > 0] if occupied_only else grey
+    lo, hi = np.percentile(vals, lo_pct), np.percentile(vals, hi_pct)
+    hsv = mcolors.rgb_to_hsv(np.clip(colour, 0, 1))
+    hsv[..., 2] = np.clip((grey - lo) / (hi - lo), 0, 1)
+    return mcolors.hsv_to_rgb(hsv)
