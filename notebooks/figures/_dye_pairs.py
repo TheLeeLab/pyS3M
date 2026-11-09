@@ -190,3 +190,179 @@ def error_rate_panel(summaries, pairs=None, min_molecules=50):
     ax.legend(loc="upper right", fontsize=6, framealpha=0.8, edgecolor="#cccccc",
               handletextpad=0.3, borderpad=0.4, labelspacing=0.3)
     return fig, ax
+
+
+# ---------------------------------------------------------------------------------------------
+# Figure 3b: one frame per pair with a molecule of each dye side by side, circled and named in the
+# dye's colour. Each image is 23.3 mm square (its size in the paper), in photoelectrons with a small
+# colour bar inside it (as Fig. 2b), a 500 nm scale bar, and the 2 x 2 Bayer key of the pixels in
+# its top-left corner, read from the sensor masks at the crop's position.
+DYE_COLOURS = {"ATTO 520": "#0000ff", "Rho6G": "#00ffff", "ATTO 565": "#00ff00", "ATTO 594": "#ffa500",
+               "ATTO 633": "#ff0000", "ATTO 647N": "#ffc0cb", "QD800": "#ff0000"}
+DYE_LABELS = {"Rho6G": "ATTO Rho6G", "QD800": "Qdot 800"}   # names as printed in the paper
+EXAMPLE_CROP_PX = 20
+EXAMPLE_MM = 23.3
+
+
+def assign_dyes(sm_db, means, covariances):
+    """Each molecule's dye (0 or 1, the order of ``means``) and its posterior probability, from the
+    two Gaussians of the pair's colours in (A_R, A_G) with equal weights."""
+    from scipy.stats import multivariate_normal
+    X = sm_db[["A_R", "A_G"]].to_numpy()
+    like = np.column_stack([multivariate_normal(m, c).pdf(X) for m, c in zip(means, covariances)])
+    post = like / np.clip(like.sum(axis=1, keepdims=True), 1e-300, None)
+    return post.argmax(axis=1), post.max(axis=1)
+
+
+def find_example(sf_db, sm_db, labels, confidence, frame_shape, min_confidence=0.99,
+                 min_sep_px=5, max_sep_px=9, crop_px=EXAMPLE_CROP_PX):
+    """The frame showing one confidently assigned molecule of each dye side by side.
+
+    Candidates: pairs of localisations in the same position and frame, one of each dye (each
+    molecule's assignment ``>= min_confidence``), ``min_sep_px``-``max_sep_px`` apart, whose
+    ``crop_px`` square crop centred between them lies inside the frame and holds no other
+    localisation. The one with the most photoelectrons in its dimmer molecule is returned.
+
+    Args:
+        sf_db: Localisations (``molecular_index``, ``fov_index``, ``frame``, ``xc``, ``yc``,
+            ``photoelectrons``).
+        sm_db: Molecules (``molecular_index``), in the order of ``labels`` / ``confidence``.
+        frame_shape: (rows, cols) of the camera ROI.
+
+    Returns:
+        dict: ``fov_index``, ``frame``, ``row0``, ``col0`` (the crop's top-left pixel in the ROI) and
+        ``mols``, a list of two dicts (``dye`` index, ``xc``, ``yc``, ``photoelectrons``), or None.
+    """
+    lab = pd.DataFrame({"molecular_index": sm_db["molecular_index"].to_numpy(), "dye": labels,
+                        "conf": confidence})
+    loc = sf_db.merge(lab, on="molecular_index", how="left")
+    best, best_score = None, -np.inf
+    half = crop_px / 2
+    for (fov, frame), g in loc.groupby(["fov_index", "frame"], sort=False):
+        ok = g[g["conf"] >= min_confidence]
+        a, b = ok[ok["dye"] == 0], ok[ok["dye"] == 1]
+        if a.empty or b.empty:
+            continue
+        for _, p in a.iterrows():
+            d = np.hypot(b["xc"] - p["xc"], b["yc"] - p["yc"])
+            for _, q in b[(d >= min_sep_px) & (d <= max_sep_px)].iterrows():
+                score = min(p["photoelectrons"], q["photoelectrons"])
+                if score <= best_score:
+                    continue
+                cx, cy = (p["xc"] + q["xc"]) / 2, (p["yc"] + q["yc"]) / 2
+                col0, row0 = int(round(cx - half)), int(round(cy - half))
+                if row0 < 0 or col0 < 0 or row0 + crop_px > frame_shape[0] or col0 + crop_px > frame_shape[1]:
+                    continue
+                inside = g["xc"].between(col0 - 1.5, col0 + crop_px + 0.5) & g["yc"].between(row0 - 1.5, row0 + crop_px + 0.5)
+                if inside.sum() > 2:
+                    continue
+                best_score = score
+                best = dict(fov_index=int(fov), frame=int(frame), row0=row0, col0=col0,
+                            mols=[dict(dye=int(m["dye"]), xc=float(m["xc"]), yc=float(m["yc"]),
+                                       photoelectrons=float(m["photoelectrons"])) for m in (p, q)])
+    return best
+
+
+def frame_crop(tif, frame, row0, col0, crop_px, gain, offset, rqe):
+    """One frame's ``crop_px`` square crop (top-left at ``row0``, ``col0`` of the ROI) in
+    photoelectrons; ``gain``, ``offset``, ``rqe`` are the calibration maps cropped to the ROI."""
+    import tifffile
+    flags = dict(is_ome=False, is_mmstack=False, is_imagej=False)   # see _single_dyes.open_stack
+    try:
+        stack = tifffile.memmap(tif, mode="r", **flags)
+    except ValueError:
+        stack = tifffile.imread(tif, **flags)
+    sl = np.s_[row0:row0 + crop_px, col0:col0 + crop_px]
+    raw = np.asarray(stack[frame][sl], dtype=np.float32)
+    return (raw - offset[sl]) / gain[sl] / rqe[sl]
+
+
+def example_panel(crop, mols, dyes, masks, sensor_origin, pe_range=None, pixel_nm=PIXEL_SIZE_NM,
+                  plotter=None):
+    """Figure 3b: one pair's crop with each molecule circled and named in its dye's colour.
+
+    Args:
+        crop: Image (photoelectrons), ``EXAMPLE_CROP_PX`` square.
+        mols: The two molecules (``dye`` index into ``dyes``, ``xc``, ``yc`` in crop pixels).
+        dyes: The pair's two dye names (``PAIRS[pair][2]``).
+        masks: The calibration's full-sensor colour masks.
+        sensor_origin: Sensor (row, col) of the crop's top-left pixel, for the Bayer key.
+        pe_range: Display range (photoelectrons); default the crop's 1st-99.8th percentiles.
+
+    Returns:
+        (fig, ax).
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Circle
+    from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
+    from pyS3M.PlottingBase import add_bayer_key
+
+    mm = 1 / 25.4
+    fig = plt.figure(figsize=(EXAMPLE_MM * mm, EXAMPLE_MM * mm))
+    fig.set_layout_engine("none")
+    ax = fig.add_axes([0, 0, 1, 1])
+    vmin, vmax = pe_range if pe_range is not None else np.percentile(crop, [1, 99.8])
+    im = ax.imshow(crop, cmap="gray", vmin=vmin, vmax=vmax, origin="upper", interpolation="nearest")
+    ax.set_axis_off()
+    n = crop.shape[0]
+    # regions kept clear of labels, (x0, y0, x1, y1) in crop px: colour bar (top right),
+    # scale bar (bottom right), Bayer key (top left)
+    keep_clear = [(0.48 * n, -0.5, n, 0.22 * n), (n - 0.5 - 500 / pixel_nm - 1, n - 3, n, n),
+                  (-0.5, -0.5, 2, 2)]
+    labels = [DYE_LABELS.get(dyes[m["dye"]], dyes[m["dye"]]) for m in mols]
+    boxes = _place_labels(mols, labels, n, keep_clear)
+    for m, label, (x, y) in zip(mols, labels, boxes):
+        colour = DYE_COLOURS[dyes[m["dye"]]]
+        ax.add_patch(Circle((m["xc"], m["yc"]), 2.6, fill=False, edgecolor=colour, lw=1.0))
+        ax.text(x, y, label, color=colour, fontsize=6, ha="center", va="center",
+                bbox=dict(boxstyle="round,pad=0.15", facecolor=(0.3, 0.3, 0.3, 0.6), edgecolor="none"))
+    ax.add_artist(AnchoredSizeBar(ax.transData, 500 / pixel_nm, "", loc="lower right", pad=0.25,
+                                  borderpad=0.2, color="white", frameon=False, size_vertical=0.35))
+    # photoelectron colour bar inside the image, top right (ticks below, as Fig. 2b)
+    cax = ax.inset_axes([0.5, 0.9, 0.36, 0.035])
+    cbar = fig.colorbar(im, cax=cax, orientation="horizontal")
+    lo, hi = np.ceil(vmin / 10) * 10, np.floor(vmax / 10) * 10
+    cbar.set_ticks([lo, hi])
+    cbar.ax.tick_params(labelsize=5, colors="white", length=1.2, width=0.4, pad=0.8)
+    cbar.outline.set_edgecolor("white")
+    cbar.outline.set_linewidth(0.4)
+    cbar.ax.text(1.05, 0.5, r"pe$^{-}$", transform=cbar.ax.transAxes, color="white", fontsize=5,
+                 ha="left", va="center")
+    add_bayer_key(ax, masks, row_min=sensor_origin[0], col_min=sensor_origin[1])
+    return fig, ax
+
+
+def _place_labels(mols, labels, n, keep_clear, radius=2.6, char_px=1.15, height_px=2.2):
+    """Centres (x, y) in crop px for each molecule's label: above, below, left or right of its
+    circle, choosing the combination whose label boxes overlap least with the circles, each other,
+    the ``keep_clear`` rectangles and the image edge."""
+    import itertools
+
+    def box(m, label, side):
+        w, h = char_px * len(label) + 0.6, height_px
+        gap = radius + 0.5
+        x, y = {"above": (m["xc"], m["yc"] - gap - h / 2), "below": (m["xc"], m["yc"] + gap + h / 2),
+                "left": (m["xc"] - gap - w / 2, m["yc"]), "right": (m["xc"] + gap + w / 2, m["yc"])}[side]
+        if side in ("above", "below"):  # slide along x to stay in the image
+            x = min(max(x, w / 2 - 0.5), n - 0.5 - w / 2)
+        return x, y, (x - w / 2, y - h / 2, x + w / 2, y + h / 2)
+
+    def overlap(a, b):
+        return max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
+
+    def outside(r):
+        inner = (-0.5, -0.5, n - 0.5, n - 0.5)
+        return (r[2] - r[0]) * (r[3] - r[1]) - overlap(r, inner)
+
+    circles = [(m["xc"] - radius, m["yc"] - radius, m["xc"] + radius, m["yc"] + radius) for m in mols]
+    best = None
+    for sides in itertools.product(["above", "below", "left", "right"], repeat=len(mols)):
+        placed = [box(m, lab, s) for m, lab, s in zip(mols, labels, sides)]
+        rects = [p[2] for p in placed]
+        cost = sum(10 * outside(r) + sum(overlap(r, c) for c in circles)
+                   + sum(overlap(r, k) for k in keep_clear) for r in rects)
+        cost += sum(5 * overlap(a, b) for a, b in itertools.combinations(rects, 2))
+        cost += 0.01 * sum(s in ("left", "right") for s in sides)  # prefer above/below on ties
+        if best is None or cost < best[0]:
+            best = (cost, [(p[0], p[1]) for p in placed])
+    return best[1]
