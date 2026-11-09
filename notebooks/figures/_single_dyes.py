@@ -280,12 +280,15 @@ def under_insets(xc, yc, width, height, insets, pad_px=ZOOM_PX):
                                            for l, b, w, h in insets)
 
 
-def bleach_fov_panel(fov_img, cands, exposure_s, colour, insets, pixel_nm, plotter):
+def bleach_fov_panel(fov_img, cands, exposure_s, colour, insets, pixel_nm, plotter, masks=None):
     """Fig. 2b / c: the field of view (with a photoelectron colour bar) and one inset per candidate.
 
     Args:
         fov_img: Field of view (photoelectrons), rows x cols of the camera ROI.
-        cands: Candidates (``xc``, ``yc``, ``trace`` in photoelectrons, ``zoom`` 10 x 10 px).
+        cands: Candidates (``xc``, ``yc``, ``trace`` in photoelectrons, ``zoom`` 10 x 10 px, and
+            ``zoom_origin``: the sensor (row, col) of the zoom's top-left pixel, for the Bayer key).
+        masks: The camera calibration's full-sensor colour masks. If given, each PSF zoom-in gets a
+            2 x 2 Bayer key (``PlottingBase.add_bayer_key``) showing the filters at its sensor position.
         exposure_s: Frame time (s).
         colour: Edge colour of the insets and molecule boxes.
         insets: (left, bottom, width, height) of each inset, fractions of the figure.
@@ -345,6 +348,10 @@ def bleach_fov_panel(fov_img, cands, exposure_s, colour, insets, pixel_nm, plott
         ax_z = fig.add_axes(to_rect(0.8, ih - 0.85 - 12.3, 12.3, 12.3), zorder=2)
         plotter.image_plot(ax_z, cand["zoom"], cmap="gray", origin="upper",
                            vmin=np.percentile(cand["zoom"], 1), vmax=np.percentile(cand["zoom"], 99.9))
+        if masks is not None:
+            from pyS3M.PlottingBase import add_bayer_key
+            row_min, col_min = cand["zoom_origin"]
+            add_bayer_key(ax_z, masks, row_min=row_min, col_min=col_min)
         ax_z.add_artist(AnchoredSizeBar(ax_z.transData, 300 / pixel_nm, "300 nm", loc="lower left",
                                         pad=0.15, sep=1, borderpad=0.1, color="white", frameon=False,
                                         size_vertical=0.3, label_top=True, fontproperties={"size": 6.5}))
