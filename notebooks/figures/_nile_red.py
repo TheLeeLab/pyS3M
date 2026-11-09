@@ -128,10 +128,11 @@ def sized_image(img, height_pt, pixel_nm, scalebar_nm, scalebar_label, scalebar_
     return fig, ax
 
 
-def render_red_share(render, locs, c_min, c_max, oversampling, mindensperc=1.0, maxdensperc=99.5):
+def render_red_share(render, locs, c_min, c_max, oversampling, mindensperc=1.0, maxdensperc=99.5,
+                     min_blur_width=0.0):
     """The relative pixel 3 QE render used for every Figure 5 panel (S. aureus and alpha-syn alike).
 
-    Each localisation is a Gaussian of its own precision (no minimum blur); hue = photon-weighted
+    Each localisation is a Gaussian of its own precision (at least ``min_blur_width``); hue = photon-weighted
     ``red_share`` on ``c_min``-``c_max`` (jet). ``render`` sets its own brightness (density, 1-99.9
     percentiles, below 0.1 of that set to black, which also drops their saturation); that brightness is
     then replaced by the density clipped to its ``mindensperc``-``maxdensperc`` percentiles over the whole
@@ -143,6 +144,7 @@ def render_red_share(render, locs, c_min, c_max, oversampling, mindensperc=1.0, 
         locs: DataFrame with ``red_share`` (from ``red_share_pixelated``), ``xc``, ``yc``, ``xc_err``, ``yc_err``.
         c_min, c_max: Colour scale (relative pixel 3 QE).
         oversampling: Render pixels per camera pixel.
+        min_blur_width: Smallest Gaussian width (camera px); 0 (the S. aureus render) for none.
 
     Returns:
         (density image, RGB image), both (rows, cols) in render pixels, origin at camera (0, 0).
@@ -152,7 +154,8 @@ def render_red_share(render, locs, c_min, c_max, oversampling, mindensperc=1.0, 
     _, grey, colour = render.render(
         locs=locs.to_records(index=False), oversampling=oversampling,
         viewport=((0, 0), (np.max(locs["yc"]), np.max(locs["xc"]))),
-        blur_method="gaussian_colour", cparam="red_share", c_min=c_min, c_max=c_max)
+        blur_method="gaussian_colour", cparam="red_share", c_min=c_min, c_max=c_max,
+        min_blur_width=min_blur_width)
     lo, hi = np.percentile(grey, mindensperc), np.percentile(grey, maxdensperc)
     hsv = mcolors.rgb_to_hsv(colour)
     hsv[..., 2] = np.clip((grey - lo) / (hi - lo), 0, 1)
