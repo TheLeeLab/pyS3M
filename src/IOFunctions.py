@@ -148,7 +148,22 @@ class IO_Functions:
             if append and Path(filepath).is_file():
                 # Check schema compatibility before appending
                 df = self._ensure_hdf5_compatibility(df, filepath, key=key)
+                # The table is kept sorted by frame (stable). When the new rows all come at or after the
+                # table's last frame (the fitters write files and chunks in frame order), sorting the new
+                # rows and appending them gives exactly that table, with no read-back. Only an
+                # out-of-order append (e.g. simulation photon levels, whose frames restart) rewrites the
+                # whole table: reading it back holds several copies in memory and costs time quadratic
+                # in the number of appends.
+                in_order = "frame" not in df.columns
+                if not in_order:
+                    df = df.sort_values(by="frame", kind="mergesort")
+                    last_frame, nrows = self._sorted_last_frame(filepath, key)
+                    in_order = last_frame is not None and (len(df) == 0 or df["frame"].iloc[0] >= last_frame)
+                    if in_order:   # continue the 0..N-1 index the rewrite would give
+                        df.index = pd.RangeIndex(nrows, nrows + len(df))
                 df.to_hdf(filepath, key=key, append=True, mode="r+", format="table", index=False)
+                if in_order:
+                    return
 
                 # Re-read entire file, sort by frame, and rewrite
                 # This ensures proper frame ordering for visualization
@@ -175,6 +190,26 @@ class IO_Functions:
                             logger.info(f"  Rewritten sorted data to {Path(filepath).name}")
             else:
                 df.to_hdf(filepath, key=key, format="table", index=False)
+
+    @staticmethod
+    def _sorted_last_frame(filepath: Path | str, key: str):
+        """(last frame, number of rows) of table ``key``. The last frame is None unless the table's frame column
+        is sorted (non-decreasing) and its index is 0..N-1 (as the rewrite leaves it), or when the table is
+        missing or empty: the caller then sorts the whole table, as before. Reads only the frame and index."""
+        with pd.HDFStore(filepath, mode="r") as store:
+            if key not in store or not store.get_storer(key).nrows:
+                return None, 0
+            storer = store.get_storer(key)
+            # "frame" is not a data column: read it out of the values block that holds it (one dtype per
+            # block, so only the integer columns), not the whole table
+            block = next((va for va in storer.values_axes if "frame" in list(va.values)), None)
+            if block is None:
+                return None, storer.nrows
+            frames = storer.table.col(block.cname)[:, list(block.values).index("frame")]
+            index = storer.table.col("index")
+        if np.any(np.diff(frames) < 0) or not np.array_equal(index, np.arange(len(index))):
+            return None, len(frames)
+        return frames[-1], len(frames)
 
     # Keep private alias for any external callers not yet migrated
     _write_h5_database = write_h5_database

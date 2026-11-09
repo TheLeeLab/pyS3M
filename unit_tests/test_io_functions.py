@@ -203,6 +203,43 @@ class TestReadWriteH5Database:
         assert len(out) == 6
         assert list(out["frame"]) == sorted(out["frame"])
 
+    def test_in_order_appends_skip_the_rewrite_and_match_a_full_sort(self, io, tmp_path, monkeypatch):
+        # Chunks in frame order (as the fitters write them) are appended without reading the table back,
+        # and give the same table (rows, order, 0..N-1 index) as one stable sort of everything.
+        rng = np.random.default_rng(1)
+        chunks = []
+        for k in range(4):
+            df = _loc_df(50)
+            df["frame"] = rng.integers(10 * k, 10 * k + 11, 50)   # shares its first frame with the last chunk
+            chunks.append(df)
+        path = tmp_path / "locs.h5"
+        io.write_h5_database(chunks[0].sort_values("frame", kind="mergesort").reset_index(drop=True), path)
+        rewrites = []
+        real_put = pd.HDFStore.put
+        monkeypatch.setattr(pd.HDFStore, "put", lambda self, *a, **k: (rewrites.append(1), real_put(self, *a, **k)))
+        for df in chunks[1:]:
+            io.write_h5_database(df, path, append=True, verbose=False)
+        assert not rewrites
+        expected = io._add_photon_columns(pd.concat(
+            [c.assign(frame=c["frame"].astype("int32")) for c in chunks], ignore_index=True))
+        expected = expected.sort_values("frame", kind="mergesort", ignore_index=True)
+        pd.testing.assert_frame_equal(io.read_h5_database(path), expected, check_dtype=False)
+
+    def test_out_of_order_append_still_rewrites_sorted(self, io, tmp_path):
+        path = tmp_path / "locs.h5"
+        df1 = _loc_df(3)
+        df1["frame"] = [5, 6, 7]
+        io.write_h5_database(df1, path)
+        df2 = _loc_df(3)
+        df2["frame"] = [7, 8, 9]
+        io.write_h5_database(df2, path, append=True)       # in order
+        df3 = _loc_df(3)
+        df3["frame"] = [0, 6, 20]
+        io.write_h5_database(df3, path, append=True)       # out of order: full sort
+        out = io.read_h5_database(path)
+        assert list(out["frame"]) == [0, 5, 6, 6, 7, 7, 8, 9, 20]
+        assert list(out.index) == list(range(9))
+
     def test_append_to_nonexistent_file_writes_fresh(self, io, tmp_path):
         path = tmp_path / "new.h5"
         df = _loc_df(3)
