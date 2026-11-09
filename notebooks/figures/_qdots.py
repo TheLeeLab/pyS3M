@@ -130,3 +130,99 @@ class FixedParamsGMM:
 
     def predict(self, X):
         return self._responsibilities(np.asarray(X, dtype=float))[0].argmax(axis=1)
+
+
+# --- Figure 3 f, g at their size in the paper ----------------------------------------------------
+# Drawn at the size they have in Figure 3 (placed at 100 %, the fonts are the paper's 7 / 8 pt):
+# f's triangle side and g's matrix side, as measured from the figure.
+TERNARY_SIDE_MM = 45.3
+CONFUSION_SIDE_MM = 37.8
+BLUE_SCALE = 6   # f stretches pixel 1 (blue) x 6, then renormalises, to spread the QDots out
+PIXEL_AXIS_COLOURS = {"pixel 1": "#5858df", "pixel 2": "#53b03b", "pixel 3": "#ff2a2a"}   # as Fig. 2e
+
+
+def _mm_figure(plot_w_mm, plot_h_mm, margin_mm, projection=None, **kw):
+    """A figure holding one axes of exactly plot_w_mm x plot_h_mm, with margins (left, bottom,
+    right, top; mm) for the labels."""
+    import matplotlib.pyplot as plt
+    mm = 1 / 25.4
+    left, bottom, right, top = margin_mm
+    W, H = plot_w_mm + left + right, plot_h_mm + bottom + top
+    fig = plt.figure(figsize=(W * mm, H * mm))
+    fig.set_layout_engine("none")   # keep the axes at their size (the style's constrained layout would not)
+    ax = fig.add_axes([left / W, bottom / H, plot_w_mm / W, plot_h_mm / H], projection=projection, **kw)
+    return fig, ax
+
+
+def ternary_panel(mix, side_mm=TERNARY_SIDE_MM, blue_scale=BLUE_SCALE, size=2, alpha_scale=150):
+    """Figure 3f: the mixture's molecules on a black ternary, coloured by their assigned QDot.
+
+    Top corner = pixel 3 (``A_R``), left = pixel 2 (``A_G``), right = ``blue_scale`` x pixel 1
+    (``A_B``), each axis and its dashed grid in its pixel's colour. Point opacity is
+    ``alpha_scale / n`` per QDot, so sparse and abundant QDots show alike.
+
+    Args:
+        mix: Molecules with ``A_R``, ``A_G``, ``A_B`` and ``qdot`` (a ``REFERENCES`` key).
+        side_mm: Triangle side (mm).
+
+    Returns:
+        (fig, ax).
+    """
+    import mpltern  # noqa: F401  (registers the "ternary" projection)
+    fig, ax = _mm_figure(side_mm, side_mm * np.sqrt(3) / 2, (13, 11, 13, 5), projection="ternary",
+                         ternary_sum=1)
+    ax.set_facecolor("black")
+    for name, (colour, _) in REFERENCES.items():
+        sub = mix[mix["qdot"] == name]
+        if len(sub):
+            ax.scatter(sub["A_R"], sub["A_G"], blue_scale * sub["A_B"], color=colour, s=size,
+                       alpha=min(1.0, alpha_scale / len(sub)), linewidths=0, rasterized=True)
+    ticks = np.round(np.arange(0, 1.01, 0.2), 1)
+    axes = [(ax.taxis, ax.set_tlabel, "pixel 3", "pixel 3 relative QE"),
+            (ax.laxis, ax.set_llabel, "pixel 2", "pixel 2 relative QE"),
+            (ax.raxis, ax.set_rlabel, "pixel 1", f"{blue_scale} × pixel 1 relative QE")]
+    for axis, set_label, pixel, label in axes:
+        colour = PIXEL_AXIS_COLOURS[pixel]
+        axis.set_ticks(ticks)
+        set_label(label, color=colour, fontsize=8)
+        axis.set_label_position("tick1")
+        axis.set_tick_params(colors=colour, labelsize=7, width=0.75)
+    # mpltern names each side after the corner opposite it (tside = bottom edge, carrying pixel 1)
+    for spine, pixel in [("tside", "pixel 1"), ("lside", "pixel 3"), ("rside", "pixel 2")]:
+        ax.spines[spine].set_color(PIXEL_AXIS_COLOURS[pixel])
+        ax.spines[spine].set_linewidth(1.0)
+    for which, pixel in [("t", "pixel 3"), ("l", "pixel 2"), ("r", "pixel 1")]:
+        ax.grid(axis=which, color=PIXEL_AXIS_COLOURS[pixel], lw=0.5, ls="--", alpha=0.8)
+    ax.text(0.97, 0.03, rf"$N_\mathrm{{QD}}$ = {len(mix):,}", transform=ax.transAxes, color="white",
+            fontsize=7, ha="right", va="bottom")
+    return fig, ax
+
+
+def confusion_panel(cm, names, side_mm=CONFUSION_SIDE_MM):
+    """Figure 3g: row-normalised confusion matrix, grey scale, values to 2 decimals, no colour bar.
+
+    Args:
+        cm: (n, n) confusion matrix, rows = true QDot, normalised per row.
+        names: QDot names in ``cm`` order (``QDot800`` is shown as ``Qdot800``, as in the paper).
+        side_mm: Side of the matrix (mm).
+
+    Returns:
+        (fig, ax).
+    """
+    import matplotlib.pyplot as plt
+    fig, ax = _mm_figure(side_mm, side_mm, (13, 11, 1, 1))
+    labels = [n.replace("QDot", "Qdot") for n in names]
+    ax.imshow(cm, cmap=plt.cm.gist_yarg, vmin=0, vmax=1)
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            ax.text(j, i, f"{cm[i, j]:.2f}", ha="center", va="center", fontsize=6.5,
+                    color="white" if cm[i, j] > 0.5 else "black")
+    ax.set_xticks(range(len(labels)), labels, rotation=45, ha="right", rotation_mode="anchor", fontsize=6.5)
+    ax.set_yticks(range(len(labels)), labels, fontsize=6.5)
+    ax.tick_params(length=0, pad=1.5)
+    ax.set_xlabel("Predicted", fontsize=8, labelpad=1)
+    ax.set_ylabel("True", fontsize=8, labelpad=1)
+    for spine in ax.spines.values():
+        spine.set_linewidth(1.5)
+    ax.grid(False)
+    return fig, ax
