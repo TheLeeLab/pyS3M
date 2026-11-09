@@ -11,6 +11,13 @@ the SI note "Calibrating Precision":
   share of the sensor covered by pixel type X, from the mosaic; SI Eq. S18);
 * ``pe_X`` -- detected photoelectrons on pixel type X, ``f_X * A_X``.
 
+Colour precision is plotted and fitted against ``n_eff = pe_X / (1 - A_X)``: for a fraction A of the
+signal measured from N_X photoelectrons, counting noise gives std(A) / A = sqrt((1 - A) / N_X), so
+pixel types carrying most of a bead's light (red at 638 nm, A ~ 0.7) are more precise at the same
+N_X. Against ``n_eff`` all pixel types and lasers fall on one curve; against ``pe_X`` they form
+bands. Only beads that pass the position cut (``LOC_RANGE_NM``) are used for colour as well: beads
+outside it are mostly merged or smeared clusters whose colour changes from frame to frame.
+
 The published plot used ``photons`` = A_B + A_G + A_R, which overcounts the detected photoelectrons
 2-4x, and its signal on pixel X, A_X, ignored that pixel 2 (green) covers twice the area of pixel 1
 or 3; it scaled the green colour precision by sqrt(2) to make up for that. ``pe_X`` counts the
@@ -260,11 +267,14 @@ def bead_precision(sf_db, min_frames=MIN_FRAMES, pixel_nm=PIXEL_NM):
 
 
 def colour_long(beads):
-    """One row per bead and pixel: ``pe_px`` detected on that pixel type, ``prec_pct``."""
+    """One row per bead and pixel: ``pe_px`` detected on that pixel type, its share of the signal
+    ``A_px``, the effective count ``n_eff = pe_px / (1 - A_px)`` (see the module docstring), and
+    ``prec_pct``."""
     rows = []
     for ch in CHANNELS:
         scale = GREEN_SCALE if ch == "G" else 1.0
-        rows.append(beads.assign(channel=ch, pe_px=beads["pe_" + ch],
+        rows.append(beads.assign(channel=ch, pe_px=beads["pe_" + ch], A_px=beads["A_" + ch],
+                                 n_eff=beads["pe_" + ch] / (1 - beads["A_" + ch]),
                                  prec_pct=100 * scale * beads["prec_" + ch]))
     return pd.concat(rows, ignore_index=True)
 
@@ -275,8 +285,11 @@ def clean_loc(beads, column="sigma_xy"):
 
 
 def clean_colour(long):
+    """Colour points of beads that pass the position cut, with precision in ``COLOUR_RANGE_PCT``
+    and ``n_eff`` (the plot's x axis) below ``MAX_PE``."""
     m = (long["prec_pct"].between(*COLOUR_RANGE_PCT, inclusive="neither")
-         & (long["pe_px"] < MAX_PE))
+         & long["sigma_xy"].between(*LOC_RANGE_NM, inclusive="neither")
+         & (long["n_eff"] < MAX_PE))
     return long[m]
 
 
