@@ -195,13 +195,14 @@ def error_rate_panel(summaries, pairs=None, min_molecules=50):
 # ---------------------------------------------------------------------------------------------
 # Figure 3b: one frame per pair with a molecule of each dye side by side, circled and named in the
 # dye's colour. Each image is 23.3 mm square (its size in the paper), in photoelectrons with a small
-# colour bar inside it (as Fig. 2b), a 500 nm scale bar, and the 2 x 2 Bayer key of the pixels in
+# colour bar inside it (as Fig. 2b), a 300 nm scale bar, and the 2 x 2 Bayer key of the pixels in
 # its top-left corner, read from the sensor masks at the crop's position.
 DYE_COLOURS = {"ATTO 520": "#0000ff", "Rho6G": "#00ffff", "ATTO 565": "#00ff00", "ATTO 594": "#ffa500",
                "ATTO 633": "#ff0000", "ATTO 647N": "#ffc0cb", "QD800": "#ff0000"}
 DYE_LABELS = {"Rho6G": "ATTO Rho6G", "QD800": "Qdot 800"}   # names as printed in the paper
 EXAMPLE_CROP_PX = 20
 EXAMPLE_MM = 23.3
+SCALEBAR_NM = 300   # as the Fig. 2b zoom-ins
 
 
 def assign_dyes(sm_db, means, covariances):
@@ -305,18 +306,20 @@ def example_panel(crop, mols, dyes, masks, sensor_origin, pe_range=None, pixel_n
     im = ax.imshow(crop, cmap="gray", vmin=vmin, vmax=vmax, origin="upper", interpolation="nearest")
     ax.set_axis_off()
     n = crop.shape[0]
-    # regions kept clear of labels, (x0, y0, x1, y1) in crop px: colour bar (top right),
-    # scale bar (bottom right), Bayer key (top left)
-    keep_clear = [(0.48 * n, -0.5, n, 0.22 * n), (n - 0.5 - 500 / pixel_nm - 1, n - 3, n, n),
-                  (-0.5, -0.5, 2, 2)]
+    # regions kept clear of labels, (x0, y0, x1, y1) in crop px: colour bar (top right), Bayer key
+    # (top left) and the scale bar, in whichever bottom corner leaves the labels more room
+    bar_px = SCALEBAR_NM / pixel_nm
+    fixed = [(0.48 * n, -0.5, n, 0.22 * n), (-0.5, -0.5, 2, 2)]
+    corners = {"lower right": (n - 1.5 - bar_px, n - 3, n, n), "lower left": (-0.5, n - 3, bar_px + 1, n)}
     labels = [DYE_LABELS.get(dyes[m["dye"]], dyes[m["dye"]]) for m in mols]
-    boxes = _place_labels(mols, labels, n, keep_clear)
-    for m, label, (x, y) in zip(mols, labels, boxes):
+    placed = {loc: _place_labels(mols, labels, n, fixed + [rect]) for loc, rect in corners.items()}
+    bar_loc = min(placed, key=lambda loc: placed[loc][0] + (0 if loc == "lower right" else 0.5))
+    for m, label, (x, y) in zip(mols, labels, placed[bar_loc][1]):
         colour = DYE_COLOURS[dyes[m["dye"]]]
         ax.add_patch(Circle((m["xc"], m["yc"]), 2.6, fill=False, edgecolor=colour, lw=1.0))
         ax.text(x, y, label, color=colour, fontsize=6, ha="center", va="center",
                 bbox=dict(boxstyle="round,pad=0.15", facecolor=(0.3, 0.3, 0.3, 0.6), edgecolor="none"))
-    ax.add_artist(AnchoredSizeBar(ax.transData, 500 / pixel_nm, "", loc="lower right", pad=0.25,
+    ax.add_artist(AnchoredSizeBar(ax.transData, bar_px, "", loc=bar_loc, pad=0.25,
                                   borderpad=0.2, color="white", frameon=False, size_vertical=0.35))
     # photoelectron colour bar inside the image, top right (ticks below, as Fig. 2b)
     cax = ax.inset_axes([0.5, 0.9, 0.36, 0.035])
@@ -332,9 +335,9 @@ def example_panel(crop, mols, dyes, masks, sensor_origin, pe_range=None, pixel_n
     return fig, ax
 
 
-def _place_labels(mols, labels, n, keep_clear, radius=2.6, char_px=1.15, height_px=2.2):
+def _place_labels(mols, labels, n, keep_clear, radius=2.6, char_px=1.15, height_px=2.8):
     """Centres (x, y) in crop px for each molecule's label: above, below, left or right of its
-    circle, choosing the combination whose label boxes overlap least with the circles, each other,
+    circle, choosing the combination whose label boxes overlap least (returns (cost, centres)) with the circles, each other,
     the ``keep_clear`` rectangles and the image edge."""
     import itertools
 
@@ -360,9 +363,9 @@ def _place_labels(mols, labels, n, keep_clear, radius=2.6, char_px=1.15, height_
         placed = [box(m, lab, s) for m, lab, s in zip(mols, labels, sides)]
         rects = [p[2] for p in placed]
         cost = sum(10 * outside(r) + sum(overlap(r, c) for c in circles)
-                   + sum(overlap(r, k) for k in keep_clear) for r in rects)
+                   + 5 * sum(overlap(r, k) for k in keep_clear) for r in rects)
         cost += sum(5 * overlap(a, b) for a, b in itertools.combinations(rects, 2))
         cost += 0.01 * sum(s in ("left", "right") for s in sides)  # prefer above/below on ties
         if best is None or cost < best[0]:
             best = (cost, [(p[0], p[1]) for p in placed])
-    return best[1]
+    return best
