@@ -123,3 +123,46 @@ def sized_image(img, height_pt, pixel_nm, scalebar_nm, scalebar_label, scalebar_
         cb.outline.set_linewidth(0.5)
         cb.set_label(cbar["label"], fontsize=cbar.get("label_fontsize", 8), labelpad=2)
     return fig, ax
+
+
+def render_red_share(render, locs, c_min, c_max, oversampling, mindensperc=1.0, maxdensperc=99.5):
+    """The relative pixel 3 QE render used for every Figure 5 panel (S. aureus and alpha-syn alike).
+
+    Each localisation is a Gaussian of its own precision (no minimum blur); hue = photon-weighted
+    ``red_share`` on ``c_min``-``c_max`` (jet). ``render`` sets its own brightness (density, 1-99.9
+    percentiles, below 0.1 of that set to black, which also drops their saturation); that brightness is
+    then replaced by the density clipped to its ``mindensperc``-``maxdensperc`` percentiles over the whole
+    field, so those faintest pixels come back grey. (This is the published S. aureus render.) Crops
+    are cut from this image unchanged, so they share its brightness scale.
+
+    Args:
+        render: The ``render`` module (passed in so this file needs no src path).
+        locs: DataFrame with ``red_share`` (from ``red_share_pixelated``), ``xc``, ``yc``, ``xc_err``, ``yc_err``.
+        c_min, c_max: Colour scale (relative pixel 3 QE).
+        oversampling: Render pixels per camera pixel.
+
+    Returns:
+        (density image, RGB image), both (rows, cols) in render pixels, origin at camera (0, 0).
+    """
+    from matplotlib import colors as mcolors
+
+    _, grey, colour = render.render(
+        locs=locs.to_records(index=False), oversampling=oversampling,
+        viewport=((0, 0), (np.max(locs["yc"]), np.max(locs["xc"]))),
+        blur_method="gaussian_colour", cparam="red_share", c_min=c_min, c_max=c_max)
+    lo, hi = np.percentile(grey, mindensperc), np.percentile(grey, maxdensperc)
+    hsv = mcolors.rgb_to_hsv(colour)
+    hsv[..., 2] = np.clip((grey - lo) / (hi - lo), 0, 1)
+    return grey, mcolors.hsv_to_rgb(hsv)
+
+
+def aggregate_red_share(df, aggregate_id_column="cluster_id"):
+    """Relative pixel 3 QE of each aggregate: R / (R + G + B) of its summed A_c x photoelectrons
+    (the value ``red_share_pixelated`` falls back to). Series indexed by aggregate id."""
+    f = df[["A_R", "A_G", "A_B"]].to_numpy(dtype=np.float64)
+    pe = df["photoelectrons"].to_numpy(dtype=np.float64)
+    valid = np.isfinite(f).all(axis=1) & (f.sum(axis=1) > 0) & np.isfinite(pe) & (pe > 0)
+    s = pd.DataFrame({"agg": df[aggregate_id_column].to_numpy(),
+                      "wR": np.where(valid, pe * f[:, 0], 0.0),
+                      "wtot": np.where(valid, pe * f.sum(axis=1), 0.0)}).groupby("agg")[["wR", "wtot"]].sum()
+    return (s["wR"] / s["wtot"]).rename("red_share")
