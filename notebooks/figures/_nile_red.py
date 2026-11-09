@@ -174,11 +174,12 @@ def aggregate_red_share(df, aggregate_id_column="cluster_id"):
     return (s["wR"] / s["wtot"]).rename("red_share")
 
 
-def slot_crop(image, x_px, y_px, oversampling, slot_w_pt, slot_h_pt, pad=1.25):
+def slot_crop(image, x_px, y_px, oversampling, slot_w_pt, slot_h_pt, pad=1.25, centroid=False):
     """Crop of a render around some localisations with exactly a figure slot's aspect ratio.
 
-    Centred on the localisations' bounding box, scaled so the box times ``pad`` just fits the slot;
-    parts outside the render are black.
+    Centred on the localisations' bounding box (or, with ``centroid``, on their mean position), scaled so
+    the box (made symmetric about that centre) times ``pad`` just fits the slot; parts outside the
+    render are black.
 
     Args:
         image: Render (rows, cols[, 3]) with ``oversampling`` render px per camera px.
@@ -190,6 +191,10 @@ def slot_crop(image, x_px, y_px, oversampling, slot_w_pt, slot_h_pt, pad=1.25):
     """
     x0, x1 = np.min(x_px) * oversampling, np.max(x_px) * oversampling
     y0, y1 = np.min(y_px) * oversampling, np.max(y_px) * oversampling
+    if centroid:
+        cx, cy = np.mean(x_px) * oversampling, np.mean(y_px) * oversampling
+        hx, hy = max(cx - x0, x1 - cx), max(cy - y0, y1 - cy)
+        x0, x1, y0, y1 = cx - hx, cx + hx, cy - hy, cy + hy
     px_per_pt = pad * max((x1 - x0) / slot_w_pt, (y1 - y0) / slot_h_pt, 1e-9)
     w, h = int(round(slot_w_pt * px_per_pt)), int(round(slot_h_pt * px_per_pt))
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
