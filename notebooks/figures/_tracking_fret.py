@@ -316,6 +316,64 @@ def state_dwells(seg, high_label, dt):
     return pd.DataFrame(rows, columns=["puncta_id", "state", "dwell_s"])
 
 
+def _hessian(f, x, rel=1e-4):
+    """Central-difference Hessian of a scalar function."""
+    x = np.asarray(x, float)
+    h = rel * np.maximum(np.abs(x), 1e-3)
+    n = len(x)
+    H = np.empty((n, n))
+    for i in range(n):
+        for j in range(n):
+            e_i, e_j = np.eye(n)[i] * h[i], np.eye(n)[j] * h[j]
+            H[i, j] = (f(x + e_i + e_j) - f(x + e_i - e_j) - f(x - e_i + e_j) + f(x - e_i - e_j)) / (4 * h[i] * h[j])
+    return H
+
+
+def biexp_rate(dwells, t_min, k_max=100.0):
+    """Two-exponential maximum-likelihood fit of dwell times (>= t_min).
+
+    Pass t_min one frame above the minimum change-point segment: PELT piles segments up at exactly
+    its minimum length, and that spike, fitted as a decay, becomes a spurious fast component.
+
+    Dwells beyond t_min are modelled as a mixture of two exponentials, fraction ``w`` exiting at
+    ``k_fast`` and 1 - w at ``k_slow``: p(t) = w k_f exp(-k_f x) + (1 - w) k_s exp(-k_s x),
+    x = t - t_min (memoryless, so the truncation only shifts the origin). Several starts; errors
+    from the inverse Hessian of the negative log-likelihood. ``resolved`` is False when the fit
+    collapses to one exponential (k_fast at ``k_max``, or a fraction within 2% of 0 or 1); AIC of
+    this fit and of the single exponential (k = 1 / mean(x)) say whether the second component is
+    supported (lower is better).
+    Returns dict(w_fast, k_fast, k_slow, *_err, k_mono, n, aic_bi, aic_mono, resolved).
+    """
+    from scipy.optimize import minimize
+    t = np.asarray(dwells, float)
+    x = np.maximum(t[t >= t_min - 1e-9] - t_min, 0.0)   # tolerance: dwells are frame multiples
+
+    def nll(p):
+        w, k1, k2 = p
+        return -np.sum(np.log(w * k1 * np.exp(-k1 * x) + (1 - w) * k2 * np.exp(-k2 * x) + 1e-300))
+
+    k_mono = 1 / x.mean()
+    best = None
+    for w0 in (0.3, 0.6, 0.9):
+        for f1, f2 in ((2, 0.3), (5, 0.5), (10, 0.2)):
+            r = minimize(nll, [w0, f1 * k_mono, f2 * k_mono], method="L-BFGS-B",
+                         bounds=[(1e-3, 1 - 1e-3), (1e-3, k_max), (1e-3, k_max)])
+            if best is None or r.fun < best.fun:
+                best = r
+    w, k1, k2 = best.x
+    if k1 < k2:                                       # order: fast first
+        w, k1, k2 = 1 - w, k2, k1
+    p = np.array([w, k1, k2])
+    try:
+        err = np.sqrt(np.diag(np.linalg.inv(_hessian(nll, p))))
+    except np.linalg.LinAlgError:
+        err = np.full(3, np.nan)
+    nll_mono = -(len(x) * np.log(k_mono) - k_mono * x.sum())
+    return dict(w_fast=w, k_fast=k1, k_slow=k2, w_fast_err=err[0], k_fast_err=err[1], k_slow_err=err[2],
+                k_mono=k_mono, n=len(x), aic_bi=2 * 3 + 2 * nll(p), aic_mono=2 * 1 + 2 * nll_mono,
+                resolved=bool(k1 < 0.99 * k_max and 0.02 < w < 0.98))
+
+
 def exp_rate(dwells, t_min, bins="sqrt"):
     """Exit rate of one state from its dwell times (>= t_min, the minimum segment length).
 
