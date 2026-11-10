@@ -148,29 +148,28 @@ TRACK_FOVS = ([f"1nM_Total/Well{w}/4banddichroic_NF_{i}" for w in (1, 2, 3) for 
 FRET_REMOTE = "2026_Multicolour_Paper/ZWO/20260402_HJs/50mM_MgCl_20pMHJ_515LP650200BP_100perc515_2"
 FRET_FAST_STEM = "50mM_MgCl_20pMHJ_515LP650200BP_100perc515_2_MMStack_Pos-0-0"   # the pictured position
 
-# Fig. 4b: one track per protein, as {cluster: (field of view, first frame, first (xc, yc) in px)}.
-# Picked from the refit as the tracks closest in shape to the paper's exemplars; UCHT1 is the
-# paper's own molecule.
+# Fig. 4b: one stretch of track per protein, as {cluster: (field of view, first frame, last frame,
+# (xc, yc) in px at the first frame)}. Picked from the refit as the stretches closest in shape to the
+# paper's exemplars (arc-length-resampled RMS, then Frechet distance); UCHT1 is the paper's own molecule.
 EXEMPLARS = {
-    0: ("500pM_Total/Well1/4banddichroic_NF_2", 267, (570.5, 455.5)),   # ICAM-1
-    1: ("500pM_Total/Well4/4banddichroic_NF_3", 862, (619.4, 221.9)),   # CD58
-    2: ("1nM_Total/Well1/4banddichroic_NF_1", 43, (221.5, 86.4)),       # UCHT1
+    0: ("1nM_Total/Well1/4banddichroic_NF_1", 342, 376, (245.1, 155.5)),   # ICAM-1
+    1: ("1nM_Total/Well1/4banddichroic_NF_1", 438, 452, (249.8, 176.2)),   # CD58
+    2: ("1nM_Total/Well1/4banddichroic_NF_1", 43, 76, (221.5, 86.4)),      # UCHT1
 }
-TRACK_FAST_FOVS = sorted({fov for fov, _, _ in EXEMPLARS.values()})   # FAST_MODE: the exemplars' fields
+TRACK_FAST_FOVS = sorted({e[0] for e in EXEMPLARS.values()})   # FAST_MODE: the exemplars' fields
 
 
 def find_exemplar(sm: pd.DataFrame, sf: pd.DataFrame, track_root: Path, fov: str, first_frame: int,
                   xy, max_frames: int = 3, max_px: float = 2.0) -> int:
     """``molecular_index`` of the track in field of view ``fov`` (relative to ``track_root``) that
-    starts within ``max_frames`` frames and ``max_px`` px of (``first_frame``, ``xy``)."""
+    has a localisation within ``max_frames`` frames and ``max_px`` px of (``first_frame``, ``xy``)."""
     folder = Path(track_root) / fov
     ids = sm.loc[sm["fov_name"].map(lambda f: Path(f).parent == folder), "molecular_index"]
-    first = sf[sf["molecular_index"].isin(ids)].sort_values("frame").groupby("molecular_index").first()
-    d = np.hypot(first["xc"] - xy[0], first["yc"] - xy[1])
-    ok = (first["frame"] - first_frame).abs().le(max_frames) & d.le(max_px)
-    if not ok.any():
-        raise LookupError(f"no track in {fov} starts near frame {first_frame}, ({xy[0]}, {xy[1]})")
-    return int(d[ok].idxmin())
+    near = sf[sf["molecular_index"].isin(ids) & (sf["frame"] - first_frame).abs().le(max_frames)]
+    d = np.hypot(near["xc"] - xy[0], near["yc"] - xy[1])
+    if not d.le(max_px).any():
+        raise LookupError(f"no track in {fov} near frame {first_frame}, ({xy[0]}, {xy[1]})")
+    return int(near.loc[d.idxmin(), "molecular_index"])
 
 
 # --------------------------------------------------------------------------- FRET: dyes
