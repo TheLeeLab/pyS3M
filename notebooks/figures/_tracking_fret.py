@@ -394,3 +394,131 @@ def exp_rate(dwells, t_min, bins="sqrt"):
     k_mle = 1 / np.mean(t - t_min)
     return dict(k_fit=popt[1], k_fit_err=float(np.sqrt(pcov[1, 1])), a=popt[0], edges=edges,
                 counts=counts, k_mle=k_mle, k_mle_err=k_mle / np.sqrt(len(t)), n=len(t))
+
+
+# --------------------------------------------------------------------------- SI figures (S84-S88)
+
+# Figure 2d's pooled colour-precision fit (Ximea, TetraSpeck beads; Figure_2d_TetraspeckPrecision,
+# section 4): std(A_X) / A_X (%) = a / sqrt(N_eff) + c, with N_eff = N_X / (1 - A_X) and N_X the
+# photoelectrons detected on pixel type X (see _beads.py). a, c from its bead_precision.csv.
+BEAD_COLOUR_FIT = (168.37, -0.363)
+
+
+def bead_resolution(n_pe, A, fractions, pixel, fit=BEAD_COLOUR_FIT):
+    """Resolvable shift of pixel ``pixel``'s relative QE, 2 sigma_colour, predicted by the bead fit.
+
+    ``n_pe``: detected photoelectrons per frame (scalar or array); ``A``: mean relative pixel QEs
+    {B, G, R}; ``fractions``: share of the sensor of each pixel type (``IO_Functions.pixel_fractions``).
+    Pixel type X detects N_X = n_pe * f_X A_X / sum_Y f_Y A_Y of the photoelectrons.
+    """
+    share = fractions[pixel] * A[pixel] / sum(fractions[p] * A[p] for p in A)
+    n_eff = np.asarray(n_pe, float) * share / (1 - A[pixel])
+    return 2 * A[pixel] * (fit[0] / np.sqrt(n_eff) + fit[1]) / 100
+
+
+def pixel_qe_states(values, seed=0):
+    """Two-component Gaussian mixture on per-frame relative pixel QEs. Returns the mixture and
+    dict(mean, sd, weight), each a length-2 array, components in increasing mean."""
+    from sklearn.mixture import GaussianMixture
+    x = np.asarray(values, float)
+    x = x[np.isfinite(x) & (x >= 0) & (x <= 1)].reshape(-1, 1)
+    gmm = GaussianMixture(2, covariance_type="full", random_state=seed).fit(x)
+    order = np.argsort(gmm.means_.ravel())
+    return gmm, dict(mean=gmm.means_.ravel()[order], sd=np.sqrt(gmm.covariances_.ravel()[order]),
+                     weight=gmm.weights_[order])
+
+
+def delta_resolution(n_frames, sd_low, sd_high):
+    """Smallest change of a relative pixel QE resolvable from ``n_frames`` frames in each state
+    (false-positive rate 0.025; Wang et al. 2014): 2 (sd_low + sd_high) / sqrt(N)."""
+    return 2 * (sd_low + sd_high) / np.sqrt(np.asarray(n_frames, float))
+
+
+def example_fret_puncta(SR, tif, fits, cal, roi_xy, roi_size, n_puncta, seed, query, smoothing):
+    """Raw photoelectrons, weights, fitted model and residual of ``n_puncta`` single-frame fits of
+    one FRET position, picked at random (``seed``) among the rows of ``fits`` that pass ``query``
+    and whose ``roi_size`` ROI lies inside the frame.
+
+    The ROIs are cut exactly as ``fit_FRET_data`` cuts them (``SR._rois_from_frames``: photoelectrons,
+    weights 1 / (read_noise^2 + max(pe, 0) / gain)); the model is the stored fit, a Gaussian times
+    each pixel type's amplitude (``A_X`` x ``photons``) plus its background (``bg_X`` x
+    ``background_photons``). ``cal``: full-sensor calibration maps; ``roi_xy``: the camera ROI origin
+    of the position (metadata). Each result has ``origin``, the sensor (row, column) of its pixel
+    [0, 0], for the Bayer key.
+    """
+    import pyS3M.gaussoptfuncs as gaussoptfuncs
+    import tifffile
+    with tifffile.TiffFile(str(tif), is_ome=False) as t:
+        height, width = t.pages[0].shape
+    x0, y0 = roi_xy
+    maps = {k: cal[k][y0:y0 + height, x0:x0 + width] for k in ("gain_map", "offset_map", "rqe", "read_noise")}
+    masks = SR.mask.get_stacked_masks(x0, y0, width, height, SR.mosaic_unit)   # as fit_FRET_data
+
+    m = roi_size / 2 + 1
+    ok = fits["xc"].between(m, width - m) & fits["yc"].between(m, height - m)
+    cand = fits[ok].query(query) if query else fits[ok]
+    rows = cand.iloc[np.random.default_rng(seed).choice(len(cand), n_puncta, replace=False)].reset_index(drop=True)
+
+    items = [(k, int(r["frame"])) for k, r in rows.iterrows()]
+    bounds = {k: SR.helper.calculate_roi_bounds(int(round(r["xc"])), int(round(r["yc"])), roi_size, width, height)
+              for k, r in rows.iterrows()}
+    raw, _, roi_masks, weights, _, corner = SR._rois_from_frames(
+        str(tif), items, bounds, (height, width), maps["gain_map"], maps["offset_map"], maps["rqe"],
+        maps["read_noise"], smoothing, masks)
+    out = []
+    x_arr = np.arange(roi_size, dtype=np.float32)
+    for k, r in rows.iterrows():
+        xmin, ymin = corner[k]
+        xy = (r["xc"] - xmin, r["yc"] - ymin)
+        g = gaussoptfuncs.gaussian_unscaled_model(np.zeros((roi_size, roi_size), np.float32), x_arr, roi_size,
+                                                  xy[0], xy[1], r["s_x"], r["s_y"])
+        A = np.array([r["A_B"], r["A_G"], r["A_R"]])          # mask channels are B, G, R
+        bg = np.array([r["bg_B"], r["bg_G"], r["bg_R"]]) * r["background_photons"]
+        model = np.zeros((roi_size, roi_size), np.float32)
+        for c in range(3):
+            mc = roi_masks[k][:, :, c].astype(bool)
+            model[mc] = A[c] * r["photons"] * g[mc] + bg[c]
+        out.append(dict(raw=raw[k], weights=weights[k], model=model, residual=raw[k] - model, spectrum=A, xy=xy,
+                        frame=int(r["frame"]), puncta_id=r["puncta_id"], origin=(y0 + ymin, x0 + xmin)))
+    return out
+
+
+def plot_example_fret_puncta(plotter, puncta, full_masks, pixel_nm, scalebar_nm=500,
+                             colours=("#5555ff", "#53b03b", "#ff2a2a")):
+    """S88 grid: raw / weights / fit / residuals / spectral fingerprint, one column per punctum.
+    The raw and fit images carry the 2 x 2 Bayer key of the sensor pixels under their top-left corner."""
+    from pyS3M import PlottingBase
+    n = len(puncta)
+    fig, axs = plotter.two_column_plot(nrows=5, ncols=n, width=6.69, height=6.5)
+    raws = np.array([p["raw"] for p in puncta])
+    wts = np.array([p["weights"] for p in puncta])
+    vmin, vmax = np.percentile(raws, 5), np.percentile(raws, 98)
+    wmin, wmax = np.percentile(wts, 5), np.percentile(wts, 98)
+    rmax = max(np.abs(p["residual"]).max() for p in puncta)
+    last = n - 1
+    for k, p in enumerate(puncta):
+        axs[0, k], _ = plotter.image_plot(axs[0, k], p["raw"], vmin=vmin, vmax=vmax, origin="upper",
+                                          pixelsize=pixel_nm, scalebar=(k == 0), scalebarsize=float(scalebar_nm),
+                                          scalebarlabel=f"{scalebar_nm} nm", colorbar=(k == last),
+                                          colorbar_label="photoelectrons")
+        axs[1, k], _ = plotter.image_plot(axs[1, k], p["weights"], vmin=wmin, vmax=wmax, cmap="gray", origin="upper",
+                                          colorbar=(k == last), colorbar_label="weight")
+        axs[2, k], _ = plotter.image_plot(axs[2, k], p["model"], vmin=vmin, vmax=vmax, origin="upper",
+                                          colorbar=(k == last), colorbar_label="photoelectrons")
+        axs[2, k].plot(*p["xy"], "rx", markersize=8, markeredgewidth=2)
+        axs[3, k], _ = plotter.image_plot(axs[3, k], p["residual"], cmap="RdBu_r", vmin=-rmax, vmax=rmax,
+                                          origin="upper", colorbar=(k == last), colorbar_label="residuals")
+        for r in (0, 2):
+            PlottingBase.add_bayer_key(axs[r, k], full_masks, row_min=p["origin"][0], col_min=p["origin"][1])
+        for r in range(4):
+            axs[r, k].set_xticks([])
+            axs[r, k].set_yticks([])
+        axs[4, k].bar(np.arange(3), p["spectrum"], color=colours)
+        axs[4, k].set(ylim=(0, 1), xticks=[], yticks=[0, 1])
+        if k:
+            axs[4, k].set_yticklabels([])
+        axs[4, k].grid(False)
+    for r, label in enumerate(["raw", "weights", "fit", "residuals", "spectral fingerprint"]):
+        axs[r, 0].text(-0.35, 0.5, label, transform=axs[r, 0].transAxes, fontsize=8, ha="right", va="center",
+                       rotation=90)
+    return fig, axs
