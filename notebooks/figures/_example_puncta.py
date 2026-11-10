@@ -21,7 +21,7 @@ import numpy as np
 import tifffile
 
 import pyS3M.gaussoptfuncs as gaussoptfuncs
-from pyS3M import IOFunctions, sCMOSFunctions
+from pyS3M import IOFunctions, PlottingBase, sCMOSFunctions
 
 IO = IOFunctions.IO_Functions()
 CHANNEL_COLOURS = ["#5555ff", "#53b03b", "#ff2a2a"]  # B, G, R
@@ -103,7 +103,8 @@ def build_example_puncta(rows, reader, cropped_maps, masks, roi_size, sigma=1.5)
     Returns:
         list of dicts with raw, weights, model, residual (photoelectrons per pixel; weights in
         photoelectrons^-2), spectrum and its error (normalised A_B, A_G, A_R), xy (ROI-local),
-        frame, photoelectrons (detected signal) and background_photoelectrons (per pixel).
+        frame, photoelectrons (detected signal), background_photoelectrons (per pixel), and
+        pixel_type (the ROI's Bayer filter per pixel, 0/1/2 = B/G/R, for ``add_bayer_key``).
     """
     sCMOS = sCMOSFunctions.sCMOS_Functions()
     smoothing_function = types.SimpleNamespace(
@@ -147,16 +148,16 @@ def build_example_puncta(rows, reader, cropped_maps, masks, roi_size, sigma=1.5)
 
         out.append(dict(raw=pe, weights=weights, model=model, residual=pe - model, spectrum=A_frac,
                         spectrum_err=A_err, xy=(xc_local, yc_local), frame=int(row["frame"]),
-                        photoelectrons=float(row["photoelectrons"]),
+                        pixel_type=np.argmax(mask_roi, axis=2), photoelectrons=float(row["photoelectrons"]),
                         background_photoelectrons=float(row["background_photoelectrons"])))
     return out
 
 
-def plot_example_puncta(plotter, puncta, pixel_size_nm, scalebar_nm=500, annotate=True):
+def plot_example_puncta(plotter, puncta, pixel_size_nm, scalebar_nm=500):
     """5-row grid (raw / weights / fit / residuals / spectral fingerprint), one column per punctum.
 
-    Raw, fit and residuals share one photoelectron colour scale per row; with `annotate`, each
-    column is titled with its detected photoelectrons and background (photoelectrons per pixel).
+    Raw and fit share one photoelectron colour scale, residuals another. Each raw punctum carries
+    the 2 x 2 Bayer key of its own corner (the filters under its top-left pixels).
     """
     n = len(puncta)
     fig, axs = plotter.two_column_plot(nrows=5, ncols=n, width=6.69, height=6.5)
@@ -172,9 +173,7 @@ def plot_example_puncta(plotter, puncta, pixel_size_nm, scalebar_nm=500, annotat
             scalebar=(k == 0), scalebarsize=float(scalebar_nm), scalebarlabel=f"{scalebar_nm} nm",
             colorbar=(k == last), colorbar_label="photoelectrons",
         )
-        if annotate:
-            axs[0, k].set_title(f"{p['photoelectrons']:,.0f} pe\nbg {p['background_photoelectrons']:.0f} pe px$^{{-1}}$",
-                                fontsize=6)
+        PlottingBase.add_bayer_key(axs[0, k], p["pixel_type"], origin="upper")
         axs[1, k], _ = plotter.image_plot(axs[1, k], p["weights"], vmin=wmin, vmax=wmax, cmap="gray", origin="upper",
                                           colorbar=(k == last), colorbar_label="weight (pe$^{-2}$)")
         axs[2, k], _ = plotter.image_plot(axs[2, k], p["model"], vmin=vmin, vmax=vmax, origin="upper",
