@@ -253,6 +253,19 @@ class TestReadWriteH5Database:
         assert list(out["frame"]) == [7, 2, 5, 9, 1, 4]
         assert list(out.index) == list(range(6))
 
+    def test_sorted_last_frame_falls_back_to_a_full_sort(self, tmp_path):
+        # (None, n) tells write_h5_database to sort the whole table: no table under the key, no
+        # frame column, or frames out of order. Sorted frames with a 0..N-1 index give the last frame.
+        last = IO_Functions._sorted_last_frame
+        path = tmp_path / "t.h5"
+        pd.DataFrame({"frame": [1, 2, 4], "xc": [0.0, 1.0, 2.0]}).to_hdf(path, key="data", format="table")
+        pd.DataFrame({"xc": [0.0, 1.0]}).to_hdf(path, key="noframe", format="table")
+        pd.DataFrame({"frame": [3, 1, 2], "xc": [0.0, 1.0, 2.0]}).to_hdf(path, key="unsorted", format="table")
+        assert last(path, "data") == (4, 3)
+        assert last(path, "missing") == (None, 0)
+        assert last(path, "noframe") == (None, 2)
+        assert last(path, "unsorted") == (None, 3)
+
     def test_append_to_nonexistent_file_writes_fresh(self, io, tmp_path):
         path = tmp_path / "new.h5"
         df = _loc_df(3)

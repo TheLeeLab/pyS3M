@@ -1298,6 +1298,7 @@ class TestMedianOfArrays:
     def test_nan_and_empty(self):
         assert np.isnan(iaf.median_of_arrays([np.array([1.0, np.nan, 2.0])]))
         assert np.isnan(iaf.median_of_arrays([]))
+        assert np.isnan(iaf.median_of_arrays([np.array([], dtype=np.float32)]))   # arrays, but no values
 
 
 class TestGateSettingOverride:

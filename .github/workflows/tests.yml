@@ -38,5 +38,6 @@ jobs:
             --cov=src --cov-report=term-missing --cov-report=json
 
       - name: Update coverage badge
-        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        # Public repo only: the private copy's token can't push the badge branch (403).
+        if: github.repository == 'TheLeeLab/pyS3M' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         uses: we-cli/coverage-badge-action@main

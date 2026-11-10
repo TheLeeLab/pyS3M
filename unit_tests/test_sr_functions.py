@@ -281,6 +281,36 @@ class TestFitFilesPixelSizeDefault:
 
 
 # ======================================================================
+# _fit_files -- a chunk with no ROIs; _filter_quality_metrics
+# ======================================================================
+
+class TestFitFilesChunks:
+    def test_chunk_without_rois_is_skipped(self, sr, tmp_path):
+        # 1001 frames = two 1000-frame chunks; the spot is only in the first frames, the second
+        # chunk (frame 1000) is flat, so nothing is detected there and its fit is skipped.
+        width = height = 24
+        rng = np.random.default_rng(0)
+        stack = np.full((1001, height, width), 60.0, dtype=np.float32)
+        yy, xx = np.mgrid[0:height, 0:width]
+        stack[:3] = rng.poisson(60.0, (3, height, width)) + 6000.0 * np.exp(-((xx - 12) ** 2 + (yy - 12) ** 2) / 4.5)
+        IOFunctions.IO_Functions().write_tiff(stack.astype(np.uint16), str(tmp_path / "chunks.tif"))
+        _write_metadata(tmp_path, width, height)
+        maps = _calibration_maps(width, height)
+        sr.fit_SM_data(str(tmp_path), _smoothing_function(), maps["gain_map"], maps["offset_map"],
+                       maps["rqe"], maps["read_noise"], maps["variance"], ROI_size=10, pixel_size=0.069)
+        out = pd.read_hdf(tmp_path / "chunks.h5")
+        assert len(out) and out["frame"].max() < 1000
+
+    def test_filter_quality_metrics(self):
+        f = SuperRes_Functions._filter_quality_metrics
+        puncta = np.zeros((3, 3))
+        assert f(None, puncta, [0]) is None and f({}, puncta, [0]) is None
+        out = f({"snr": np.array([1.0, 2.0, 3.0]), "short": np.array([1.0])}, puncta, [0, 2])
+        assert list(out) == ["snr"]                       # a metric of another length is skipped
+        np.testing.assert_array_equal(out["snr"], [1.0, 3.0])
+
+
+# ======================================================================
 # _fit_files -- use_elliptical / use_circular strategy dispatch
 # ======================================================================
 
