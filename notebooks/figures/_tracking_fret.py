@@ -215,29 +215,50 @@ def filter_initial_guess(df, tol=0.01):
     return df[~m].copy(), int(m.sum())
 
 
-def find_colour_CPs(A_R, A_G, model="l2", min_size=25, jump=1):
+def noise_variance(x):
+    """Frame-to-frame noise variance of a piecewise-constant trace: (1.4826 MAD of the first
+    differences)^2 / 2. The median ignores the few differences that span a state change, so unlike
+    the trace's variance this does not include the FRET jumps themselves."""
+    d = np.diff(np.asarray(x, float))
+    d = d[np.isfinite(d)]
+    if len(d) < 2:
+        return np.nan
+    return (1.4826 * np.median(np.abs(d - np.median(d)))) ** 2 / 2
+
+
+def find_colour_CPs(A_R, A_G, model="l2", min_size=25, jump=1, sigma2_from="diff"):
     """PELT change points jointly in (A_R, A_G), BIC penalty log(n) * dim * sigma^2.
+
+    ``sigma2_from``: "diff" (default) takes sigma^2 as the frame-to-frame noise variance
+    (``noise_variance``), the BIC's noise term; "var" takes the trace's variance, which also contains
+    the state changes (for FRET ~3x the noise variance), over-penalising and merging short dwells.
     Returns indices; the last is always len(signal)."""
     import ruptures as rpt
     n = len(A_R)
     if n < min_size:
         return [n]
     signal = np.column_stack([A_R, A_G])
-    sigma2 = np.nanmean([np.nanvar(A_R), np.nanvar(A_G)])
-    if sigma2 == 0:
+    if sigma2_from == "diff":
+        sigma2 = np.nanmean([noise_variance(A_R), noise_variance(A_G)])
+    elif sigma2_from == "var":
+        sigma2 = np.nanmean([np.nanvar(A_R), np.nanvar(A_G)])
+    else:
+        raise ValueError(f"sigma2_from must be 'diff' or 'var', not {sigma2_from!r}")
+    if not np.isfinite(sigma2) or sigma2 == 0:
         return [n]
     return rpt.Pelt(model=model, min_size=min_size, jump=jump).fit(signal).predict(
         pen=np.log(n) * signal.shape[1] * sigma2)
 
 
 def _cp_worker(args):
-    pid, A_R, A_G, model, min_size, jump = args
-    return pid, find_colour_CPs(A_R, A_G, model, min_size, jump)
+    pid, A_R, A_G, model, min_size, jump, sigma2_from = args
+    return pid, find_colour_CPs(A_R, A_G, model, min_size, jump, sigma2_from)
 
 
-def change_points(df, model="l2", min_size=25, jump=1, n_workers=None):
-    """{puncta_id: change-point indices} for every punctum with at least one change point."""
-    tasks = [(pid, g["A_R"].to_numpy(float), g["A_G"].to_numpy(float), model, min_size, jump)
+def change_points(df, model="l2", min_size=25, jump=1, n_workers=None, sigma2_from="diff"):
+    """{puncta_id: change-point indices} for every punctum with at least one change point
+    (``sigma2_from``: see ``find_colour_CPs``)."""
+    tasks = [(pid, g["A_R"].to_numpy(float), g["A_G"].to_numpy(float), model, min_size, jump, sigma2_from)
              for pid, g in df.sort_values("frame").groupby("puncta_id")]
     n_workers = n_workers or min(60, max(1, int(0.9 * multiprocessing.cpu_count())))
     out = {}
