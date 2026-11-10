@@ -95,9 +95,19 @@ def _panel_label(fig, x_mm, y_mm, text, color):
     fig.text(x_mm / W, 1 - y_mm / H, text, color=color, fontsize=10, fontweight="bold", ha="left", va="top")
 
 
+# Heights in c, as fractions of the axis: the data (bars and fits) fill the lower DATA_TOP, the
+# separation arrow and its label sit above them, and each peak's FWHM arrow and label above those.
+DATA_TOP = 0.58
+SEP_Y, FWHM_Y = 0.645, 0.845
+
+
 def _profile_axis(ax, centres, means, fit, bin_nm, label, xlim):
     ax.bar(centres, means, width=bin_nm * 0.85, color="#888888", edgecolor="k", linewidth=0.4, zorder=2)
-    ymax = 1.29 * means[(centres >= xlim[0]) & (centres <= xlim[1])].max()
+    top = means[(centres >= xlim[0]) & (centres <= xlim[1])].max()
+    if fit is not None:   # the fitted peaks can rise above the tallest bar
+        popt = fit[0]
+        top = max(top, popt[0] + popt[6], popt[3] + popt[6])
+    ymax = top / DATA_TOP
     ax.set_xlim(xlim)
     ax.set_ylim(0, ymax)
     ax.set_xticks(np.arange(400, xlim[1], 200))
@@ -119,13 +129,16 @@ def _profile_axis(ax, centres, means, fit, bin_nm, label, xlim):
     arrow = dict(arrowstyle="<->", color=NAVY, lw=0.5, shrinkA=0, shrinkB=0, mutation_scale=4)
     trans = ax.get_xaxis_transform()
     fwhm = FWHM_PER_SIGMA * popt[[2, 5]]
-    for mu, f in zip(popt[[1, 4]], fwhm):   # each peak's FWHM above it (fixed-width arrow, as published)
-        ax.annotate("", (mu - FWHM_ARROW_NM / 2, 0.80), (mu + FWHM_ARROW_NM / 2, 0.80), xycoords=trans,
-                    arrowprops=arrow)
-        ax.text(mu, 0.84, f"{f:.0f} nm", transform=trans, color=NAVY, fontsize=6, ha="center", va="bottom")
-    mu1, mu2 = popt[1], popt[4]   # peak separation, between the two centres
-    ax.annotate("", (mu1, 0.57), (mu2, 0.57), xycoords=trans, arrowprops=arrow)
-    ax.text((mu1 + mu2) / 2, 0.61, f"{mu2 - mu1:.0f} nm", transform=trans, color=NAVY, fontsize=6,
+    for mu, f in zip(popt[[1, 4]], fwhm):   # each peak's FWHM above it (fixed-width arrow, as published),
+        # kept clear of the profile number in the top-left corner and of the right edge
+        x0 = max(mu - FWHM_ARROW_NM / 2, xlim[0] + 0.06 * (xlim[1] - xlim[0]))
+        x1 = min(mu + FWHM_ARROW_NM / 2, xlim[1] - 0.01 * (xlim[1] - xlim[0]))
+        ax.annotate("", (x0, FWHM_Y), (x1, FWHM_Y), xycoords=trans, arrowprops=arrow)
+        ax.text(mu, FWHM_Y + 0.025, f"{f:.0f} nm", transform=trans, color=NAVY, fontsize=6, ha="center",
+                va="bottom")
+    mu1, mu2 = popt[1], popt[4]   # peak separation, between the two centres, above the data
+    ax.annotate("", (mu1, SEP_Y), (mu2, SEP_Y), xycoords=trans, arrowprops=arrow)
+    ax.text((mu1 + mu2) / 2, SEP_Y + 0.025, f"{mu2 - mu1:.0f} nm", transform=trans, color=NAVY, fontsize=6,
             ha="center", va="bottom")
     return dict(separation=mu2 - mu1, separation_err=np.hypot(perr[1], perr[4]), fwhm=fwhm)
 
