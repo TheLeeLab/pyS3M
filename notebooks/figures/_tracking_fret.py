@@ -148,13 +148,14 @@ TRACK_FOVS = ([f"1nM_Total/Well{w}/4banddichroic_NF_{i}" for w in (1, 2, 3) for 
 FRET_REMOTE = "2026_Multicolour_Paper/ZWO/20260402_HJs/50mM_MgCl_20pMHJ_515LP650200BP_100perc515_2"
 FRET_FAST_STEM = "50mM_MgCl_20pMHJ_515LP650200BP_100perc515_2_MMStack_Pos-0-0"   # the pictured position
 
-# Fig. 4b: one stretch of track per protein, as {cluster: (field of view, first frame, last frame,
-# (xc, yc) in px at the first frame)}. Picked from the refit as the stretches closest in shape to the
-# paper's exemplars (arc-length-resampled RMS, then Frechet distance); UCHT1 is the paper's own molecule.
+# Fig. 4b: one track per protein, as {cluster: (field of view, first frame, last frame, (xc, yc) in px at
+# the first frame)}: the molecules and frames drawn in the composite Figure 4b (made with this notebook
+# before the colour-error cut was loosened to 1.0; ICAM-1's track now continues to frame 391 and gains
+# 3 localisations within 342-371).
 EXEMPLARS = {
-    0: ("1nM_Total/Well1/4banddichroic_NF_1", 342, 376, (245.1, 155.5)),   # ICAM-1
-    1: ("1nM_Total/Well1/4banddichroic_NF_1", 438, 452, (249.8, 176.2)),   # CD58
-    2: ("1nM_Total/Well1/4banddichroic_NF_1", 43, 76, (221.5, 86.4)),      # UCHT1
+    0: ("1nM_Total/Well1/4banddichroic_NF_1", 342, 371, (245.1, 155.5)),    # ICAM-1
+    1: ("500pM_Total/Well1/4banddichroic_NF_3", 832, 850, (427.2, 177.1)),  # CD58
+    2: ("1nM_Total/Well1/4banddichroic_NF_1", 43, 76, (221.5, 86.4)),       # UCHT1
 }
 TRACK_FAST_FOVS = sorted({e[0] for e in EXEMPLARS.values()})   # FAST_MODE: the exemplars' fields
 
