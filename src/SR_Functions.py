@@ -1640,7 +1640,7 @@ class SuperRes_Functions:
         gain_map: np.ndarray,
         offset_map: np.ndarray,
         rqe: np.ndarray,
-        chunk_size: int = 500,
+        chunk_size: int = 50,
     ) -> np.ndarray:
         """Extract time traces for each detected puncta from a single file.
 
@@ -1650,7 +1650,8 @@ class SuperRes_Functions:
             ROI_size: Size of ROI to extract around each puncta
             width, height: Image dimensions
             gain_map, offset_map, rqe: Calibration maps (cropped to ROI)
-            chunk_size: Number of frames to load at once
+            chunk_size: Number of frames to load at once (each frame is read and converted in
+                full, so this bounds the memory: 50 ZWO frames of 672 x 672 px are ~0.1 GB)
 
         Returns:
             Array of shape (n_puncta, n_frames) containing summed photoelectrons
@@ -1696,7 +1697,6 @@ class SuperRes_Functions:
                 traces[puncta_idx, chunk_start:chunk_start + n_chunk] = roi_sums
 
             del raw_data, photoelectrons
-            gc.collect()
 
         return traces
 

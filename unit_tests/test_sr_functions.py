@@ -438,6 +438,22 @@ class TestExtractRoiTracesSingleFile:
         assert np.all(traces[1] == 0.0)  # skipped puncta never gets summed into
         assert np.any(traces[0] > 0.0)
 
+    def test_traces_independent_of_block_size(self, sr, tmp_path):
+        # The frame block only bounds memory: every block size gives the same traces.
+        width, height, n_frames = 30, 30, 7
+        _write_synthetic_tiff(
+            tmp_path, "traces.tif", width=width, height=height, n_frames=n_frames,
+            spots=((15, 15),), amplitude=5000.0,
+        )
+        maps = _calibration_maps(width, height)
+        puncta = np.array([[15.0, 15.0], [10.0, 20.0]])
+        got = [sr._extract_roi_traces_single_file(
+                   str(tmp_path / "traces.tif"), puncta, ROI_size=8, width=width, height=height,
+                   gain_map=maps["gain_map"], offset_map=maps["offset_map"], rqe=maps["rqe"],
+                   chunk_size=c) for c in (2, 5, 50)]
+        for t in got[1:]:
+            np.testing.assert_array_equal(t, got[0])
+
 
 # ======================================================================
 # example_spots_singleframe -- tiny synthetic single-frame image
