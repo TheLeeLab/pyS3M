@@ -2,9 +2,14 @@
 spectral fingerprint), used by `SI/FigureSI_ExampleFitting_QDots.ipynb`.
 
 Picks single-frame localisations from a fit result (`fit_SM_data` / `fit_imaging_data`), crops
-the raw frame each one came from, recomputes the photoelectron image and fitting weights exactly
-as the fitter does (`SR_Functions._build_roi`), and rebuilds the fitted PSF model from the stored
-parameters (Gaussian x Bayer mask).
+the raw frame each one came from, recomputes the photoelectron image exactly as the fitter does
+(`SR_Functions._build_roi`) and the weights of the fit's final pass, and rebuilds the fitted PSF
+model from the stored parameters (Gaussian x Bayer mask).
+
+Weights: STANDARD_DATA fits three times (smoothed-data weights, then model weights, then raw-data
+weights; `ImageAnalysisFunctions.StandardDataFittingProcessor`). The stored parameters, errors and
+chi^2 come from the last pass, weighted 1 / (max(pe, 0) + 1 + read_noise^2) per pixel, so those are
+the weights shown.
 
 Units: the fit databases store normalised `A_*`/`bg_*` fractions plus their totals `photons`
 (= A_B + A_G + A_R) and `background_photons` (= bg_B + bg_G + bg_R). Those totals add up what
@@ -15,13 +20,11 @@ in photoelectrons per pixel, like the data it is compared to; numbers printed on
 the detected photoelectrons.
 Ported from developer:notebooks/figures/SI/FigureSI_ExampleAnalysisWorkflow_*.ipynb.
 """
-import types
-
 import numpy as np
 import tifffile
 
 import pyS3M.gaussoptfuncs as gaussoptfuncs
-from pyS3M import IOFunctions, PlottingBase, sCMOSFunctions
+from pyS3M import IOFunctions, PlottingBase
 
 IO = IOFunctions.IO_Functions()
 CHANNEL_COLOURS = ["#5555ff", "#53b03b", "#ff2a2a"]  # B, G, R
@@ -91,7 +94,7 @@ def choose_puncta(fits_df, width, height, roi_size, n_puncta, seed, query=None, 
     return valid.iloc[picks].reset_index(drop=True)
 
 
-def build_example_puncta(rows, reader, cropped_maps, masks, roi_size, sigma=1.5):
+def build_example_puncta(rows, reader, cropped_maps, masks, roi_size):
     """Crop, convert and re-model each chosen fit.
 
     Args:
@@ -106,10 +109,6 @@ def build_example_puncta(rows, reader, cropped_maps, masks, roi_size, sigma=1.5)
         frame, photoelectrons (detected signal), background_photoelectrons (per pixel), and
         pixel_type (the ROI's Bayer filter per pixel, 0/1/2 = B/G/R, for ``add_bayer_key``).
     """
-    sCMOS = sCMOSFunctions.sCMOS_Functions()
-    smoothing_function = types.SimpleNamespace(
-        args={"sigma": sigma}, extent=sigma, smoothing_function=sCMOS.gaussian_filter_stack, data_arg="image",
-    )
     height, width = masks.shape[:2]
     x_arr = np.arange(roi_size, dtype=np.float32)
     out = []
@@ -124,8 +123,8 @@ def build_example_puncta(rows, reader, cropped_maps, masks, roi_size, sigma=1.5)
             frame[sl], gain_map=cropped_maps["gain_map"][sl], offset_map=cropped_maps["offset_map"][sl],
             rqe=cropped_maps["rqe"][sl],
         )
-        smoothed = IO.apply_smoothing(pe, smoothing_function, dtype="float32")
-        weights = IO.generate_weights(smoothed, read_noise=cropped_maps["read_noise"][sl], dtype="float32")
+        # Final-pass (raw-data) weights, as StandardDataFittingProcessor._raw_data_weights
+        weights = 1.0 / (np.maximum(pe, 0) + 1.0 + np.square(cropped_maps["read_noise"][sl])).astype(np.float32)
 
         # Mask/h5 channel order is B, G, R. A_*/bg_* are normalised fractions of `photons` /
         # `background_photons`; times those totals they are the fitted amplitude and background of
