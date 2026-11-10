@@ -331,6 +331,62 @@ class SuperRes_Functions:
             return None
         return raw_roi, bounds, frame
 
+    def _rois_from_frames(self, file, items, puncta_bounds, frame_shape, gain_map, offset_map, rqe, read_noise,
+                          smoothing_function, masks, frame_block=50):
+        """Fitting inputs for each (punctum, frame) in ``items``, in that order, from the TIFF ``file``.
+
+        Frames are read, converted to photoelectrons and smoothed ``frame_block`` at a time, and each ROI's
+        weights, 1 / (read_noise^2 + max(pe, 0) / gain), are computed from its own crop. The conversion is
+        per pixel and the smoothing acts within each frame (``gaussian_filter_stack`` does not smooth along
+        time), so every value is the one a whole chunk at once would give; peak memory is one block of frames
+        instead of a chunk of photoelectron, smoothed and weight stacks.
+
+        Args:
+            items: (punctum index, frame) pairs, in fitting order.
+            puncta_bounds: {punctum index: (xmin, xmax, ymin, ymax)}.
+            frame_shape: (height, width) of a frame.
+            gain_map, offset_map, rqe, read_noise: calibration maps cropped to the frame (or scalars).
+            masks: (height, width, n_channels) mask stack of the frame.
+            frame_block: frames converted and smoothed at once.
+
+        Returns:
+            (puncta, smoothed, masks, weights, readnoise, relative_coords): lists in ``items`` order.
+        """
+        def crop(m, b):
+            return m if np.ndim(m) == 0 else m[b[2]:b[3], b[0]:b[1]]
+
+        n = len(items)
+        puncta, smoothed, weights = [None] * n, [None] * n, [None] * n
+        by_frame = {}
+        for k, (_, frame) in enumerate(items):
+            by_frame.setdefault(frame, []).append(k)
+        frames = sorted(by_frame)
+        for start in range(0, len(frames), frame_block):
+            block = frames[start:start + frame_block]
+            raw = self.io.read_tiff(file, dtype="float32", frame=block)
+            if raw.ndim == 2:
+                raw = raw[np.newaxis, :, :]
+            pe = self.io.convert_to_photoelectrons(raw, gain_map=gain_map, offset_map=offset_map, rqe=rqe)
+            del raw
+            smargs = dict(smoothing_function.args)   # a copy: the shared namespace is not changed
+            smargs[smoothing_function.data_arg] = pe
+            sm = smoothing_function.smoothing_function(**smargs)
+            for j, frame in enumerate(block):
+                for k in by_frame[frame]:
+                    b = puncta_bounds[items[k][0]]
+                    xmin, xmax, ymin, ymax = b
+                    roi = pe[j, ymin:ymax, xmin:xmax]
+                    puncta[k] = roi.copy()
+                    smoothed[k] = sm[j, ymin:ymax, xmin:xmax].copy()
+                    weights[k] = 1.0 / (crop(read_noise, b) ** 2 + np.maximum(roi, 0) / crop(gain_map, b))
+            del pe, sm
+        readnoise_frame = np.broadcast_to(np.asarray(read_noise, dtype=np.float32), frame_shape)
+        bounds = [puncta_bounds[pid] for pid, _ in items]
+        roi_masks = [masks[b[2]:b[3], b[0]:b[1], :].copy() for b in bounds]
+        readnoise = [readnoise_frame[b[2]:b[3], b[0]:b[1]].copy() for b in bounds]
+        coords = [(b[0], b[2]) for b in bounds]
+        return puncta, smoothed, roi_masks, weights, readnoise, coords
+
     def _build_roi(self, raw_roi, bounds, frame, smoothing_function, read_noise, masks,
                    gain_map=1.0, offset_map=0.0, rqe=1.0, frame_offset=0):
         """Fitting inputs from one raw ROI (second half of _process_roi): (photoelectron_roi,
@@ -1275,66 +1331,18 @@ class SuperRes_Functions:
                 if not frames_in_chunk:
                     continue
 
-                # Load the chunk
-                local_frames = list(range(chunk_start, min(chunk_end, total_frames)))
-                if not local_frames:
+                # This chunk's ROIs in fitting order (punctum, then frame), built a block of frames at a time
+                items = [(puncta_idx, frame)
+                         for puncta_idx, frames_array in frames_to_fit.items() if puncta_bounds[puncta_idx] is not None
+                         for frame in frames_array if chunk_start <= frame < min(chunk_end, total_frames)]
+                if not items:
                     continue
-
-                raw_data = self.io.read_tiff(file, dtype="float32", frame=local_frames)
-                if raw_data.ndim == 2:
-                    raw_data = raw_data[np.newaxis, :, :]
-
-                # Convert to photoelectrons
-                photoelectrons = self.io.convert_to_photoelectrons(
-                    raw_data, gain_map=gain_map_crop, offset_map=offset_map_crop, rqe=rqe_crop
-                )
-
-                # Apply smoothing (copy args to avoid mutating the shared namespace)
-                _smargs = dict(smoothing_function.args)
-                _smargs[smoothing_function.data_arg] = photoelectrons
-                smoothed = smoothing_function.smoothing_function(**_smargs)
-
-                # Compute weights
-                weights_data = 1.0 / (read_noise_crop**2 + np.maximum(photoelectrons, 0) / gain_map_crop)
-
-                puncta_tofit = []
-                smoothed_puncta_tofit = []
-                masks_tofit = []
-                weights_tofit = []
-                readnoise_tofit = []
-                relative_coords = []
-                puncta_ids = []
-                frame_indices = []
-
-                # Extract ROIs for each puncta at frames in this chunk
-                for puncta_idx, frames_array in frames_to_fit.items():
-                    bounds = puncta_bounds[puncta_idx]
-                    if bounds is None:
-                        continue
-                    xmin, xmax, ymin, ymax = bounds
-
-                    for frame in frames_array:
-                        if frame < chunk_start or frame >= chunk_end:
-                            continue
-
-                        local_idx = frame - chunk_start
-                        if local_idx < 0 or local_idx >= photoelectrons.shape[0]:
-                            continue
-
-                        puncta_tofit.append(photoelectrons[local_idx, ymin:ymax, xmin:xmax].copy())
-                        smoothed_puncta_tofit.append(smoothed[local_idx, ymin:ymax, xmin:xmax].copy())
-                        masks_tofit.append(masks_stacked[ymin:ymax, xmin:xmax, :].copy())
-                        readnoise_tofit.append(np.broadcast_to(
-                            np.asarray(read_noise_crop, dtype=np.float32), photoelectrons.shape[1:]
-                        )[ymin:ymax, xmin:xmax].copy())
-                        weights_tofit.append(weights_data[local_idx, ymin:ymax, xmin:xmax].copy())
-                        relative_coords.append((xmin, ymin))
-                        puncta_ids.append(puncta_idx)
-                        frame_indices.append(frame)
-
-                del raw_data, photoelectrons, smoothed, weights_data
-                if len(puncta_tofit) == 0:
-                    continue
+                (puncta_tofit, smoothed_puncta_tofit, masks_tofit, weights_tofit, readnoise_tofit,
+                 relative_coords) = self._rois_from_frames(
+                    file, items, puncta_bounds, frame_shape, gain_map_crop, offset_map_crop, rqe_crop,
+                    read_noise_crop, smoothing_function, masks_stacked)
+                puncta_ids = [pid for pid, _ in items]
+                frame_indices = [frame for _, frame in items]
 
                 fit_results, fit_errors = self.image_analysis.fit_puncta_parallel_method(
                     puncta_tofit,
@@ -1569,57 +1577,17 @@ class SuperRes_Functions:
                 chunk_end = min(chunk_start + chunk_size, total_frames)
                 chunk_frames = list(range(chunk_start, chunk_end))
 
-                # Load chunk
-                raw_data = self.io.read_tiff(file, dtype="float32", frame=chunk_frames)
-                if raw_data.ndim == 2:
-                    raw_data = raw_data[np.newaxis, :, :]
-
-                # Convert to photoelectrons
-                photoelectrons = self.io.convert_to_photoelectrons(
-                    raw_data, gain_map=gain_map_crop, offset_map=offset_map_crop, rqe=rqe_crop
-                )
-
-                # Apply smoothing (copy args to avoid mutating the shared namespace)
-                _smargs = dict(smoothing_function.args)
-                _smargs[smoothing_function.data_arg] = photoelectrons
-                smoothed = smoothing_function.smoothing_function(**_smargs)
-
-                # Compute weights
-                weights_data = 1.0 / (read_noise_crop**2 + np.maximum(photoelectrons, 0) / gain_map_crop)
-
-                # Build ROI lists for this chunk
-                puncta_tofit = []
-                smoothed_puncta_tofit = []
-                masks_tofit = []
-                weights_tofit = []
-                readnoise_tofit = []
-                relative_coords = []
-                puncta_ids = []
-                frame_indices = []
-
-                for local_idx, frame in enumerate(chunk_frames):
-                    for puncta_idx in range(n_detected):
-                        bounds = puncta_bounds[puncta_idx]
-                        if bounds is None:
-                            continue
-                        xmin, xmax, ymin, ymax = bounds
-
-                        puncta_tofit.append(photoelectrons[local_idx, ymin:ymax, xmin:xmax].copy())
-                        smoothed_puncta_tofit.append(smoothed[local_idx, ymin:ymax, xmin:xmax].copy())
-                        masks_tofit.append(masks_stacked[ymin:ymax, xmin:xmax, :].copy())
-                        readnoise_tofit.append(np.broadcast_to(
-                            np.asarray(read_noise_crop, dtype=np.float32), photoelectrons.shape[1:]
-                        )[ymin:ymax, xmin:xmax].copy())
-                        weights_tofit.append(weights_data[local_idx, ymin:ymax, xmin:xmax].copy())
-                        relative_coords.append((xmin, ymin))
-                        puncta_ids.append(puncta_idx)
-                        frame_indices.append(frame)
-
-                del raw_data, photoelectrons, smoothed, weights_data
-                gc.collect()
-
-                if len(puncta_tofit) == 0:
+                # This chunk's ROIs in fitting order (frame, then spot), built a block of frames at a time
+                items = [(puncta_idx, frame) for frame in chunk_frames for puncta_idx in range(n_detected)
+                         if puncta_bounds[puncta_idx] is not None]
+                if not items:
                     continue
+                (puncta_tofit, smoothed_puncta_tofit, masks_tofit, weights_tofit, readnoise_tofit,
+                 relative_coords) = self._rois_from_frames(
+                    file, items, puncta_bounds, (full_height, full_width), gain_map_crop, offset_map_crop, rqe_crop,
+                    read_noise_crop, smoothing_function, masks_stacked)
+                puncta_ids = [pid for pid, _ in items]
+                frame_indices = [frame for _, frame in items]
 
                 fit_results, fit_errors = self.image_analysis.fit_puncta_parallel_method(
                     puncta_tofit,
