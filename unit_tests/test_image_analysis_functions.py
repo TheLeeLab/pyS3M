@@ -1265,6 +1265,29 @@ class TestDeltaChi2GateCalibration:
             kept = np.mean(~np.isnan(fit[:, 0]))
             assert lo <= kept <= hi, (signal, kept)
 
+    def test_nocolour_is_ungated_unless_asked(self):
+        assert Image_Analysis_Functions().processors[FittingStrategy.NOCOLOUR].gate is None
+        iaf_ = Image_Analysis_Functions(gate_nocolour=True)
+        assert iaf_.processors[FittingStrategy.NOCOLOUR].gate is iaf_.gate
+        iaf_.set_gate("delta_chi2")                                   # a later set_gate turns it off again
+        assert iaf_.processors[FittingStrategy.NOCOLOUR].gate is None
+
+    def test_nocolour_gate_without_masks(self, tmp_path):
+        # Colour-blind fits pass no masks: the gate calibrates one channel over the whole ROI
+        g = DeltaChi2Gate(noise_rate=0.01, cache_dir=tmp_path, n_null=300)
+        gated = Image_Analysis_Functions(readnoise=2.0, fit_gate=g, gate_nocolour=True)
+        ungated = Image_Analysis_Functions(readnoise=2.0, fit_gate=g)
+        kept = {}
+        for signal in (0.0, 500.0):
+            pe, sm, w, coords, planes, _ = self._rois(n=100, signal=signal, seed=int(signal) + 1)
+            for name, fitter in (("gated", gated), ("ungated", ungated)):
+                fit, _ = fitter.fit_puncta_method(pe, sm, w, coords, planes, FittingStrategy.NOCOLOUR)
+                kept[name, signal] = np.mean(~np.isnan(fit[:, 0]))
+        assert [f.name.split("_")[0] for f in tmp_path.glob("*.json")] == ["nocolour"]
+        assert "ch1" in next(tmp_path.glob("*.json")).name
+        assert kept["gated", 0.0] <= 0.15 < kept["ungated", 0.0]
+        assert kept["gated", 500.0] >= 0.9
+
     def test_parallel_workers_get_the_prepared_gate(self, tmp_path):
         pe, sm, w, coords, planes, masks = self._rois(n=8, signal=500.0)
         g = DeltaChi2Gate(cache_dir=tmp_path, n_null=100)

@@ -561,7 +561,10 @@ class FittingResultProcessor:
         # order, i.e. pfit's) take the same permutation below, and relative_coords is the ROI's
         # (column, row) origin, added to (xc, yc).
         _standard_like = {FittingStrategy.STANDARD, FittingStrategy.STANDARD_DATA}
-        _gated_strategies = _standard_like | {FittingStrategy.ELLIPTICAL, FittingStrategy.CIRCULAR}
+        # NOCOLOUR is gated only when its processor was given a gate (gate_nocolour=True)
+        _gated_strategies = _standard_like | {
+            FittingStrategy.ELLIPTICAL, FittingStrategy.CIRCULAR, FittingStrategy.NOCOLOUR,
+        }
 
         n_ch = (len(pfit) - 4) // 2   # standard-like strategies only
         perm = FittingResultProcessor._xy_permutation(strategy, len(pfit))
@@ -1300,6 +1303,13 @@ class NoColourFittingProcessor(FittingProcessor):
                 pcov, chisqr, len(data.ravel()), len(initial_guess)
             )
 
+            # One channel: the background-only model is one constant over the whole ROI
+            gate = getattr(self, "gate", None)
+            delta_chi2 = None
+            if gate is not None:
+                delta_chi2 = FittingResultProcessor.delta_chi_squared(
+                    residuals, data, np.ones(data.shape + (1,), dtype=bool), weights
+                )
             return FittingResultProcessor.process_fit_results(
                 pfit,
                 pcov,
@@ -1307,6 +1317,8 @@ class NoColourFittingProcessor(FittingProcessor):
                 relative_coords,
                 FittingStrategy.NOCOLOUR,
                 chisqr,
+                delta_chi2=delta_chi2,
+                gate=gate,
             )
 
         except Exception as e:
@@ -1345,7 +1357,8 @@ class Image_Analysis_Functions:
     """
 
     def __init__(self, helper_functions=None, readnoise: float = 1.5,
-                 fit_gate: Any = "delta_chi2", noise_rate: float = 0.01):
+                 fit_gate: Any = "delta_chi2", noise_rate: float = 0.01,
+                 gate_nocolour: bool = False):
         """Initialize the Image_Analysis_Functions class.
 
         Sets up strategy processors and loads required dependencies.
@@ -1360,6 +1373,10 @@ class Image_Analysis_Functions:
                 previous Wald test), None (no gate), or a FitGate gate object.
             noise_rate: For "delta_chi2", the fraction of pure-noise ROIs that should pass
                 (default 0.01).
+            gate_nocolour: Also gate NOCOLOUR fits (default False). Off by default because
+                NOCOLOUR also fits each demosaiced channel at a known position (DEMOSAIC), where
+                a faint channel must be kept; turn it on when NOCOLOUR fits detected spots
+                (a monochrome camera, or colour-blind simulations).
         """
         # Initialize strategy processors
         self.processors = {
@@ -1371,7 +1388,7 @@ class Image_Analysis_Functions:
         }
 
         self._skip_gate_prepare = False   # set in worker processes, which receive a prepared gate
-        self.set_gate(fit_gate, noise_rate)
+        self.set_gate(fit_gate, noise_rate, gate_nocolour=gate_nocolour)
 
         # Initialize dependencies
         self.io = IOFunctions.IO_Functions()
@@ -1391,11 +1408,14 @@ class Image_Analysis_Functions:
         FittingStrategy.CIRCULAR, FittingStrategy.ELLIPTICAL,
     )
 
-    def set_gate(self, fit_gate: Any = "delta_chi2", noise_rate: float = 0.01) -> None:
-        """Set the fit-acceptance gate of every gated strategy (see __init__)."""
+    def set_gate(self, fit_gate: Any = "delta_chi2", noise_rate: float = 0.01,
+                 gate_nocolour: bool = False) -> None:
+        """Set the fit-acceptance gate of every gated strategy, and of NOCOLOUR when
+        ``gate_nocolour`` (see __init__)."""
         self.gate = FitGate.make_gate(fit_gate, noise_rate)
         for strategy in self._GATED_STRATEGIES:
             self.processors[strategy].gate = self.gate
+        self.processors[FittingStrategy.NOCOLOUR].gate = self.gate if gate_nocolour else None
 
     def gate_setting(self, strategy: FittingStrategy, puncta, masks, readnoise_maps):
         """(ROI size, read noise, mask) the fit gate is prepared with for this batch of puncta: the
@@ -1403,7 +1423,12 @@ class Image_Analysis_Functions:
         (the processor's scalar read noise without crops). None when there is nothing to fit or no
         masks. A caller that fits one batch in several parts passes the whole batch's setting to
         each part (``gate_setting=``), so the parts are gated exactly as the whole would be."""
-        if len(puncta) == 0 or masks is None:
+        if len(puncta) == 0:
+            return None
+        if strategy == FittingStrategy.NOCOLOUR:   # one channel over the whole ROI; masks unused
+            size = np.shape(puncta[0])[:2]
+            masks = [np.ones(size + (1,), dtype=bool)]
+        if masks is None:
             return None
         if readnoise_maps is not None and len(readnoise_maps) > 0:
             readnoise = float(median_of_arrays(readnoise_maps))

@@ -239,7 +239,8 @@ class DeltaChi2Gate:
             smoothed = gaussian_filter(pe, sigma=(0, self.smoothing_sigma, self.smoothing_sigma), mode="nearest")
             weights = (1.0 / (np.clip(smoothed, 0, None) + 1.0 + rn ** 2)).astype(np.float32)
             recorder = RecordingGate()
-            fitter = Image_Analysis_Functions(readnoise=rn, fit_gate=recorder)
+            fitter = Image_Analysis_Functions(readnoise=rn, fit_gate=recorder,
+                                             gate_nocolour=_strategy_value(strategy) == "nocolour")
             fitter.fit_puncta_method(
                 list(pe), list(smoothed), list(weights), [(0.0, 0.0)] * self.n_null,
                 list(range(self.n_null)), strategy=strategy, masks=[masks] * self.n_null,
