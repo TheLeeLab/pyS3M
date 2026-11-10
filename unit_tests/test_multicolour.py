@@ -257,6 +257,29 @@ def _minimal_x0y0_photons(size=8, n_bootstrap=2):
 
 
 class TestGenCameraImageStack:
+    def test_integer_adu_is_unbiased(self, sim, wavelength_and_qys):
+        """Converting to integer ADU rounds: with no light, the offset-subtracted image averages zero.
+
+        Truncation lowered every pixel by 0.5 ADU on average, a negative background of
+        0.5 / gain photoelectrons that cancelled faint emitters (SI SBR sweep, N ~ 500, SBR 100).
+        """
+        _, pixel_QYs = wavelength_and_qys
+        cam = _camera_params_dict(size=16, pixel_QYs=pixel_QYs)
+        cam["gain"] = np.full((16, 16), 0.414)        # ADU per photoelectron, as the Ximea
+        cam["offset"] = np.full((16, 16), 32.35)      # not a whole ADU
+        cam["variance"] = np.full((16, 16), 0.97 ** 2)
+        x0y0 = {"dye": np.full((40, 2, 1), 8.0)}
+        n_photons = {"dye": np.zeros(40, dtype=int)}
+        np.random.seed(0)
+        bayer, _, _ = sim.gen_camera_image_stack(
+            cam, wavelength_and_qys[0], 660.0, np.array([0.2, 0.3, 0.5]), n_photons, x0y0,
+            smoothing_function=None, background_photons=0.0, use_vectorized_photoelectrons=False,
+            psf_model="gaussian",
+        )
+        assert np.issubdtype(bayer.dtype, np.integer)
+        bias = bayer.astype(float).mean() - 32.35       # 10,240 pixels: s.e. ~0.01 ADU
+        assert abs(bias) < 0.05, f"integer ADU biased by {bias:.3f} ADU"
+
     def test_non_vectorized_path(self, sim, camera_parameters, wavelength_and_qys, smoothing_function):
         wl, pixel_QYs = wavelength_and_qys
         x0y0, n_photons = _minimal_x0y0_photons()

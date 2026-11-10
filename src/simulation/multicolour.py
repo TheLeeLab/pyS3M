@@ -2167,7 +2167,10 @@ class MultiC_Sim_Funcs_Refactored:
         max_value = np.max(bayer_image)
         min_value = np.min(bayer_image)
 
-        # Determine appropriate bit depth based on actual data range
+        # Determine appropriate bit depth based on actual data range. The integer cameras round to
+        # the nearest ADU: a cast alone truncates, lowering every pixel by 0.5 ADU on average
+        # (0.5 / gain photoelectrons; ~1.2 per pixel on the Ximea), which at low signal and low
+        # background cancels the emitter in the offset-subtracted image.
         if max_value > 65535 or min_value < 0:
             # Values exceed uint16 range, use float32 for full dynamic range
             logger.warning(f"WARNING: Pixel values exceed uint16 range (min: {min_value:.1f}, max: {max_value:.1f})")
@@ -2176,10 +2179,10 @@ class MultiC_Sim_Funcs_Refactored:
         elif max_value > 255:
             # Values exceed uint8 but fit in uint16
             if max_value <= 65535:
-                bayer_image = bayer_image.astype(np.uint16)
+                bayer_image = np.rint(bayer_image).astype(np.uint16)
         else:
             # Values fit in uint8
-            bayer_image = bayer_image.astype(np.uint8)
+            bayer_image = np.rint(bayer_image).astype(np.uint8)
 
         # Apply smoothing
         if smoothing_function is not None:
