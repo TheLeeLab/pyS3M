@@ -76,6 +76,9 @@ PANEL_MM = {
 }
 
 
+GRID = dict(visible=True, color="gray", lw=0.5, alpha=0.5, ls="--")   # the paper's grid: ax.grid(**GRID)
+
+
 def mm_stack(w_mm, h_mm, n=1, gap_mm=0.0, margins_mm=(10.0, 8.0, 2.0, 2.0)):
     """A figure with ``n`` axes of exactly ``w_mm`` x ``h_mm``, stacked top to bottom ``gap_mm`` apart,
     with margins (left, bottom, right, top; mm) for labels. No layout engine, so the axes keep their
