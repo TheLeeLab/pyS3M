@@ -90,8 +90,6 @@ def test_quality_metrics_real_data():
     # Analysis parameters
     peak_wavelength = 0.638  # 638 nm (red)
     pfa = 1e-3
-    sigma = 1.5
-    fraction_true = 0.2
     ROI_size = 16
     NA = 1.49
     pixel_size = 0.069  # μm
@@ -100,8 +98,6 @@ def test_quality_metrics_real_data():
     print("Analysis Parameters:")
     print(f"  Peak wavelength: {peak_wavelength} μm")
     print(f"  PFA: {pfa}")
-    print(f"  Sigma: {sigma}")
-    print(f"  Fraction true: {fraction_true}")
     print(f"  ROI size: {ROI_size}")
     print(f"  Variance-aware demosaic: {use_variance_aware_demosaic}")
     print()
@@ -130,8 +126,6 @@ def test_quality_metrics_real_data():
         peak_wavelength=peak_wavelength,
         NA=NA,
         pixel_size=pixel_size,
-        sigma=sigma,
-        fraction_true=fraction_true,
         image_type='.tif',
         use_variance_aware_demosaic=use_variance_aware_demosaic,
     )
@@ -171,8 +165,6 @@ def test_quality_metrics_real_data():
             'spot_background',
             'spot_background_std',
             'spot_mean_inner_intensity',
-            'spot_fraction_above_threshold',
-            'spot_n_pixels_above_threshold',
             'spot_snr'
         ]
 

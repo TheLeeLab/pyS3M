@@ -122,8 +122,6 @@ def test_quality_metrics_saved_with_roi_filtering():
             peak_wavelength=0.55,
             NA=1.49,
             pixel_size=0.069,
-            sigma=1.5,
-            fraction_true=0.2,
             image_type=".tif",
             use_variance_aware_demosaic=False,
         )

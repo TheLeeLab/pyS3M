@@ -34,8 +34,8 @@ REFERENCES = {
     "QDot525": ("#9a589a",    [f"{QDOT_ROOT}/QDot525/10nM_Qdot525_515LP_515_DC_30p515_1"]),
 }
 
-# Spot detection and fitting (fraction_true 0: the inner-pixel threshold is not used, see TODO).
-FIT_PARAMS = dict(pfa=1e-3, sigma=1.5, fraction_true=0.0, peak_wavelength=0.65, ROI_size=12,
+# Spot detection and fitting.
+FIT_PARAMS = dict(pfa=1e-3, peak_wavelength=0.65, ROI_size=12,
                   NA=1.49, pixel_size=0.069)
 DRIFT_PARAMS = dict(segmentation=2, intersect_d=0.5, roi_r=3.0)
 # Molecules = HDBSCAN clusters of >= 10 localisations, as stated in the paper's Methods for all

@@ -284,31 +284,32 @@ class TestGetDetectionPoints:
 
 
 # ======================================================================
-# intensity_pixel_indices / real_puncta_indices
+# intensity_pixel_indices / spot_quality_metrics
 # ======================================================================
 
-class TestRealPunctaIndices:
-    def test_without_quality(self, sd):
+class TestSpotQualityMetrics:
+    def test_keys_and_lengths(self, sd):
         image = _synthetic_image(size=32, spots=((16, 16),))
         detected = np.array([[16, 16], [2, 2]])
-        mask = sd.real_puncta_indices(
-            image, detected, guard_interval=2, reference_interval=2, sigma=1.5,
-        )
-        assert mask.dtype == bool
-        assert mask.shape == (2,)
-
-    def test_with_quality(self, sd):
-        image = _synthetic_image(size=32, spots=((16, 16),))
-        detected = np.array([[16, 16], [2, 2]])
-        mask, quality = sd.real_puncta_indices(
-            image, detected, guard_interval=2, reference_interval=2, sigma=1.5,
-            return_quality=True,
+        quality = sd.spot_quality_metrics(
+            image, detected, guard_interval=2, reference_interval=2,
         )
         assert set(quality.keys()) == {
-            "background", "background_std", "mean_inner_intensity",
-            "fraction_above_threshold", "n_pixels_above_threshold", "snr",
+            "background", "background_std", "mean_inner_intensity", "snr",
         }
         assert len(quality["background"]) == 2
+        # the spot is brighter than its annulus; the empty corner is not
+        assert quality["snr"][0] > quality["snr"][1]
+
+    def test_detection_keeps_every_cfar_maximum(self, sd):
+        # no post-CFAR threshold: with and without metrics give the same spots
+        image = _synthetic_image(size=48, spots=((16, 16), (32, 30)))
+        pts = sd.detect_puncta_in_image(image, pfa=1e-3, pixel_size=0.069)
+        pts_q, q = sd.detect_puncta_in_image(image, pfa=1e-3, pixel_size=0.069, return_quality=True)
+        np.testing.assert_array_equal(pts, pts_q)
+        assert set(q) == {"matched_filter_response", "background", "background_std",
+                          "mean_inner_intensity", "snr"}
+        assert all(len(v) == len(pts) for v in q.values())
 
 
 # ======================================================================

@@ -46,8 +46,6 @@ class FittingConfig:
     ROI_size: int = 16
     peak_wavelength: float = 0.638
     NA: float = 1.49
-    sigma: float = 1.5
-    fraction_true: float = 0.0   # DEPRECATED (2026-11-11), to be removed; keep at 0.0
     image_type: str = ".tif"
     use_variance_aware_demosaic: bool = True
     # Optional PSF sigma bounds (pixels) for keeping a fit straight after fitting; None = no
@@ -345,8 +343,6 @@ class AnalysisPipeline:
             peak_wavelength=fc.peak_wavelength,
             NA=fc.NA,
             pixel_size=self.pixel_size,
-            sigma=fc.sigma,
-            fraction_true=fc.fraction_true,
             image_type=fc.image_type,
             use_variance_aware_demosaic=fc.use_variance_aware_demosaic,
             fit_min_sigma=fc.fit_min_sigma,

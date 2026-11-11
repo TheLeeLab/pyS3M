@@ -631,7 +631,7 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()   # flush UI updates before blocking
 
         try:
-            sf = self.pipeline.make_smoothing_function(fitting_config.sigma)
+            sf = self.pipeline.make_smoothing_function()
             result = self.pipeline.sr.example_spots_singleframe(
                 image_folder=Path(data_dir),
                 smoothing_function=sf,
@@ -645,8 +645,6 @@ class MainWindow(QMainWindow):
                 peak_wavelength=fitting_config.peak_wavelength,
                 NA=fitting_config.NA,
                 pixel_size=self.pipeline.pixel_size,
-                sigma=fitting_config.sigma,
-                fraction_true=fitting_config.fraction_true,
                 use_variance_aware_demosaic=fitting_config.use_variance_aware_demosaic,
             )
             if result is not None:

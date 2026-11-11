@@ -215,7 +215,6 @@ class FittingPanel(QWidget):
             ROI_size=self._roi_size.value(),
             peak_wavelength=self._wavelength.value(),
             NA=self._na.value(),
-            fraction_true=0.0,
             use_variance_aware_demosaic=False,
         )
 

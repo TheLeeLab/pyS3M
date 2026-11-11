@@ -53,7 +53,7 @@ def remote_folder(laser, power):
 PEAK_UM = {"488": 0.515, "561": 0.58, "638": 0.68}
 
 # As for the single dyes (_single_dyes.FIT_PARAMS); the PSF wavelength is set per laser.
-FIT_PARAMS = dict(pfa=1e-3, sigma=1.5, fraction_true=0.0, ROI_size=12, NA=1.49, pixel_size=0.069)
+FIT_PARAMS = dict(pfa=1e-3, ROI_size=12, NA=1.49, pixel_size=0.069)
 
 # AIM drift correction as in the paper's Methods: 10-frame segments, 20 nm intersection
 # distance, 60 nm search radius (in pixels).
