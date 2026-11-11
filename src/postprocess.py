@@ -1295,8 +1295,8 @@ def segment_locs_by_rendered_image(
                     continue
 
                 if np.issubdtype(aggregate_locs[col].dtype, np.number):
-                    # Sum photons instead of averaging
-                    if col == "photons":
+                    # Sum photoelectrons instead of averaging
+                    if col == "photoelectrons":
                         stats[col] = aggregate_locs[col].sum()
                     # Use weighted mean if error column exists
                     elif f"{col}_err" in aggregate_locs.columns:

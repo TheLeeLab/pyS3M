@@ -58,10 +58,10 @@ class PostProcPanel(QWidget):
         fgrp = QGroupBox("Filtering")
         fform = QFormLayout(fgrp)
 
-        self._min_photons = QSpinBox()
-        self._min_photons.setRange(1, 1_000_000)
-        self._min_photons.setValue(500)
-        fform.addRow("Min photons:", self._min_photons)
+        self._min_photoelectrons = QSpinBox()
+        self._min_photoelectrons.setRange(0, 1_000_000)
+        self._min_photoelectrons.setValue(50)
+        fform.addRow("Min photoelectrons:", self._min_photoelectrons)
 
         self._max_colour_err = QDoubleSpinBox()
         self._max_colour_err.setRange(0.0, 1.0)
@@ -160,7 +160,7 @@ class PostProcPanel(QWidget):
         from pyS3M.Constants import FilteringCriteria
         from pyS3M.clustering import ClusteringConfig
         filt = FilteringCriteria(
-            min_photons=self._min_photons.value(),
+            min_photoelectrons=self._min_photoelectrons.value(),
             max_colour_error=self._max_colour_err.value(),
             max_localisation_error=self._max_loc_err.value(),
         )

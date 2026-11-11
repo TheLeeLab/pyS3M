@@ -1339,6 +1339,7 @@ class TestGateSettingOverride:
         roi, readnoise, mask = ia.gate_setting(FittingStrategy.STANDARD_DATA, puncta, masks, rn)
         assert roi == SIZE and readnoise == 1.25 and mask is not None
         assert ia.gate_setting(FittingStrategy.STANDARD_DATA, [], masks, rn) is None
+        assert ia.gate_setting(FittingStrategy.STANDARD_DATA, puncta, None, rn) is None
 
     def test_prepare_uses_the_given_setting(self, monkeypatch):
         ia = Image_Analysis_Functions()

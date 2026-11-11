@@ -344,8 +344,8 @@ class MainWindow(QMainWindow):
                 base_cols = ["xc", "yc", "xc_err", "yc_err"]
                 extra = [c for c in (("A_R", "A_G", "A_B") if has_rgb else ("A_R",))
                          if c in locs.columns]
-                if "photons" in locs.columns:
-                    extra.append("photons")
+                if "photoelectrons" in locs.columns:
+                    extra.append("photoelectrons")
                 subset = locs[base_cols + extra].dropna()
                 if len(subset) > 0:
                     locs_rec = subset.to_records(index=False)
@@ -450,27 +450,22 @@ class MainWindow(QMainWindow):
     def _make_stats_figure(
         self,
         locs,
-        photon_range=(100, 1_000_000),
+        photon_range=(50, 10_000),
         sm_locs=None,
     ) -> Figure:
-        # After H5 write, A_R/G/B are normalised fractions; the true total is in "photons".
-        # Use "photons" if present; fall back to raw sum only for un-normalised data.
+        # After H5 write, A_R/G/B are normalised fractions; the signal is the detected
+        # "photoelectrons" (photon_range is in photoelectrons).
         # When sm_locs is provided (post-clustering), render a 2×3 grid comparing
         # per-localisation (locs / sf_db) with per-molecule (sm_locs / sm_db) stats.
         col_colors = [("A_R", "tomato"), ("A_G", "mediumseagreen"), ("A_B", "cornflowerblue")]
         min_ph, max_ph = photon_range
 
         def _extract(df):
-            """Return (filtered_df, total_photons_array) applying photon_range mask."""
-            has_photons = "photons" in df.columns
+            """Return (filtered_df, photoelectrons_array) applying the photon_range mask."""
             spectral_cols = ("A_R", "A_G", "A_B")
-            has_spectral = has_photons or all(c in df.columns for c in spectral_cols)
-            if not has_spectral:
+            if "photoelectrons" not in df.columns or not all(c in df.columns for c in spectral_cols):
                 return None, None
-            total_all = (
-                df["photons"].values if has_photons
-                else df["A_R"].values + df["A_G"].values + df["A_B"].values
-            )
+            total_all = df["photoelectrons"].values
             mask = np.isfinite(total_all) & (total_all >= min_ph) & (total_all <= max_ph)
             return df[mask], total_all[mask]
 
@@ -496,7 +491,7 @@ class MainWindow(QMainWindow):
                     ax.set_xlabel(f"{col} fraction")
                     ax.set_ylabel(f"{row_label}\nCount" if col == "A_R" else "Count")
                 axes[3].hist(total, bins=60, color="slategray", alpha=0.8)
-                axes[3].set_xlabel("Total photons")
+                axes[3].set_xlabel("photoelectrons")
                 axes[3].set_ylabel("Count")
                 axes[3].set_title(f"n = {len(filtered):,}")
         else:
@@ -504,7 +499,7 @@ class MainWindow(QMainWindow):
             fig = Figure(figsize=(10, 3), dpi=100, layout="constrained")
             if filtered is None:
                 ax = fig.add_subplot(111)
-                ax.text(0.5, 0.5, "No photon data in file", ha="center", va="center",
+                ax.text(0.5, 0.5, "No photoelectron data in file", ha="center", va="center",
                         transform=ax.transAxes, color="gray")
             else:
                 axes = fig.subplots(1, 4)
@@ -516,7 +511,7 @@ class MainWindow(QMainWindow):
                     ax.set_ylabel("Count")
                     ax.set_title(col)
                 axes[3].hist(total, bins=60, color="slategray", alpha=0.8)
-                axes[3].set_xlabel("Total photons")
+                axes[3].set_xlabel("photoelectrons")
                 axes[3].set_ylabel("Count")
                 axes[3].set_title(f"Total  (n={len(filtered):,})")
         return fig

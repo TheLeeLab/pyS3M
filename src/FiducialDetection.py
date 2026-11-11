@@ -316,9 +316,9 @@ class FiducialDetector:
                     },
                 }
 
-                if hasattr(region_locs, "photons"):
-                    region_stat["mean_photons"] = np.mean(region_locs.photons)
-                    region_stat["std_photons"] = np.std(region_locs.photons)
+                if hasattr(region_locs, "photoelectrons"):
+                    region_stat["mean_photoelectrons"] = np.mean(region_locs.photoelectrons)
+                    region_stat["std_photoelectrons"] = np.std(region_locs.photoelectrons)
 
                 region_stats.append(region_stat)
             else:

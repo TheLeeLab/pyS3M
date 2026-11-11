@@ -34,7 +34,7 @@ def _tiny_loc_df(n=2, zero_errors=False):
         "bg_R_err": np.full(n, 0.05),
         "bg_G_err": np.full(n, 0.05),
         "bg_B_err": np.full(n, 0.05),
-        "photons": photons,
+        "photoelectrons": photons,
         "s_x": rng.uniform(1.2, 1.5, n),
         "s_y": rng.uniform(1.2, 1.5, n),
         "s_x_err": np.full(n, 0.05),
@@ -48,7 +48,7 @@ class TestExtractSingleMoleculesDbscanTooFewLocs:
         sm = SM_extractionfunctions.extract_SMs()
         df = _tiny_loc_df(n=2)
         sm_db, sf_db = sm.extract_single_molecules_DBSCAN(
-            df, min_cluster_size=10, min_photons=0,
+            df, min_cluster_size=10, min_photoelectrons=0,
         )
         assert sm_db.empty
         assert sf_db.empty
@@ -60,5 +60,5 @@ class TestExtractSingleMoleculesDbscanZeroPrecision:
         df = _tiny_loc_df(n=15, zero_errors=True)
         with pytest.raises(ValueError, match="loc_precision"):
             sm.extract_single_molecules_DBSCAN(
-                df, min_cluster_size=3, min_photons=0,
+                df, min_cluster_size=3, min_photoelectrons=0,
             )

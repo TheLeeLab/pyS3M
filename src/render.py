@@ -336,8 +336,8 @@ def _fill_colour_gaussian(
         if j_max > n_pixel_x:
             j_max = n_pixel_x
 
-        # draw a localization as a 2D guassian weighted by photon count
-        # Area under Gaussian = photons_ (not normalized to 1.0)
+        # draw a localization as a 2D gaussian weighted by its photoelectrons
+        # Area under Gaussian = photons_ (the weight; not normalized to 1.0)
         for i in range(i_min, i_max):
             for j in range(j_min, j_max):
                 val = photons_ * np.exp(
@@ -396,8 +396,8 @@ def _fill_gaussian(image, x, y, sx, sy, photons, n_pixel_x, n_pixel_y):
         if j_max > n_pixel_x:
             j_max = n_pixel_x
 
-        # draw a localization as a 2D guassian weighted by photon count
-        # Area under Gaussian = photons_ (not normalized to 1.0)
+        # draw a localization as a 2D gaussian weighted by its photoelectrons
+        # Area under Gaussian = photons_ (the weight; not normalized to 1.0)
         for i in range(i_min, i_max):
             for j in range(j_min, j_max):
                 image[i, j] += photons_ * np.exp(
@@ -519,9 +519,9 @@ def render_gaussian_colour(
     sx = blur_width[in_view]
     color = locs[cparam][in_view]
 
-    # Extract photon counts, default to 1.0 if not available
-    if hasattr(locs, 'photons'):
-        photons = locs.photons[in_view]
+    # Weight each localisation by its detected photoelectrons (1.0 if not available)
+    if hasattr(locs, 'photoelectrons'):
+        photons = locs.photoelectrons[in_view]
     else:
         photons = np.ones(len(x), dtype=np.float32)
 
@@ -611,7 +611,7 @@ def render_gaussian_RGB(
 ) -> tuple[int, NDArray[np.float32], NDArray[np.float32]]:
     """Render locs into a true-colour RGB image using A_R, A_G, A_B fractions.
 
-    Each pixel's hue is the photon-weighted mean (A_R, A_G, A_B) of the
+    Each pixel's hue is the photoelectron-weighted mean (A_R, A_G, A_B) of the
     localisations that contribute to it; brightness is modulated by the
     local density, fading to black where density is low.  This gives
     spectrally correct colours — A_G-dominant data appears green, not blue.
@@ -621,7 +621,7 @@ def render_gaussian_RGB(
     int
         Number of localisations rendered.
     np.ndarray (H, W)
-        Total-photon density image.
+        Total-photoelectron density image.
     np.ndarray (H, W, 3)
         RGB image, float32 in [0, 1].
     """
@@ -639,7 +639,7 @@ def render_gaussian_RGB(
     ch_R = locs.A_R[in_view].astype(np.float32)
     ch_G = locs.A_G[in_view].astype(np.float32)
     ch_B = locs.A_B[in_view].astype(np.float32)
-    photons = locs.photons[in_view].astype(np.float32) if hasattr(locs, "photons") \
+    photons = locs.photoelectrons[in_view].astype(np.float32) if hasattr(locs, "photoelectrons") \
               else np.ones(len(x), dtype=np.float32)
 
     _fill_RGB_gaussian(
@@ -726,9 +726,9 @@ def render_gaussian(
     sy = blur_height[in_view]
     sx = blur_width[in_view]
 
-    # Extract photon counts, default to 1.0 if not available
-    if hasattr(locs, 'photons'):
-        photons = locs.photons[in_view]
+    # Weight each localisation by its detected photoelectrons (1.0 if not available)
+    if hasattr(locs, 'photoelectrons'):
+        photons = locs.photoelectrons[in_view]
     else:
         photons = np.ones(len(x), dtype=np.float32)
 

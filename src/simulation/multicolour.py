@@ -1032,12 +1032,10 @@ class MultiC_Sim_Funcs_Refactored:
 
         # Colour and background values to fractions; the fitter already reports their errors
         # as fraction errors from its full covariance (FittingResultProcessor.fraction_errors)
-        fit_results["photons"] = sum(fit_results[f"A_{l}"] for l in _lbls)
-        fit_results["background_photons"] = sum(fit_results[f"bg_{l}"] for l in _lbls)
-
-        for l in _lbls:
-            fit_results[f"A_{l}"] /= fit_results["photons"]
-            fit_results[f"bg_{l}"] /= fit_results["background_photons"]
+        # Detected photoelectrons (mosaic-weighted) and the amplitudes as fractions
+        fit_results = self.io._add_photoelectron_columns(
+            fit_results, normalise=True,
+            pixel_fractions={l: float(np.mean(camera_params.masks[l] > 0)) for l in _lbls})
 
         return fit_results
 
@@ -1102,12 +1100,10 @@ class MultiC_Sim_Funcs_Refactored:
 
         # Colour and background values to fractions; the fitter already reports their errors
         # as fraction errors from its full covariance (FittingResultProcessor.fraction_errors)
-        fit_results["photons"] = sum(fit_results[f"A_{l}"] for l in _lbls)
-        fit_results["background_photons"] = sum(fit_results[f"bg_{l}"] for l in _lbls)
-
-        for l in _lbls:
-            fit_results[f"A_{l}"] /= fit_results["photons"]
-            fit_results[f"bg_{l}"] /= fit_results["background_photons"]
+        # Detected photoelectrons (mosaic-weighted) and the amplitudes as fractions
+        fit_results = self.io._add_photoelectron_columns(
+            fit_results, normalise=True,
+            pixel_fractions={l: float(np.mean(camera_params.masks[l] > 0)) for l in _lbls})
 
         return fit_results
 
@@ -1172,12 +1168,10 @@ class MultiC_Sim_Funcs_Refactored:
         fit_errors_df = pd.DataFrame(fit_errors, columns=error_columns)
         fit_results = pd.concat([fit_results.reset_index(drop=True), fit_errors_df], axis=1)
 
-        fit_results["photons"] = sum(fit_results[f"A_{l}"] for l in _lbls)
-        fit_results["background_photons"] = sum(fit_results[f"bg_{l}"] for l in _lbls)
-
-        for l in _lbls:
-            fit_results[f"A_{l}"] /= fit_results["photons"]
-            fit_results[f"bg_{l}"] /= fit_results["background_photons"]
+        # Detected photoelectrons (mosaic-weighted) and the amplitudes as fractions
+        fit_results = self.io._add_photoelectron_columns(
+            fit_results, normalise=True,
+            pixel_fractions={l: float(np.mean(camera_params.masks[l] > 0)) for l in _lbls})
 
         return fit_results
 
@@ -3140,9 +3134,8 @@ class MultiC_Sim_Funcs_Refactored:
                 fit_results["photon_level"] = i
 
                 # Save to HDF5 database using IOFunctions
-                # Note: _fit_standard already creates photons and background_photons columns
-                # and normalizes A_R/G/B and bg_R/G/B, so we pass normalise_photons=False
-                # to avoid double normalization
+                # Note: _fit_standard already adds photoelectrons and normalises A_*/bg_*,
+                # so we pass normalise_photons=False to avoid double normalisation
                 # Append if: (1) not the first iteration OR (2) continuing from previous run
                 should_append = (i > 0) or (len(completed_photon_levels) > 0)
                 self.io.write_h5_database(
@@ -3538,7 +3531,7 @@ class MultiC_Sim_Funcs(MultiC_Sim_Funcs_Compatibility):
                 'A_G': np.ndarray of shape (n_simulations,),
                 'A_R_err': np.ndarray of shape (n_simulations,),
                 'A_G_err': np.ndarray of shape (n_simulations,),
-                'photons': np.ndarray of shape (n_simulations,)
+                'photoelectrons': np.ndarray of shape (n_simulations,), detected photoelectrons
             }
         """
         if pixel_size is None:
@@ -3599,6 +3592,8 @@ class MultiC_Sim_Funcs(MultiC_Sim_Funcs_Compatibility):
 
         # Create 3D mask array for fitting (B, G, R channels)
         masks_3d = np.dstack([masks_3d_dict[x] for x in ["B", "G", "R"]])
+        # each pixel type's share of the mosaic, to turn fitted amplitudes into detected photoelectrons
+        mosaic_share = {x: float(np.mean(np.asarray(masks_3d_dict[x]) > 0)) for x in ["B", "G", "R"]}
 
         # Smooth all images at once (gaussian_filter_stack handles 3D arrays)
         smoothed_data = smoothing_function.smoothing_function(
@@ -3638,7 +3633,7 @@ class MultiC_Sim_Funcs(MultiC_Sim_Funcs_Compatibility):
         A_R_err = np.zeros(n_simulations)
         A_G_err = np.zeros(n_simulations)
         A_B_err = np.zeros(n_simulations)
-        photons = np.zeros(n_simulations)
+        photoelectrons = np.zeros(n_simulations)
 
         for i in range(n_simulations):
             # Fit results: [..., bg_B, bg_G, bg_R, A_B, A_G, A_R, chi_sqr, frame]
@@ -3658,7 +3653,8 @@ class MultiC_Sim_Funcs(MultiC_Sim_Funcs_Compatibility):
                     A_R_err[i] = fit_errors[i, 9] / total_amp if fit_errors[i, 9] > 0 else 0.01
                     A_G_err[i] = fit_errors[i, 8] / total_amp if fit_errors[i, 8] > 0 else 0.01
                     A_B_err[i] = fit_errors[i, 7] / total_amp if fit_errors[i, 7] > 0 else 0.01
-                    photons[i] = total_amp
+                    photoelectrons[i] = (mosaic_share["B"] * amp_B + mosaic_share["G"] * amp_G
+                                         + mosaic_share["R"] * amp_R)
                 else:
                     # Fit succeeded but amplitudes are zero - mark as failed
                     A_R[i] = np.nan
@@ -3667,7 +3663,7 @@ class MultiC_Sim_Funcs(MultiC_Sim_Funcs_Compatibility):
                     A_R_err[i] = np.nan
                     A_G_err[i] = np.nan
                     A_B_err[i] = np.nan
-                    photons[i] = np.nan
+                    photoelectrons[i] = np.nan
             else:
                 # Fit failed - mark as NaN to exclude from analysis
                 A_R[i] = np.nan
@@ -3676,7 +3672,7 @@ class MultiC_Sim_Funcs(MultiC_Sim_Funcs_Compatibility):
                 A_R_err[i] = np.nan
                 A_G_err[i] = np.nan
                 A_B_err[i] = np.nan
-                photons[i] = np.nan
+                photoelectrons[i] = np.nan
 
         return {
             'A_R': A_R,
@@ -3685,7 +3681,7 @@ class MultiC_Sim_Funcs(MultiC_Sim_Funcs_Compatibility):
             'A_R_err': A_R_err,
             'A_G_err': A_G_err,
             'A_B_err': A_B_err,
-            'photons': photons
+            'photoelectrons': photoelectrons
         }
 
     def plot_dye_selection_results(

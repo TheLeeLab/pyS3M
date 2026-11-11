@@ -20,7 +20,7 @@ import pyS3M.IOFunctions as IOFunctions
 from pyS3M.Constants import FilteringCriteria
 
 
-def _make_loc_df(n=20, seed=0, with_photons=True):
+def _make_loc_df(n=20, seed=0, with_photoelectrons=True):
     rng = np.random.default_rng(seed)
     df = pd.DataFrame({
         "frame": np.arange(n),
@@ -46,8 +46,8 @@ def _make_loc_df(n=20, seed=0, with_photons=True):
         "s_y_err": 0.05,
         "chi_sqr": rng.gamma(5, 0.2, n),
     })
-    if with_photons:
-        df["photons"] = df["A_R"] + df["A_G"] + df["A_B"]
+    if with_photoelectrons:
+        df["photoelectrons"] = df["A_B"] / 4 + df["A_G"] / 2 + df["A_R"] / 4
     return df
 
 
@@ -86,50 +86,48 @@ class TestFilterQualityLocalisationsCriteriaAndFallback:
         criteria = FilteringCriteria(
             chi_val=10.0, max_localisation_error=1.0, max_colour_error=1.0,
             min_sigma=0.01, max_sigma=10.0, max_sigma_error=10.0,
-            min_photons=1.0, max_photons=1e9,
+            min_photoelectrons=1.0, max_photoelectrons=1e9,
         )
         filtered = SM_E.filter_quality_localisations(
             df, criteria=criteria,
             # deliberately-restrictive kwargs that would filter everything if used
-            chi_val=0.0001, min_photons=1e12,
+            chi_val=0.0001, min_photoelectrons=1e12,
         )
         assert len(filtered) > 0
 
-    def test_missing_photons_column_computed_via_add_photon_columns(self):
+    def test_raw_fit_results_get_photoelectrons(self):
         SM_E = SM_extractionfunctions.extract_SMs()
-        df = _make_loc_df(30, with_photons=False)
-        assert "photons" not in df.columns
+        df = _make_loc_df(30, with_photoelectrons=False)
         filtered = SM_E.filter_quality_localisations(
             df, chi_val=10.0, max_localisation_error=1.0, max_colour_error=1.0,
             min_sigma=0.01, max_sigma=10.0, max_sigma_error=10.0,
-            min_photons=1.0, max_photons=1e9,
+            min_photoelectrons=1.0, max_photoelectrons=1e9,
         )
-        assert "photons" in filtered.columns
+        assert "photoelectrons" in filtered.columns
+        np.testing.assert_allclose(filtered["A_B"] + filtered["A_G"] + filtered["A_R"], 1.0)
         assert len(filtered) > 0
-
 
     def test_photoelectron_bounds_cut_on_detected_photoelectrons(self):
         SM_E = SM_extractionfunctions.extract_SMs()
-        df = IOFunctions.IO_Functions()._add_photon_columns(_make_loc_df(40, with_photons=False))
-        df = df.drop(columns=["photoelectrons", "background_photoelectrons"])
-        pe = df["photons"] * (df["A_B"] / 4 + df["A_G"] / 2 + df["A_R"] / 4)
+        df = _make_loc_df(40, with_photoelectrons=False)
+        pe = df["A_B"] / 4 + df["A_G"] / 2 + df["A_R"] / 4
         lo, hi = pe.quantile([0.25, 0.75])
         filtered = SM_E.filter_quality_localisations(
             df, criteria=FilteringCriteria(
                 chi_val=10.0, max_localisation_error=1.0, max_colour_error=1.0,
                 min_sigma=0.01, max_sigma=10.0, max_sigma_error=10.0,
-                min_photons=1.0, min_photoelectrons=lo, max_photoelectrons=hi),
+                min_photoelectrons=lo, max_photoelectrons=hi),
         )
         np.testing.assert_allclose(np.sort(filtered["photoelectrons"]), np.sort(pe[(pe > lo) & (pe < hi)]))
 
-    def test_no_photoelectron_bounds_leaves_photon_cut_unchanged(self):
+    def test_no_photoelectron_bounds_keeps_every_signal(self):
         SM_E = SM_extractionfunctions.extract_SMs()
         df = _make_loc_df(30)
-        kwargs = dict(chi_val=10.0, max_localisation_error=1.0, max_colour_error=1.0,
-                      min_sigma=0.01, max_sigma=10.0, max_sigma_error=10.0, min_photons=900.0)
-        filtered = SM_E.filter_quality_localisations(df, **kwargs)
-        assert len(filtered) == int((df["photons"] > 900.0).sum())
-        assert "photoelectrons" not in filtered.columns
+        filtered = SM_E.filter_quality_localisations(
+            df, chi_val=10.0, max_localisation_error=1.0, max_colour_error=1.0,
+            min_sigma=0.01, max_sigma=10.0, max_sigma_error=10.0,
+            min_photoelectrons=None, max_photoelectrons=None)
+        assert len(filtered) == len(df)
 
 
 class TestAverageParametersBranches:
@@ -142,11 +140,16 @@ class TestAverageParametersBranches:
         assert "index" not in result.columns
         assert len(result) == 2
 
-    def test_missing_photons_column_uses_weighted_amplitude_sum(self):
+    def test_photoelectrons_summed_over_frames(self):
         SM_E = SM_extractionfunctions.extract_SMs()
-        df = _make_loc_df(20, with_photons=False)
-        assert "photons" not in df.columns
+        df = _make_loc_df(20)
         labels = np.array([0] * 10 + [1] * 10)
         result = SM_E.average_parameters(df, labels)
-        assert np.all(np.isfinite(result["photons"]))
-        assert np.all(result["photons"] > 0)
+        np.testing.assert_allclose(result["photoelectrons"],
+                                   [df["photoelectrons"][:10].sum(), df["photoelectrons"][10:].sum()])
+        assert "photons" not in result.columns
+
+    def test_without_photoelectrons_none_are_made_up(self):
+        SM_E = SM_extractionfunctions.extract_SMs()
+        result = SM_E.average_parameters(_make_loc_df(20, with_photoelectrons=False), np.array([0] * 10 + [1] * 10))
+        assert "photoelectrons" not in result.columns

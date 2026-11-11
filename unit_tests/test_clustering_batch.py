@@ -44,7 +44,7 @@ def create_synthetic_localization_data(n_molecules, frames_per_molecule, rng):
                 "A_R_err": 0.05, "A_G_err": 0.05, "A_B_err": 0.05,
                 "bg_R": rng.uniform(5, 20), "bg_G": rng.uniform(5, 20), "bg_B": rng.uniform(5, 20),
                 "bg_R_err": 0.05, "bg_G_err": 0.05, "bg_B_err": 0.05,
-                "photons": photons,
+                "photoelectrons": photons,
                 "s_x": rng.uniform(1.2, 1.5), "s_y": rng.uniform(1.2, 1.5),
                 "s_x_err": 0.05, "s_y_err": 0.05,
                 "chi_sqr": rng.gamma(5, 0.2),

@@ -72,7 +72,7 @@ class ChannelUnmixingMixin:
             gmm_fit_method (str): GMM fitting algorithm. ``'EM'`` auto-selects
                 the best method (pygmmis Extreme Deconvolution when error
                 columns are present, otherwise sklearn EM). ``'EM_weighted'``
-                uses photon-based weighting (legacy). ``'fixed'`` skips EM
+                uses photoelectron-based weighting (legacy). ``'fixed'`` skips EM
                 and uses the initial guess directly (most conservative).
 
             covariance_type (str): GMM covariance structure
@@ -164,7 +164,7 @@ class ChannelUnmixingMixin:
                 # Extract base column name (remove '_err' suffix)
                 base_col = error_col.replace('_err', '')
 
-                if base_col == 'photons':
+                if base_col == 'photoelectrons':
                     # Poisson statistics: σ = sqrt(N)
                     loc_data_work[error_col] = np.sqrt(np.maximum(loc_data_work[base_col].values, 1))
                     if verbose:
@@ -335,7 +335,8 @@ class ChannelUnmixingMixin:
 
         elif gmm_fit_method == "EM_weighted":
             # Use existing weighted EM implementation
-            photons = loc_data_work["photons"].values if "photons" in loc_data_work.columns else None
+            photoelectrons = (loc_data_work["photoelectrons"].values
+                              if "photoelectrons" in loc_data_work.columns else None)
             A_R = loc_data_work["A_R"].values if "A_R" in loc_data_work.columns else None
             A_G = loc_data_work["A_G"].values if "A_G" in loc_data_work.columns else None
 
@@ -349,8 +350,6 @@ class ChannelUnmixingMixin:
                     sigma_dim0 = loc_data_work["A_G_err"].values
                 elif channels_to_use[0] == 'A_B':
                     sigma_dim0 = loc_data_work["A_B_err"].values
-                elif channels_to_use[0] == 'photons':
-                    sigma_dim0 = loc_data_work["photons_err"].values
                 else:
                     sigma_dim0 = loc_data_work[f"{channels_to_use[0]}_err"].values
 
@@ -360,8 +359,6 @@ class ChannelUnmixingMixin:
                     sigma_dim1 = loc_data_work["A_G_err"].values
                 elif channels_to_use[1] == 'A_B':
                     sigma_dim1 = loc_data_work["A_B_err"].values
-                elif channels_to_use[1] == 'photons':
-                    sigma_dim1 = loc_data_work["photons_err"].values
                 else:
                     sigma_dim1 = loc_data_work[f"{channels_to_use[1]}_err"].values
 
@@ -384,7 +381,7 @@ class ChannelUnmixingMixin:
                 n_components=n_channels,
                 covariance_type=covariance_type,
                 max_iter=max_iter,
-                photons=photons,
+                photoelectrons=photoelectrons,
                 A_R=A_R,
                 A_G=A_G,
                 has_error_columns=has_errors,
@@ -1348,7 +1345,7 @@ class ChannelUnmixingMixin:
         spectral_tol: float = 0.05,
         min_spatial_dist_nm: float = 500.0,
         max_spatial_dist_nm: float | None = None,
-        min_photons: float = 2000.0,
+        min_photoelectrons: float = 1000.0,
         pixel_size: float | None = None,
         n_top: int = 10,
     ) -> pd.DataFrame | None:
@@ -1362,7 +1359,7 @@ class ChannelUnmixingMixin:
 
         Args:
             sf_db: Single-frame DataFrame as returned by extract_single_molecules_*.
-                   Must contain: xc, yc, A_R, A_G, photons, frame, fov_index, molecular_index.
+                   Must contain: xc, yc, A_R, A_G, photoelectrons, frame, fov_index, molecular_index.
             mean_0: (A_R, A_G) mean for class 0 (e.g. from GMM fixed_means[0]).
             mean_1: (A_R, A_G) mean for class 1 (e.g. from GMM fixed_means[1]).
             spectral_tol: Maximum Euclidean distance in (A_R, A_G) space for a
@@ -1371,8 +1368,8 @@ class ChannelUnmixingMixin:
             min_spatial_dist_nm: Minimum separation (nm) — excludes pairs that are
                                  too close to resolve in the raw image (default 500).
             max_spatial_dist_nm: Maximum separation (nm).  None means no upper limit.
-            min_photons: Minimum photon count for a localisation to be considered
-                         (default 2000).
+            min_photoelectrons: Minimum detected photoelectrons for a localisation to be
+                         considered (default 1000).
             pixel_size: Camera pixel size in nm (default 69.0 nm for Ximea).
             n_top: Number of best pairs to return (ranked by spatial_dist_nm).
 
@@ -1394,7 +1391,7 @@ class ChannelUnmixingMixin:
         mean_0 = np.asarray(mean_0, dtype=float)
         mean_1 = np.asarray(mean_1, dtype=float)
 
-        sf_db = sf_db[sf_db['photons'] >= min_photons]
+        sf_db = sf_db[sf_db['photoelectrons'] >= min_photoelectrons]
 
         ar = sf_db['A_R'].to_numpy()
         ag = sf_db['A_G'].to_numpy()

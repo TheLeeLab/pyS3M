@@ -107,8 +107,8 @@ def _generate_synthetic_localisations(
         "A_B_err": A_B_err,
         "s_x_err": s_x_err,
         "s_y_err": s_y_err,
-        "photons": photons,
-        "background_photons": background_photons,
+        "photoelectrons": photons,
+        "background_photoelectrons": background_photons,
         "true_wl": true_wl,
     })
 
@@ -190,8 +190,8 @@ class TestPixelatedFitting(unittest.TestCase):
 
         # Check grid_info keys
         expected_keys = [
-            "wl_grid", "wl_err_grid", "n_locs_grid", "total_photons_grid",
-            "mean_photons_grid", "pixel_size_nm", "origin_nm",
+            "wl_grid", "wl_err_grid", "n_locs_grid", "total_photoelectrons_grid",
+            "mean_photoelectrons_grid", "pixel_size_nm", "origin_nm",
             "grid_shape", "n_pixels_fitted", "n_pixels_skipped",
         ]
         for key in expected_keys:
@@ -301,14 +301,14 @@ class TestPixelatedFitting(unittest.TestCase):
         )
 
         n_locs_grid = grid_info["n_locs_grid"]
-        total_photons_grid = grid_info["total_photons_grid"]
+        total_photoelectrons_grid = grid_info["total_photoelectrons_grid"]
 
         # Total localisations in grid should equal input
         self.assertEqual(np.sum(n_locs_grid), len(df))
 
         # Photon grid should have positive values where locs exist
         fitted_mask = n_locs_grid > 0
-        self.assertTrue(np.all(total_photons_grid[fitted_mask] > 0))
+        self.assertTrue(np.all(total_photoelectrons_grid[fitted_mask] > 0))
 
     def test_aggregate_id_column(self):
         """Pixels should be separated by aggregate ID."""

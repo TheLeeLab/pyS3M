@@ -112,7 +112,8 @@ class FilteringConstants:
     MIN_SIGMA_NM: float = 75.0                  # nm — minimum PSF sigma
     MAX_SIGMA_NM: float = 250.0                 # nm — maximum PSF sigma
     MAX_SIGMA_ERROR_NM: float = 40.0            # nm — maximum fitted sigma error
-    MIN_PHOTONS: int = 500                      # photon count lower bound
+    MIN_PHOTOELECTRONS: float = 50.0            # detected photoelectrons, lower bound
+    MAX_PHOTOELECTRONS: float | None = None     # detected photoelectrons, upper bound (None: no cut)
 
 
 class ResultColumns:
@@ -263,7 +264,7 @@ class FilteringCriteria:
 
     Example::
 
-        filt = FilteringCriteria(min_photons=1000, max_colour_error=0.10)
+        filt = FilteringCriteria(min_photoelectrons=200, max_colour_error=0.10)
         sm_db, sf_db = SM_E.extract_single_molecules_HDBSCAN(data, criteria=filt)
     """
 
@@ -273,10 +274,9 @@ class FilteringCriteria:
     min_sigma: Optional[float] = None   # px; None → MIN_SIGMA_NM / pixel_size_nm
     max_sigma: Optional[float] = None   # px; None → MAX_SIGMA_NM / pixel_size_nm
     max_sigma_error: Optional[float] = None  # px; None → MAX_SIGMA_ERROR_NM / pixel_size_nm
-    min_photons: int = FilteringConstants.MIN_PHOTONS
-    max_photons: Optional[float] = None
-    min_photoelectrons: Optional[float] = None  # detected pe (sum_p f_p A_p); None → no cut
-    max_photoelectrons: Optional[float] = None
+    # detected photoelectrons (sum_p m_p A_p, m_p = pixel type p's share of the mosaic); None → no cut
+    min_photoelectrons: Optional[float] = FilteringConstants.MIN_PHOTOELECTRONS
+    max_photoelectrons: Optional[float] = FilteringConstants.MAX_PHOTOELECTRONS
     max_background_error: Optional[float] = None  # bg_*_err cut; None → no cut
 
 

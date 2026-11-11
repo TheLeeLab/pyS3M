@@ -44,67 +44,94 @@ class IO_Functions:
         from pyS3M.MaskFunctions import Mask_Functions
         self.pixel_fractions = Mask_Functions(camera=camera, mosaic_unit=mosaic_unit).pixel_fractions()
 
-    def _mask_weighted_sum(self, df, prefix):
+    def _mask_weighted_sum(self, df, prefix, pixel_fractions=None):
         """``sum_p fraction_p * df[prefix + p]`` over the mosaic's pixel types."""
-        return sum(f * df[f"{prefix}{p}"] for p, f in self.pixel_fractions.items())
+        pixel_fractions = self.pixel_fractions if pixel_fractions is None else pixel_fractions
+        return sum(f * df[f"{prefix}{p}"] for p, f in pixel_fractions.items())
+
+    LEGACY_TOTAL_COLUMNS = ("photons", "background_photons")
 
     def add_photoelectron_columns(self, df):
-        """Add detected photoelectrons to a database with normalised amplitudes.
+        """Bring a database written before 2026-11-11 to the current columns.
 
-        ``photons`` (``A_B + A_G + A_R``) adds up what each pixel type would collect if it
-        covered the whole sensor, so it is not the signal detected. Weighting each
-        amplitude by its pixel type's share of the sensor (:meth:`Mask_Functions.pixel_fractions`)
-        gives:
+        Old databases stored ``photons`` (``A_B + A_G + A_R``) and ``background_photons``
+        (``bg_B + bg_G + bg_R``) beside the normalised amplitudes. Those sums add up what each
+        pixel type would collect if it covered the whole sensor, so they are not the signal
+        detected, and they are no longer written. From them this adds
 
         * ``photoelectrons`` -- detected photoelectrons of the localisation,
           ``photons * sum_p fraction_p * A_p``;
         * ``background_photoelectrons`` -- mean background per pixel (photoelectrons),
-          ``background_photons * sum_p fraction_p * bg_p``.
+          ``background_photons * sum_p fraction_p * bg_p``;
+        * ``photoelectron_rate`` -- ``photoelectrons / n``, in place of the old ``photon_rate``
+          of linked localisations (:func:`LinkingFunctions.link_localisations`);
 
-        Works on any database written by :meth:`write_h5_database`, so existing results need
-        no refit.
+        and drops the old columns it converted (one without its ``A_*`` / ``bg_*`` columns is
+        kept), so existing results need no refit. The photoelectrons are
+        recomputed even if present: in old molecule tables ``photoelectrons`` was the mean per
+        frame, while ``photons`` was the molecule's sum over frames (as ``photoelectrons`` is
+        now). A database without the old columns is returned unchanged (as a copy).
 
         Args:
-            df (pd.DataFrame): Database with ``photons`` and normalised ``A_*`` (and/or
-                ``background_photons`` and normalised ``bg_*``) columns.
+            df (pd.DataFrame): Database with normalised ``A_*`` / ``bg_*`` columns.
 
         Returns:
-            pd.DataFrame: Copy of *df* with the columns added.
+            pd.DataFrame: Copy of *df* with the current columns.
         """
         df = df.copy()
         amplitudes = [f"A_{p}" for p in self.pixel_fractions]
         backgrounds = [f"bg_{p}" for p in self.pixel_fractions]
-        if all(col in df.columns for col in ["photons", *amplitudes]):
+        converted = []
+        if all(c in df.columns for c in ["photons", *amplitudes]):
             df["photoelectrons"] = df["photons"] * self._mask_weighted_sum(df, "A_")
-        if all(col in df.columns for col in ["background_photons", *backgrounds]):
+            converted.append("photons")
+        if all(c in df.columns for c in ["background_photons", *backgrounds]):
             df["background_photoelectrons"] = df["background_photons"] * self._mask_weighted_sum(df, "bg_")
+            converted.append("background_photons")
+        if "photons" in converted and all(c in df.columns for c in ["photon_rate", "n"]):
+            df["photoelectron_rate"] = df["photoelectrons"] / df["n"]
+            converted.append("photon_rate")
+        return df.drop(columns=converted)
+
+    def ensure_photoelectrons(self, df, normalise=True):
+        """``df`` with ``photoelectrons`` / ``background_photoelectrons`` and fractional amplitudes.
+
+        Old databases are upgraded (:meth:`add_photoelectron_columns`); fit results with raw
+        amplitudes get the columns (:meth:`_add_photoelectron_columns`, normalised if
+        ``normalise``); a current database is returned as it is.
+        """
+        if any(c in df.columns for c in self.LEGACY_TOTAL_COLUMNS):
+            return self.add_photoelectron_columns(df)
+        if "photoelectrons" not in df.columns:
+            return self._add_photoelectron_columns(df, normalise=normalise)
         return df
 
-    def _normalize_color_channels(self, df, total_col, color_cols):
-        """Normalize color channel values by their total.
+    def channel_amplitudes(self, df, prefix="A_", pixel_fractions=None):
+        """Each pixel type's fitted amplitude, in photoelectrons, from a normalised database.
+
+        The fitted ``A_p`` (``bg_p``) is what pixel type *p* would collect if it covered the
+        whole sensor; the database stores it as a fraction ``f_p`` of ``sum_q A_q`` and the
+        detected total ``photoelectrons`` (``background_photoelectrons``) ``= sum_q m_q A_q``
+        (``m_q`` = pixel type q's share of the mosaic). So
+        ``A_p = f_p * photoelectrons / sum_q m_q f_q``.
 
         Args:
-            df (pd.DataFrame): Input dataframe
-            total_col (str): Name of column containing total values
-            color_cols (list): List of column names to normalize (e.g., ['A_B', 'A_G', 'A_R'])
+            df (pd.DataFrame | pd.Series): Database (or one row) with normalised ``{prefix}*``
+                columns and ``photoelectrons`` (``prefix="A_"``) or
+                ``background_photoelectrons`` (``prefix="bg_"``).
+            prefix: ``"A_"`` (signal) or ``"bg_"`` (background per pixel).
+            pixel_fractions (dict | None): ``{pixel type: share of the mosaic}`` the
+                photoelectrons were computed with, if not this instance's mosaic (e.g. a
+                simulation's own masks).
 
         Returns:
-            pd.DataFrame: Dataframe with normalized columns
-
-        Notes:
-            This method normalizes values by dividing by the total, avoiding
-            division by zero using a mask. The errors are left as they are: the fitter
-            already reports them as errors of the normalised fractions, propagated from
-            its full covariance (FittingResultProcessor.fraction_errors).
+            dict[str, array | float]: ``{pixel type: amplitude in photoelectrons}``, in the
+            order of *pixel_fractions*.
         """
-        # Avoid division by zero
-        mask = df[total_col] > 0
-
-        # Normalize color channel values
-        for col in color_cols:
-            df.loc[mask, col] = df.loc[mask, col] / df.loc[mask, total_col]
-
-        return df
+        pixel_fractions = self.pixel_fractions if pixel_fractions is None else pixel_fractions
+        total = df["photoelectrons" if prefix == "A_" else "background_photoelectrons"]
+        scale = total / self._mask_weighted_sum(df, prefix, pixel_fractions)
+        return {p: df[f"{prefix}{p}"] * scale for p in pixel_fractions}
 
     def read_h5_database(self, filepath: Path | str, key: str = "data") -> pd.DataFrame:
         """Read localisation database from HDF5 file.
@@ -114,9 +141,13 @@ class IO_Functions:
             key (str): HDF5 key to read (default: "data").
 
         Returns:
-            pd.DataFrame: Localisation data.
+            pd.DataFrame: Localisation data. Databases written before 2026-11-11 are brought
+            to the current columns (:meth:`add_photoelectron_columns`).
         """
-        return pd.read_hdf(filepath, key=key)
+        df = pd.read_hdf(filepath, key=key)
+        if any(c in df.columns for c in self.LEGACY_TOTAL_COLUMNS):
+            df = self.add_photoelectron_columns(df)
+        return df
 
     def write_h5_database(self, df: pd.DataFrame, filepath: Path | str, append: bool = False, normalise_photons: bool = True, verbose: bool = True, key: str = "data", sort_on_append: bool = True) -> None:
         """Write localisation DataFrame to HDF5 with optional photon normalisation and frame sorting.
@@ -125,7 +156,10 @@ class IO_Functions:
             df (pd.DataFrame): Data to write.
             filepath (str): Destination HDF5 path.
             append (bool): If True, append to existing file and re-sort by frame.
-            normalise_photons (bool): If True, add/normalise photon columns.
+            normalise_photons (bool): If True and the data has no ``photoelectrons`` yet (raw fit
+                results), add ``photoelectrons`` / ``background_photoelectrons`` and normalise the raw
+                ``A_*``/``bg_*`` amplitudes to fractions. False: the data is written as it is (already
+                processed tables), except that old databases are brought to the current columns.
             verbose (bool): Print progress messages.
             key (str): HDF5 key to write under (default: "data", the convention
                 :meth:`read_h5_database` and callers that glob a folder for result
@@ -144,9 +178,11 @@ class IO_Functions:
             # (some DataFrames, e.g. single-molecule summaries, have no frame column)
             if "frame" in df.columns:
                 df["frame"] = pd.to_numeric(df["frame"], errors="coerce").astype("int32")
-            # Add photon columns if amplitude columns are present
-            if "photons" not in df.columns:
-                df = self._add_photon_columns(df, normalise=normalise_photons)
+            # Old databases: current columns. Raw fit results: detected photoelectrons and fractions
+            if any(c in df.columns for c in self.LEGACY_TOTAL_COLUMNS):
+                df = self.add_photoelectron_columns(df)
+            elif normalise_photons and "photoelectrons" not in df.columns:
+                df = self._add_photoelectron_columns(df, normalise=True)
 
             if append and Path(filepath).is_file():
                 # Check schema compatibility before appending
@@ -221,47 +257,35 @@ class IO_Functions:
     # Keep private alias for any external callers not yet migrated
     _write_h5_database = write_h5_database
 
-    def _add_photon_columns(self, df, normalise=True):
-        """
-        Automatically add photon columns and optionally normalise amplitude/background data.
+    def _add_photoelectron_columns(self, df, normalise=True, pixel_fractions=None):
+        """Add detected photoelectrons from raw fitted amplitudes, and normalise them to fractions.
 
-        Also adds the detected ``photoelectrons`` and ``background_photoelectrons`` (per
-        pixel), weighting each pixel type by its share of the mosaic (see
-        :meth:`add_photoelectron_columns`).
+        ``photoelectrons = sum_p m_p A_p`` and ``background_photoelectrons = sum_p m_p bg_p``
+        (per pixel), with ``m_p`` each pixel type's share of the mosaic (:attr:`pixel_fractions`).
+        With ``normalise``, ``A_p`` and ``bg_p`` become fractions of their sums over pixel
+        types (the sums are not stored: :meth:`channel_amplitudes` recovers the amplitudes).
 
         Args:
-            df (pd.DataFrame): Input dataframe
-            normalise (bool): Whether to normalise A_B/A_G/A_R and bg_B/bg_G/bg_R columns
+            df (pd.DataFrame): Fit results with raw ``A_*`` / ``bg_*`` amplitudes.
+            normalise (bool): Whether to normalise ``A_*`` and ``bg_*`` to fractions.
+            pixel_fractions (dict | None): ``{pixel type: share of the mosaic}`` to use instead of
+                this instance's mosaic (e.g. a simulation's own masks).
 
         Returns:
-            pd.DataFrame: Dataframe with photon columns added and optionally normalised
+            pd.DataFrame: Copy of *df* with the columns added (and normalised).
         """
-        df = df.copy()  # Avoid modifying original dataframe
-
-        # Add total photons column and normalise A_B, A_G, A_R if they exist
-        if all(col in df.columns for col in ["A_B", "A_G", "A_R"]):
-            df["photons"] = df["A_B"] + df["A_G"] + df["A_R"]
-            df["photoelectrons"] = self._mask_weighted_sum(df, "A_")
-
+        df = df.copy()
+        pixel_fractions = self.pixel_fractions if pixel_fractions is None else pixel_fractions
+        for prefix, total in (("A_", "photoelectrons"), ("bg_", "background_photoelectrons")):
+            cols = [f"{prefix}{p}" for p in pixel_fractions]
+            if not all(c in df.columns for c in cols):
+                continue
+            df[total] = self._mask_weighted_sum(df, prefix, pixel_fractions)
             if normalise:
-                df = self._normalize_color_channels(
-                    df,
-                    total_col="photons",
-                    color_cols=["A_B", "A_G", "A_R"],
-                )
-
-        # Add background photons column and normalise bg_B, bg_G, bg_R if they exist
-        if all(col in df.columns for col in ["bg_B", "bg_G", "bg_R"]):
-            df["background_photons"] = df["bg_B"] + df["bg_G"] + df["bg_R"]
-            df["background_photoelectrons"] = self._mask_weighted_sum(df, "bg_")
-
-            if normalise:
-                df = self._normalize_color_channels(
-                    df,
-                    total_col="background_photons",
-                    color_cols=["bg_B", "bg_G", "bg_R"],
-                )
-
+                amplitude_sum = df[cols].sum(axis=1)
+                ok = amplitude_sum > 0
+                for c in cols:
+                    df.loc[ok, c] = df.loc[ok, c] / amplitude_sum[ok]
         return df
 
     def sort_h5_by_frame(self, filepath: Path | str, backup: bool = True) -> None:

@@ -43,16 +43,16 @@ def _two_component_X(n_per=25, seed=0, sigma=0.03, mean0=MEAN0, mean1=MEAN1):
     return np.vstack([X0, X1])
 
 
-def _mode_b_df(n_per=20, seed=0, with_photons=True, with_errors=False,
+def _mode_b_df(n_per=20, seed=0, with_photoelectrons=True, with_errors=False,
                 with_molidx=True, with_fov=False, sigma=0.03):
     X = _two_component_X(n_per=n_per, seed=seed, sigma=sigma)
     n = len(X)
     data = {"A_R": X[:, 0], "A_G": X[:, 1], "A_B": 1.0 - X[:, 0] - X[:, 1]}
     if with_molidx:
         data["molecular_index"] = np.arange(n)
-    if with_photons:
+    if with_photoelectrons:
         rng = np.random.default_rng(seed + 1)
-        data["photons"] = rng.uniform(5000, 50000, n)
+        data["photoelectrons"] = rng.uniform(5000, 50000, n)
     if with_errors:
         data["A_R_err"] = np.full(n, 0.01)
         data["A_G_err"] = np.full(n, 0.01)
@@ -75,7 +75,7 @@ def _mode_a_df(n_mol_per=15, seed=0, frames_per_mol=5, noise=0.02):
                 A_B = 1.0 - A_R - A_G
                 records.append({
                     "molecular_index": mol_idx,
-                    "photons_accumulated": photons_acc,
+                    "photoelectrons_accumulated": photons_acc,
                     "A_R": A_R, "A_G": A_G, "A_B": A_B,
                 })
             mol_idx += 1
@@ -147,7 +147,7 @@ class TestFitGmmEm:
         initial_means = np.array([MEAN0, MEAN1])
         means, covs, weights, converged = host._fit_gmm_em(
             X, initial_means, n_components=2,
-            photons=photons, A_R=A_R, A_G=A_G, has_error_columns=False,
+            photoelectrons=photons, A_R=A_R, A_G=A_G, has_error_columns=False,
         )
         assert means.shape == (2, 2)
 
@@ -163,7 +163,7 @@ class TestFitGmmEm:
         initial_means = np.array([MEAN0, MEAN1])
         means, covs, weights, converged = host._fit_gmm_em(
             X, initial_means, n_components=2,
-            photons=photons, A_R=A_R, A_G=A_G, has_error_columns=True,
+            photoelectrons=photons, A_R=A_R, A_G=A_G, has_error_columns=True,
             sigma_A_R=sigma_A_R, sigma_A_G=sigma_A_G,
         )
         assert means.shape == (2, 2)
@@ -351,31 +351,53 @@ class TestExtractReferenceMeansModeA:
         host = _host()
         df = _mode_a_df()
         means, ref_db, gmm = host.extract_reference_means(
-            df, reference_photon_threshold=3000.0, verbose=True,
+            df, reference_photoelectron_threshold=3000.0, verbose=True,
         )
         assert means.shape == (2, 2)
         assert "true_label" in ref_db.columns
-        assert "max_photons" in ref_db.columns
+        assert "max_photoelectrons" in ref_db.columns
 
     def test_no_threshold_raises(self):
         host = _host()
         df = _mode_a_df()
-        with pytest.raises(ValueError, match="reference_photon_threshold must be provided"):
-            host.extract_reference_means(df, reference_photon_threshold=None, verbose=False)
+        with pytest.raises(ValueError, match="reference_photoelectron_threshold must be provided"):
+            host.extract_reference_means(df, reference_photoelectron_threshold=None, verbose=False)
 
     def test_threshold_too_high_raises(self):
         host = _host()
         df = _mode_a_df()
-        with pytest.raises(ValueError, match="No molecules reach photon threshold"):
-            host.extract_reference_means(df, reference_photon_threshold=1e12, verbose=False)
+        with pytest.raises(ValueError, match="No molecules reach photoelectron threshold"):
+            host.extract_reference_means(df, reference_photoelectron_threshold=1e12, verbose=False)
 
     def test_em_fit_type(self):
         host = _host()
         df = _mode_a_df()
         means, ref_db, gmm = host.extract_reference_means(
-            df, reference_photon_threshold=3000.0, fit_type="EM", verbose=True,
+            df, reference_photoelectron_threshold=3000.0, fit_type="EM", verbose=True,
         )
         assert means.shape == (2, 2)
+
+
+class TestExtractReferenceMeansLegacy:
+    def test_old_photon_accumulation_database_raises(self):
+        df = _mode_a_df().rename(columns={"photoelectrons_accumulated": "photons_accumulated"})
+        with pytest.raises(ValueError, match="Old photon accumulation database"):
+            _host().extract_reference_means(df, reference_photoelectron_threshold=3000.0, verbose=False)
+
+    @pytest.mark.parametrize("with_io", [True, False])
+    def test_old_molecule_table_is_upgraded(self, with_io):
+        from pyS3M.IOFunctions import IO_Functions
+        host = _host()
+        if with_io:
+            host.io = IO_Functions()
+        elif hasattr(host, "io"):
+            del host.io
+        df = _mode_b_df(with_photoelectrons=False)
+        df["photons"] = 40000.0   # old sum: photoelectrons = photons * sum_p m_p f_p (> 5000 here)
+        means, ref_db, gmm = host.extract_reference_means(
+            df, reference_photoelectron_threshold=5000.0, verbose=False)
+        assert means.shape == (2, 2)
+        assert "photons" not in ref_db.columns
 
 
 class TestExtractReferenceMeansModeB:
@@ -383,9 +405,9 @@ class TestExtractReferenceMeansModeB:
         # No error columns AND no photon column -> the "no weighting info" branch,
         # exercised with verbose=True to also cover its logging lines.
         host = _host()
-        df = _mode_b_df(with_photons=False, with_errors=False)
+        df = _mode_b_df(with_photoelectrons=False, with_errors=False)
         means, ref_db, gmm = host.extract_reference_means(
-            df, reference_photon_threshold=None, verbose=True,
+            df, reference_photoelectron_threshold=None, verbose=True,
         )
         assert means.shape == (2, 2)
 
@@ -393,25 +415,25 @@ class TestExtractReferenceMeansModeB:
         host = _host()
         df = pd.DataFrame({"A_R": [0.5, 0.6], "A_G": [0.5, 0.4]})
         with pytest.raises(ValueError, match="missing required columns"):
-            host.extract_reference_means(df, reference_photon_threshold=None, verbose=False)
+            host.extract_reference_means(df, reference_photoelectron_threshold=None, verbose=False)
 
     def test_threshold_without_photons_column_raises(self):
         host = _host()
-        df = _mode_b_df(with_photons=False)
-        with pytest.raises(ValueError, match="'photons' column not found"):
-            host.extract_reference_means(df, reference_photon_threshold=1000.0, verbose=False)
+        df = _mode_b_df(with_photoelectrons=False)
+        with pytest.raises(ValueError, match="'photoelectrons' column not found"):
+            host.extract_reference_means(df, reference_photoelectron_threshold=1000.0, verbose=False)
 
     def test_threshold_too_high_raises(self):
         host = _host()
-        df = _mode_b_df(with_photons=True)
-        with pytest.raises(ValueError, match="No molecules have photons"):
-            host.extract_reference_means(df, reference_photon_threshold=1e12, verbose=False)
+        df = _mode_b_df(with_photoelectrons=True)
+        with pytest.raises(ValueError, match="No molecules have photoelectrons"):
+            host.extract_reference_means(df, reference_photoelectron_threshold=1e12, verbose=False)
 
     def test_threshold_with_photons_verbose(self):
         host = _host()
-        df = _mode_b_df(with_photons=True, with_fov=True)
+        df = _mode_b_df(with_photoelectrons=True, with_fov=True)
         means, ref_db, gmm = host.extract_reference_means(
-            df, reference_photon_threshold=5000.0, verbose=True,
+            df, reference_photoelectron_threshold=5000.0, verbose=True,
         )
         assert means.shape == (2, 2)
         assert "fov_index" in ref_db.columns
@@ -419,9 +441,9 @@ class TestExtractReferenceMeansModeB:
 
     def test_error_columns_weighting(self):
         host = _host()
-        df = _mode_b_df(with_photons=True, with_errors=True)
+        df = _mode_b_df(with_photoelectrons=True, with_errors=True)
         means, ref_db, gmm = host.extract_reference_means(
-            df, reference_photon_threshold=None, verbose=True,
+            df, reference_photoelectron_threshold=None, verbose=True,
         )
         assert means.shape == (2, 2)
 
@@ -429,7 +451,7 @@ class TestExtractReferenceMeansModeB:
         host = _host()
         df = _mode_b_df()
         with pytest.raises(ValueError, match="fit_type must be"):
-            host.extract_reference_means(df, reference_photon_threshold=None, fit_type="bogus")
+            host.extract_reference_means(df, reference_photoelectron_threshold=None, fit_type="bogus")
 
     def test_n_components_not_two(self):
         # Regression test: extract_reference_means used to hardcode
@@ -438,7 +460,7 @@ class TestExtractReferenceMeansModeB:
         host = _host()
         df = _mode_b_df(n_per=20, seed=12)
         means, ref_db, gmm = host.extract_reference_means(
-            df, reference_photon_threshold=None, n_components=1, verbose=False,
+            df, reference_photoelectron_threshold=None, n_components=1, verbose=False,
         )
         assert means.shape == (1, 2)
         assert "posterior_prob_0" in ref_db.columns
@@ -449,11 +471,11 @@ class TestExtractReferenceMeansModeB:
         # same normalised weight (1.0) -> replication_count=5 each -> for n=700
         # that's 3500 > 3000, triggering the MLE downsample-to-3000 path.
         host = _host()
-        df = _mode_b_df(n_per=350, seed=13, with_photons=False, with_errors=True, sigma=0.03)
+        df = _mode_b_df(n_per=350, seed=13, with_photoelectrons=False, with_errors=True, sigma=0.03)
         df["A_R_err"] = 1e-6
         df["A_G_err"] = 1e-6
         means, ref_db, gmm = host.extract_reference_means(
-            df, reference_photon_threshold=None, fit_type="MLE", verbose=True,
+            df, reference_photoelectron_threshold=None, fit_type="MLE", verbose=True,
         )
         assert means.shape == (2, 2)
 
@@ -466,7 +488,7 @@ class TestExtractReferenceMeansModeB:
         host = _host()
         df = _mode_b_df(n_per=20, seed=44)
         means, ref_db, gmm = host.extract_reference_means(
-            df, reference_photon_threshold=None, n_components=6, verbose=False,
+            df, reference_photoelectron_threshold=None, n_components=6, verbose=False,
         )
         assert means.shape == (6, 2)
 
@@ -482,7 +504,7 @@ class TestExtractReferenceMeansModeB:
         monkeypatch.setattr(PlottingBase.AnalysisPlotter, "two_column_plot", _raise)
         with caplog.at_level(logging.WARNING):
             means, ref_db, gmm = host.extract_reference_means(
-                df, reference_photon_threshold=None, verbose=True,
+                df, reference_photoelectron_threshold=None, verbose=True,
             )
         assert means.shape == (2, 2)
         assert "Plotting skipped - error" in caplog.text
@@ -495,7 +517,7 @@ class TestExtractReferenceMeansModeB:
         monkeypatch.delattr(PlottingBase, "AnalysisPlotter")
         with caplog.at_level(logging.WARNING):
             means, ref_db, gmm = host.extract_reference_means(
-                df, reference_photon_threshold=None, verbose=True,
+                df, reference_photoelectron_threshold=None, verbose=True,
             )
         assert means.shape == (2, 2)
         assert "PlottingBase not available" in caplog.text
@@ -722,7 +744,7 @@ class TestAnalyzePhotonDependentMisidentificationAnalytical:
     def _refs(self, host):
         df = _mode_a_df(n_mol_per=15, frames_per_mol=5)
         fixed_means, ref_db, gmm = host.extract_reference_means(
-            df, reference_photon_threshold=3000.0, verbose=False,
+            df, reference_photoelectron_threshold=3000.0, verbose=False,
         )
         return df, fixed_means, ref_db, gmm
 
@@ -746,6 +768,14 @@ class TestAnalyzePhotonDependentMisidentificationAnalytical:
             use_earliest_entry=False, n_mc_samples=500, verbose=False,
         )
         assert len(summary_db) > 0
+
+    def test_old_accumulation_database_raises(self):
+        host = _host()
+        df, fixed_means, ref_db, gmm = self._refs(host)
+        old = df.rename(columns={"photoelectrons_accumulated": "photons_accumulated"})
+        with pytest.raises(ValueError, match="no 'photoelectrons_accumulated'"):
+            host.analyze_photon_dependent_misidentification_analytical(
+                old, fixed_means, ref_db, np.array([1000.0, 3000.0]), verbose=False)
 
     def test_empty_bin_is_skipped(self):
         host = _host()

@@ -3508,7 +3508,7 @@ class PublicationPlotter(TernaryPlotMixin, BasePlotter, ImagePlotMixin):
         vmax: Optional[float] = None,
         cmap: str = "gist_gray",
         cbar: str = "on",
-        cbarlabel: str = "photons",
+        cbarlabel: str = "photoelectrons",
         label: str = "",
         labelcolor: str = "white",
         pixelsize: float = DriftConstants.XIMEA_PIXEL_SIZE_NM,

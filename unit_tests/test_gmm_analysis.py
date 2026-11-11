@@ -68,7 +68,7 @@ def create_synthetic_2dye_accumulation_data():
                 records.append({
                     "molecular_index": mol_idx,
                     "frames_accumulated": frame_num + 1,
-                    "photons_accumulated": photons_accumulated,
+                    "photoelectrons_accumulated": photons_accumulated,
                     "A_R": A_R,
                     "A_G": A_G,
                     "A_B": A_B,
@@ -121,7 +121,7 @@ def create_synthetic_2dye_singlemolecule_data():
 
             records.append({
                 "molecular_index": mol_idx,
-                "photons": photons,
+                "photoelectrons": photons,
                 "A_R": A_R,
                 "A_G": A_G,
                 "A_B": A_B,
@@ -152,7 +152,7 @@ def mode_a_result(pa_db):
     """Reference means/assignments from the photon accumulation DB (Mode A)."""
     SM_E = SM_extractionfunctions.extract_SMs()
     fixed_means, ref_db, gmm = SM_E.extract_reference_means(
-        pa_db, reference_photon_threshold=5000, verbose=False
+        pa_db, reference_photoelectron_threshold=5000, verbose=False
     )
     return fixed_means, ref_db, gmm
 
@@ -168,7 +168,7 @@ def test_extract_reference_means_mode_a(pa_db, mode_a_result):
     assert len(ref_db) >= n_molecules * 0.9, \
         f"Reference database has {len(ref_db)} molecules (expected ~{n_molecules})"
 
-    required_cols = ["molecular_index", "true_label", "max_photons", "A_R_ref", "A_G_ref",
+    required_cols = ["molecular_index", "true_label", "max_photoelectrons", "A_R_ref", "A_G_ref",
                       "posterior_prob_0", "posterior_prob_1"]
     for col in required_cols:
         assert col in ref_db.columns, f"Column '{col}' missing from ref_db"
@@ -193,7 +193,7 @@ def test_extract_reference_means_mode_b(sm_db):
 
     # Mode B.1: no photon threshold (all molecules)
     fixed_means_all, ref_db_all, gmm_all = SM_E.extract_reference_means(
-        sm_db, reference_photon_threshold=None, verbose=False
+        sm_db, reference_photoelectron_threshold=None, verbose=False
     )
 
     assert gmm_all.converged_, "GMM did not converge (Mode B.1, all molecules)"
@@ -202,7 +202,7 @@ def test_extract_reference_means_mode_b(sm_db):
     assert len(ref_db_all) == len(sm_db), \
         f"Expected {len(sm_db)} molecules, got {len(ref_db_all)}"
 
-    required_cols_all = ["molecular_index", "true_label", "photons", "A_R_ref", "A_G_ref",
+    required_cols_all = ["molecular_index", "true_label", "photoelectrons", "A_R_ref", "A_G_ref",
                          "posterior_prob_0", "posterior_prob_1"]
     for col in required_cols_all:
         assert col in ref_db_all.columns, f"Column '{col}' missing from ref_db_all"
@@ -212,12 +212,12 @@ def test_extract_reference_means_mode_b(sm_db):
 
     # Mode B.2: with photon threshold (filter low-photon molecules)
     fixed_means_filtered, ref_db_filtered, gmm_filtered = SM_E.extract_reference_means(
-        sm_db, reference_photon_threshold=50000, verbose=False
+        sm_db, reference_photoelectron_threshold=50000, verbose=False
     )
 
     assert gmm_filtered.converged_, "GMM did not converge (Mode B.2, filtered)"
 
-    n_expected_filtered = len(sm_db[sm_db["photons"] >= 50000])
+    n_expected_filtered = len(sm_db[sm_db["photoelectrons"] >= 50000])
     assert len(ref_db_filtered) == n_expected_filtered, \
         f"Expected {n_expected_filtered} filtered, got {len(ref_db_filtered)}"
 
@@ -255,7 +255,7 @@ def test_analytical_misidentification_analysis(pa_db, mode_a_result):
 
     assert len(summary_db) > 0, "Summary database empty"
 
-    required_summary_cols = ["photon_bin_min", "photon_bin_max", "n_molecules",
+    required_summary_cols = ["photoelectron_bin_min", "photoelectron_bin_max", "n_molecules",
                             "converged", "overall_accuracy", "overall_error_rate",
                             "component_0_accuracy", "component_1_accuracy",
                             "cov_0_AR_AR", "cov_0_AR_AG", "cov_0_AG_AG",

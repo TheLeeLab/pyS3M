@@ -38,10 +38,8 @@ class LinkedMixin:
         min_sigma: float | None = None,
         max_sigma: float | None = None,
         max_sigma_error: float | None = None,
-        min_photons: float = FilteringConstants.MIN_PHOTONS,
-        max_photons: float | None = None,
-        min_photoelectrons: float | None = None,
-        max_photoelectrons: float | None = None,
+        min_photoelectrons: float | None = FilteringConstants.MIN_PHOTOELECTRONS,
+        max_photoelectrons: float | None = FilteringConstants.MAX_PHOTOELECTRONS,
         max_background_error: float | None = None,
         start_frame: int = 0,
         config: ClusteringConfig = None,
@@ -60,10 +58,8 @@ class LinkedMixin:
             min_sigma (float, optional): Quality filter parameter (see filter_quality_localisations).
             max_sigma (float, optional): Quality filter parameter (see filter_quality_localisations).
             max_sigma_error (float, optional): Quality filter parameter (see filter_quality_localisations).
-            min_photons (float): Quality filter parameter (see filter_quality_localisations).
-            max_photons (float, optional): Quality filter parameter (see filter_quality_localisations).
             min_photoelectrons, max_photoelectrons (float, optional): Bounds on the detected
-                photoelectrons (see filter_quality_localisations); None → no cut.
+                photoelectrons (see filter_quality_localisations; default 50 and 10,000); None → no cut.
             start_frame (int): Discard localisations before this frame.
 
         Returns:
@@ -80,7 +76,6 @@ class LinkedMixin:
             loc_data, start_frame, criteria, chi_val,
             max_localisation_error, max_colour_error,
             min_sigma, max_sigma, max_sigma_error,
-            min_photons, max_photons,
             min_photoelectrons, max_photoelectrons,
             max_background_error=max_background_error,
         )
@@ -323,10 +318,8 @@ class LinkedMixin:
         min_sigma: float | None = None,
         max_sigma: float | None = None,
         max_sigma_error: float | None = None,
-        min_photons: float = FilteringConstants.MIN_PHOTONS,
-        max_photons: float | None = None,
-        min_photoelectrons: float | None = None,
-        max_photoelectrons: float | None = None,
+        min_photoelectrons: float | None = FilteringConstants.MIN_PHOTOELECTRONS,
+        max_photoelectrons: float | None = FilteringConstants.MAX_PHOTOELECTRONS,
         max_background_error: float | None = None,
         D_prior: float | None = None,
         dt: float = 1.0,
@@ -358,7 +351,7 @@ class LinkedMixin:
                 tracks are discarded).
             criteria: Quality filter bundle (see filter_quality_localisations).
                 chi_val, max_localisation_error, max_colour_error, min_sigma,
-                max_sigma, max_sigma_error, min_photons, max_photons are applied
+                max_sigma, max_sigma_error, min_photoelectrons, max_photoelectrons are applied
                 when criteria is None.
             D_prior (float, optional): Gap-scaled linking parameter (see spectral_lap_link).
             dt (float): Frame interval for gap scaling.
@@ -395,8 +388,6 @@ class LinkedMixin:
             criteria=criteria,
             chi_val=chi_val,
             max_localisation_error=max_localisation_error,
-            min_photons=min_photons,
-            max_photons=max_photons,
             min_photoelectrons=min_photoelectrons,
             max_photoelectrons=max_photoelectrons,
             max_background_error=max_background_error,

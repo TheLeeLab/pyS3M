@@ -111,7 +111,7 @@ def create_synthetic_localization_data(n_molecules, frames_per_molecule, rng):
                 "bg_R_err": bg_R_err,
                 "bg_G_err": bg_G_err,
                 "bg_B_err": bg_B_err,
-                "photons": photons,
+                "photoelectrons": photons,
                 "s_x": s_x,
                 "s_y": s_y,
                 "s_x_err": s_x_err,
@@ -217,7 +217,7 @@ def test_photon_accumulation(batch_result):
 
     # Check required columns
     required_cols = [
-        "molecular_index", "frames_accumulated", "photons_accumulated",
+        "molecular_index", "frames_accumulated", "photoelectrons_accumulated",
         "A_R", "A_G", "A_B", "A_R_err", "A_G_err", "A_B_err",
         "xc_mean", "yc_mean", "xc_std", "yc_std"
     ]
@@ -236,7 +236,7 @@ def test_photon_accumulation(batch_result):
     unique_mols = pa_db["molecular_index"].unique()
     for mol_id in unique_mols:
         mol_data = pa_db[pa_db["molecular_index"] == mol_id]
-        photons = mol_data["photons_accumulated"].values
+        photons = mol_data["photoelectrons_accumulated"].values
         assert np.all(np.diff(photons) > 0), \
             f"Photons not monotonically increasing for molecule {mol_id}"
 
@@ -303,18 +303,18 @@ def test_max_background_error_separates_background_cut():
         "A_R_err": np.full(n, 0.05), "A_G_err": np.full(n, 0.05), "A_B_err": np.full(n, 0.05),
         "bg_R": np.full(n, 0.5), "bg_G": np.full(n, 0.5), "bg_B": np.zeros(n),
         "bg_R_err": [0.1, 5.0, 20.0, 0.1], "bg_G_err": np.full(n, 0.1),
-        "bg_B_err": np.full(n, 0.1), "photons": np.full(n, 1000.0),
+        "bg_B_err": np.full(n, 0.1), "photoelectrons": np.full(n, 1000.0),
     })
     sm = extract_SMs()
-    kw = dict(chi_val=3, max_colour_error=1.0, min_photons=0)
+    kw = dict(chi_val=3, max_colour_error=1.0, min_photoelectrons=0)
     assert len(sm.filter_quality_localisations(df, **kw)) == 4
     assert len(sm.filter_quality_localisations(df, max_background_error=10, **kw)) == 3
     assert len(sm.filter_quality_localisations(df, max_background_error=1, **kw)) == 2
     assert len(sm.filter_quality_localisations(df, max_background_error=np.inf, **kw)) == 4
-    crit = FilteringCriteria(chi_val=3, max_colour_error=1.0, min_photons=0,
+    crit = FilteringCriteria(chi_val=3, max_colour_error=1.0, min_photoelectrons=0,
                              max_background_error=1.0)
     assert len(sm.filter_quality_localisations(df, criteria=crit)) == 2
-    crit = FilteringCriteria(chi_val=3, max_colour_error=1.0, min_photons=0)
+    crit = FilteringCriteria(chi_val=3, max_colour_error=1.0, min_photoelectrons=0)
     assert len(sm.filter_quality_localisations(df, criteria=crit)) == 4
     # A colour error above max_colour_error is still cut.
     df.loc[0, "A_R_err"] = 2.0

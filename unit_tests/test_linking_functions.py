@@ -218,7 +218,7 @@ def _base_df(n_extra_cols=True):
         "yc_err": [0.02] * 6,
     })
     if n_extra_cols:
-        df["photons"] = [100, 110, 90, 200, 210, 50]
+        df["photoelectrons"] = [100.0, 110.0, 90.0, 200.0, 210.0, 50.0]
         df["bg_B"] = [5] * 6
         df["bg_G"] = [5] * 6
         df["bg_R"] = [5] * 6
@@ -246,26 +246,23 @@ class TestLinkLocalisations:
         linked = lf.link_localisations(df, n_frames=10, r_max=0.5, max_dark_time=1)
         assert len(linked) == 3
         assert set(linked["n"]) == {3, 2, 1}
-        assert "photon_rate" in linked.columns
-        np.testing.assert_allclose(linked.loc[linked["n"] == 3, "photon_rate"], 100.0)
+        assert "photoelectron_rate" in linked.columns
+        np.testing.assert_allclose(linked.loc[linked["n"] == 3, "photoelectron_rate"], 100.0)
         # extra_numeric_col passed through and averaged, not silently dropped
         assert "extra_numeric_col" in linked.columns
 
-    def test_photoelectrons_summed_like_photons(self):
-        # A linked event's detected signal is its total over the on-time, as for photons
+    def test_photoelectrons_summed_over_the_on_time(self):
+        # A linked event's detected signal is its total over the on-time
         df = _base_df()
-        df["photoelectrons"] = [40.0, 44.0, 36.0, 80.0, 84.0, 20.0]
         linked = lf.link_localisations(df, n_frames=10, r_max=0.5, max_dark_time=1)
-        three = linked[linked["n"] == 3].iloc[0]
-        np.testing.assert_allclose(three["photoelectrons"], 120.0)
-        np.testing.assert_allclose(three["photons"], 300.0)
-        np.testing.assert_allclose(linked.loc[linked["n"] == 2, "photoelectrons"], 164.0)
+        np.testing.assert_allclose(linked.loc[linked["n"] == 3, "photoelectrons"], 300.0)
+        np.testing.assert_allclose(linked.loc[linked["n"] == 2, "photoelectrons"], 410.0)
 
-    def test_minimal_columns_no_photons_no_photon_rate(self):
+    def test_minimal_columns_no_photoelectrons_no_rate(self):
         df = _base_df(n_extra_cols=False)
         linked = lf.link_localisations(df, n_frames=10)
-        assert "photon_rate" not in linked.columns
-        assert "photons" not in linked.columns
+        assert "photoelectron_rate" not in linked.columns
+        assert "photoelectrons" not in linked.columns
 
     def test_zero_error_guarded_by_nanmedian_fallback(self):
         df = pd.DataFrame({

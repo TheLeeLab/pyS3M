@@ -567,14 +567,14 @@ class NileRed_Functions:
         return rgb_norm, rgb_norm_err
 
     @staticmethod
-    def _valid_colour_rows(df: pd.DataFrame, require_photons: bool = False) -> NDArray[np.bool_]:
+    def _valid_colour_rows(df: pd.DataFrame, require_photoelectrons: bool = False) -> NDArray[np.bool_]:
         """Rows whose colour fractions can be fitted: finite fractions with a positive sum,
-        finite errors > 0 and, for pooling, finite photons > 0.
+        finite errors > 0 and, for pooling, finite photoelectrons > 0.
 
         Args:
             df: Localisations with A_R/A_G/A_B, their *_err columns and, if
-                require_photons, 'photons'
-            require_photons: Also require a usable 'photons' value
+                require_photoelectrons, 'photoelectrons'
+            require_photoelectrons: Also require a usable 'photoelectrons' value
 
         Returns:
             valid: Boolean mask, one entry per row
@@ -587,10 +587,16 @@ class NileRed_Functions:
             & np.all(errors > 0, axis=1)
             & (values.sum(axis=1) > 0)
         )
-        if require_photons:
-            photons = df["photons"].to_numpy(dtype=np.float64)
-            valid &= np.isfinite(photons) & (photons > 0)
+        if require_photoelectrons:
+            pe = df["photoelectrons"].to_numpy(dtype=np.float64)
+            valid &= np.isfinite(pe) & (pe > 0)
         return valid
+
+    def _amplitude_sums(self, df: pd.DataFrame) -> NDArray[np.float64]:
+        """Each localisation's sum of channel amplitudes S = sum_p A_p, from its detected
+        photoelectrons and colour fractions (``IO_Functions.channel_amplitudes``):
+        S = photoelectrons / sum_p m_p f_p, m_p = pixel type p's share of the mosaic."""
+        return np.asarray(sum(self.io.channel_amplitudes(df).values()), dtype=np.float64)
 
     @staticmethod
     def _pool_colour_fractions(
@@ -598,8 +604,10 @@ class NileRed_Functions:
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         """Pool localisations' colour fractions by summing their photoelectrons per channel.
 
-        A localisation's channel amplitude is A_p = f_p * S, with S its 'photons' (the sum
-        of its channel amplitudes), so the group's fraction is that of its summed signal,
+        A localisation's channel amplitude is A_p = f_p * S, with S the sum of its channel
+        amplitudes (``_amplitude_sums``, from its detected photoelectrons; the photoelectrons
+        it detected in pixel type p are m_p A_p), so the group's fraction is that of its
+        summed per-channel signal,
         F_p = sum_i f_p,i S_i / sum_i S_i, with the propagated error
         sigma(F_p) = sqrt(sum_i S_i^2 sigma(f_p,i)^2) / sum_i S_i. The weights don't depend
         on the fractions, so F is unbiased; an inverse-error-weighted mean is not (it
@@ -608,7 +616,7 @@ class NileRed_Functions:
         Args:
             fractions: (n, 3) [R, G, B] fractions of each localisation
             fraction_errors: (n, 3) their errors
-            amplitude_sums: (n,) each localisation's 'photons'
+            amplitude_sums: (n,) each localisation's S (``_amplitude_sums``)
 
         Returns:
             pooled: [R, G, B] pooled fractions
@@ -1085,8 +1093,10 @@ class NileRed_Functions:
                 for level in df["photon_level"].unique():
                     df_level = df.filter(pl.col("photon_level") == level)
 
-                    # Get mean photon count for this level
-                    n_photons = df_level["photons"].mean()
+                    # Mean detected photoelectrons at this level (simulations written before
+                    # 2026-11-11 have none: NaN)
+                    n_photoelectrons = (df_level["photoelectrons"].mean()
+                                        if "photoelectrons" in df_level.columns else float("nan"))
 
                     # Extract fitted wavelengths (excluding NaN values)
                     wavelengths_fitted = df_level["wl_fit"].to_numpy()
@@ -1101,7 +1111,7 @@ class NileRed_Functions:
                         wavelength_precision_results.append(
                             {
                                 "wavelength_true": wl_true,
-                                "n_photons": n_photons,
+                                "n_photoelectrons": n_photoelectrons,
                                 "wavelength_precision": precision,
                                 "wavelength_bias": bias,
                                 "wavelength_mean": np.mean(wavelengths_fitted),
@@ -1173,7 +1183,7 @@ class NileRed_Functions:
         Required columns in HDF5 file:
             - A_R, A_G, A_B: colour fractions
             - A_R_err, A_G_err, A_B_err: their errors
-            - photons: sum of the channel amplitudes (only with aggregate_id_column,
+            - photoelectrons: detected photoelectrons (only with aggregate_id_column,
               for pooling)
 
         Example:
@@ -1233,7 +1243,7 @@ class NileRed_Functions:
         # Check required columns
         required_cols = ["A_R", "A_G", "A_B", "A_R_err", "A_G_err", "A_B_err"]
         if aggregate_id_column is not None:
-            required_cols.append("photons")
+            required_cols.append("photoelectrons")
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
             raise ValueError(
@@ -1293,8 +1303,8 @@ class NileRed_Functions:
             # Pool each aggregate's photoelectrons and build fit args
             agg_fit_args = []
             agg_ids_ordered = []
-            poolable = self._valid_colour_rows(df, require_photons=True)
-            photons_all = df["photons"].to_numpy(dtype=np.float64)
+            poolable = self._valid_colour_rows(df, require_photoelectrons=True)
+            amp_sums_all = self._amplitude_sums(df)
             agg_col = df[aggregate_id_column].to_numpy()
 
             for agg_id in aggregate_ids:
@@ -1302,7 +1312,7 @@ class NileRed_Functions:
                 if len(idx) == 0:
                     continue
                 agg_rgb, agg_rgb_err = self._pool_colour_fractions(
-                    rgb_all[idx], rgb_err_all[idx], photons_all[idx])
+                    rgb_all[idx], rgb_err_all[idx], amp_sums_all[idx])
                 rgb_norm, rgb_norm_err = self._normalize_rgb_with_errors(agg_rgb, agg_rgb_err)
 
                 agg_fit_args.append((
@@ -1440,8 +1450,8 @@ class NileRed_Functions:
         pools each pixel's colour fractions by summing their photoelectrons
         (_pool_colour_fractions), then fits a single wavelength per pixel. This
         produces a spatial wavelength map with higher per-pixel precision (more
-        photons) and far fewer fits than per-localisation fitting. Localisations with
-        a non-finite fraction, error or 'photons' (or an error/photons <= 0) are left
+        photoelectrons) and far fewer fits than per-localisation fitting. Localisations with
+        a non-finite fraction, error or 'photoelectrons' (or an error/photoelectrons <= 0) are left
         out of the pooling and of the min_localisations count.
 
         Args:
@@ -1471,8 +1481,8 @@ class NileRed_Functions:
                 - 'wl_grid': (ny, nx) wavelength array (nm), NaN where no fit
                 - 'wl_err_grid': (ny, nx) wavelength error array (nm)
                 - 'n_locs_grid': (ny, nx) localisation count per pixel
-                - 'total_photons_grid': (ny, nx) summed photons per pixel
-                - 'mean_photons_grid': (ny, nx) mean photons per loc per pixel
+                - 'total_photoelectrons_grid': (ny, nx) summed photoelectrons per pixel
+                - 'mean_photoelectrons_grid': (ny, nx) mean photoelectrons per loc per pixel
                 - 'pixel_size_nm': grid pixel size
                 - 'origin_nm': (x_min, y_min) of grid origin in nm
                 - 'grid_shape': (ny, nx)
@@ -1496,7 +1506,7 @@ class NileRed_Functions:
             - xc, yc: Localisation positions (camera pixels)
             - A_R, A_G, A_B: colour fractions
             - A_R_err, A_G_err, A_B_err: their errors
-            - photons: sum of the channel amplitudes, for pooling
+            - photoelectrons: detected photoelectrons, for pooling
         """
         if camera_pixel_size is None:
             camera_pixel_size = self.pixel_size * 1000  # µm → nm
@@ -1526,7 +1536,7 @@ class NileRed_Functions:
 
         # --- Check required columns ---
         required_cols = [
-            "xc", "yc", "A_R", "A_G", "A_B", "A_R_err", "A_G_err", "A_B_err", "photons",
+            "xc", "yc", "A_R", "A_G", "A_B", "A_R_err", "A_G_err", "A_B_err", "photoelectrons",
         ]
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
@@ -1554,8 +1564,9 @@ class NileRed_Functions:
 
         rgb_all = df[["A_R", "A_G", "A_B"]].to_numpy(dtype=np.float64)
         rgb_err_all = df[["A_R_err", "A_G_err", "A_B_err"]].to_numpy(dtype=np.float64)
-        photons = df["photons"].to_numpy(dtype=np.float64)
-        poolable = self._valid_colour_rows(df, require_photons=True)
+        photoelectrons = df["photoelectrons"].to_numpy(dtype=np.float64)
+        amp_sums = self._amplitude_sums(df)
+        poolable = self._valid_colour_rows(df, require_photoelectrons=True)
 
         # --- Aggregate-level fitting (fallback for sub-threshold pixels) ---
         aggregate_wl_map = {}      # {agg_id: fitted_wavelength}
@@ -1588,7 +1599,7 @@ class NileRed_Functions:
                 if len(idx) == 0:
                     continue
                 agg_rgb, agg_rgb_err = self._pool_colour_fractions(
-                    rgb_all[idx], rgb_err_all[idx], photons[idx])
+                    rgb_all[idx], rgb_err_all[idx], amp_sums[idx])
                 rgb_norm, rgb_norm_err = self._normalize_rgb_with_errors(
                     agg_rgb, agg_rgb_err)
 
@@ -1663,7 +1674,7 @@ class NileRed_Functions:
         # --- Step 3: Pool each pixel's photoelectrons and build fit args ---
         fit_args = []
         pixel_keys_ordered = []
-        pixel_metadata = []  # (n_locs, total_photons, mean_photons) per pixel
+        pixel_metadata = []  # (n_locs, total_photoelectrons, mean_photoelectrons) per pixel
         n_skipped = 0
 
         for key, indices in pixel_groups.items():
@@ -1674,16 +1685,16 @@ class NileRed_Functions:
                 n_skipped += 1
                 continue
 
-            rgb, rgb_err = self._pool_colour_fractions(rgb_all[idx], rgb_err_all[idx], photons[idx])
+            rgb, rgb_err = self._pool_colour_fractions(rgb_all[idx], rgb_err_all[idx], amp_sums[idx])
             rgb_norm, rgb_norm_err = self._normalize_rgb_with_errors(rgb, rgb_err)
-            pix_photons = float(np.sum(photons[idx]))
+            pix_pe = float(np.sum(photoelectrons[idx]))
 
             fit_args.append((
                 rgb_norm, rgb_norm_err, filter_spectra, wavelength_array, pixel_QYs,
                 wavelength_bounds, None,
             ))
             pixel_keys_ordered.append(key)
-            pixel_metadata.append((n_in_pixel, pix_photons, pix_photons / n_in_pixel))
+            pixel_metadata.append((n_in_pixel, pix_pe, pix_pe / n_in_pixel))
 
         n_to_fit = len(fit_args)
 
@@ -1726,8 +1737,8 @@ class NileRed_Functions:
         wl_grid = np.full((ny, nx), np.nan)
         wl_err_grid = np.full((ny, nx), np.nan)
         n_locs_grid = np.zeros((ny, nx), dtype=int)
-        total_photons_grid = np.full((ny, nx), np.nan)
-        mean_photons_grid = np.full((ny, nx), np.nan)
+        total_photoelectrons_grid = np.full((ny, nx), np.nan)
+        mean_photoelectrons_grid = np.full((ny, nx), np.nan)
 
         for i, key in enumerate(pixel_keys_ordered):
             # Extract grid coordinates from key
@@ -1738,13 +1749,13 @@ class NileRed_Functions:
 
             n_loc, tot_ph, mean_ph = pixel_metadata[i]
             n_locs_grid[iy, ix] += n_loc
-            # Accumulate photons (handles NaN from first write)
-            existing = total_photons_grid[iy, ix]
+            # Accumulate photoelectrons (handles NaN from first write)
+            existing = total_photoelectrons_grid[iy, ix]
             if np.isnan(existing):
-                total_photons_grid[iy, ix] = tot_ph
+                total_photoelectrons_grid[iy, ix] = tot_ph
             elif not np.isnan(tot_ph):
-                total_photons_grid[iy, ix] = existing + tot_ph
-            mean_photons_grid[iy, ix] = mean_ph
+                total_photoelectrons_grid[iy, ix] = existing + tot_ph
+            mean_photoelectrons_grid[iy, ix] = mean_ph
 
             if key in pixel_wl:
                 wl_grid[iy, ix] = pixel_wl[key]
@@ -1812,8 +1823,8 @@ class NileRed_Functions:
                 "wl_grid": wl_grid,
                 "wl_err_grid": wl_err_grid,
                 "n_locs_grid": n_locs_grid,
-                "total_photons_grid": total_photons_grid,
-                "mean_photons_grid": mean_photons_grid,
+                "total_photoelectrons_grid": total_photoelectrons_grid,
+                "mean_photoelectrons_grid": mean_photoelectrons_grid,
                 "pixel_size_nm": pixel_size_nm,
                 "origin_nm": (x_min, y_min),
                 "grid_shape": (ny, nx),

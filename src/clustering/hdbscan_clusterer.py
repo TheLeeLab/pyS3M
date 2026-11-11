@@ -55,10 +55,8 @@ class HDBSCANMixin:
         min_sigma: float | None = None,
         max_sigma: float | None = None,
         max_sigma_error: float | None = None,
-        min_photons: float = FilteringConstants.MIN_PHOTONS,
-        max_photons: float | None = None,
-        min_photoelectrons: float | None = None,
-        max_photoelectrons: float | None = None,
+        min_photoelectrons: float | None = FilteringConstants.MIN_PHOTOELECTRONS,
+        max_photoelectrons: float | None = FilteringConstants.MAX_PHOTOELECTRONS,
         max_background_error: float | None = None,
         start_frame: int = 0,
         config: ClusteringConfig = None,
@@ -76,10 +74,8 @@ class HDBSCANMixin:
             min_sigma (float, optional): Quality filter parameter (see filter_quality_localisations).
             max_sigma (float, optional): Quality filter parameter (see filter_quality_localisations).
             max_sigma_error (float, optional): Quality filter parameter (see filter_quality_localisations).
-            min_photons (float): Quality filter parameter (see filter_quality_localisations).
-            max_photons (float, optional): Quality filter parameter (see filter_quality_localisations).
             min_photoelectrons, max_photoelectrons (float, optional): Bounds on the detected
-                photoelectrons (see filter_quality_localisations); None → no cut.
+                photoelectrons (see filter_quality_localisations; default 50 and 10,000); None → no cut.
             start_frame (int): Discard localisations before this frame.
 
         Returns:
@@ -95,7 +91,6 @@ class HDBSCANMixin:
             loc_data, start_frame, criteria, chi_val,
             max_localisation_error, max_colour_error,
             min_sigma, max_sigma, max_sigma_error,
-            min_photons, max_photons,
             min_photoelectrons, max_photoelectrons,
             max_background_error=max_background_error,
         )

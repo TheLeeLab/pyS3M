@@ -531,7 +531,7 @@ def _cluster_df(n=300, cx=20.0, cy=20.0, seed=0, with_errs=True):
         "frame": rng.integers(0, 100, n),
     }
     if with_errs:
-        data["photons"] = rng.uniform(500, 2000, n)
+        data["photoelectrons"] = rng.uniform(500, 2000, n)
         data["xc_err"] = np.full(n, 0.02)
         data["yc_err"] = np.full(n, 0.02)
     return pd.DataFrame(data)
@@ -556,7 +556,7 @@ class TestSegmentLocsByRenderedImage:
         )
         assert len(stats) == 1
         assert len(agg_locs) > 0
-        assert "photons" in stats.columns  # summed
+        assert "photoelectrons" in stats.columns  # summed
         assert "xc_err" in stats.columns   # weighted-mean error propagation
         assert "frame" in stats.columns
 

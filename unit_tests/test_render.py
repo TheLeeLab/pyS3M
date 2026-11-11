@@ -36,7 +36,7 @@ from pyS3M.render import (
 )
 
 
-def _locs(n=5, seed=0, with_photons=True, with_rgb=False):
+def _locs(n=5, seed=0, with_photoelectrons=True, with_rgb=False):
     rng = np.random.default_rng(seed)
     xc = rng.uniform(10, 90, n)
     yc = rng.uniform(10, 90, n)
@@ -44,9 +44,9 @@ def _locs(n=5, seed=0, with_photons=True, with_rgb=False):
     yc_err = np.full(n, 0.5)
     arrays = [xc, yc, xc_err, yc_err]
     names = ["xc", "yc", "xc_err", "yc_err"]
-    if with_photons:
+    if with_photoelectrons:
         arrays.append(np.full(n, 1000.0))
-        names.append("photons")
+        names.append("photoelectrons")
     arrays.append(rng.uniform(0.2, 0.4, n))
     names.append("A_R")
     if with_rgb:
@@ -155,7 +155,7 @@ class TestRenderGaussian:
         assert img.sum() > 0
 
     def test_no_photons_column_defaults_to_one(self):
-        locs = _locs(with_photons=False)
+        locs = _locs(with_photoelectrons=False)
         n, img = render_gaussian(locs, 1.0, 0, 0, 100, 100, min_blur_width=1.0)
         assert n == 5
 
@@ -214,7 +214,7 @@ class TestRenderGaussianColour:
         assert img_colour.shape == (100, 100, 3)
 
     def test_no_photons_column_defaults_to_one(self):
-        locs = _locs(with_photons=False)
+        locs = _locs(with_photoelectrons=False)
         n, img_total, img_colour = render_gaussian_colour(
             locs, 1.0, 0, 0, 100, 100, min_blur_width=1.0,
             cparam="A_R", c_min=0.3, c_max=0.75,
@@ -284,7 +284,7 @@ class TestRenderGaussianRGB:
         assert img_rgb.shape == (100, 100, 3)
 
     def test_no_photons_column_defaults_to_one(self):
-        locs = _locs(with_photons=False, with_rgb=True)
+        locs = _locs(with_photoelectrons=False, with_rgb=True)
         n, img_total, img_rgb = render_gaussian_RGB(
             locs, 1.0, 0, 0, 100, 100, min_blur_width=1.0,
             mindensperc=1, maxdensperc=99.9, densitymin=0.1,

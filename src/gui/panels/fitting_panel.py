@@ -61,7 +61,7 @@ class FittingPanel(QWidget):
 
     fit_requested          = pyqtSignal(str, str, object, object)  # data_dir, mode, FittingConfig, extra_kwargs
     preview_requested      = pyqtSignal(str, object)               # data_dir, FittingConfig
-    stats_refresh_requested = pyqtSignal(tuple)                    # (min_photons, max_photons)
+    stats_refresh_requested = pyqtSignal(tuple)                    # (min, max photoelectrons)
     clear_requested        = pyqtSignal()                          # discard fitting results, try again
 
     def __init__(self, parent=None):
@@ -179,17 +179,17 @@ class FittingPanel(QWidget):
         flt_grp = QGroupBox("Statistics Filter")
         flt_form = QFormLayout(flt_grp)
 
-        self._min_photons = QSpinBox()
-        self._min_photons.setRange(0, 100_000_000)
-        self._min_photons.setValue(200)
-        self._min_photons.setSingleStep(100)
-        flt_form.addRow("Min photons:", self._min_photons)
+        self._min_photoelectrons = QSpinBox()
+        self._min_photoelectrons.setRange(0, 100_000_000)
+        self._min_photoelectrons.setValue(50)
+        self._min_photoelectrons.setSingleStep(50)
+        flt_form.addRow("Min photoelectrons:", self._min_photoelectrons)
 
-        self._max_photons = QSpinBox()
-        self._max_photons.setRange(0, 100_000_000)
-        self._max_photons.setValue(1_000_000)
-        self._max_photons.setSingleStep(10_000)
-        flt_form.addRow("Max photons:", self._max_photons)
+        self._max_photoelectrons = QSpinBox()
+        self._max_photoelectrons.setRange(0, 100_000_000)
+        self._max_photoelectrons.setValue(10_000)
+        self._max_photoelectrons.setSingleStep(1_000)
+        flt_form.addRow("Max photoelectrons:", self._max_photoelectrons)
 
         self._refresh_stats_btn = QPushButton("Refresh Stats")
         self._refresh_stats_btn.setEnabled(False)
@@ -268,7 +268,7 @@ class FittingPanel(QWidget):
 
     @property
     def photon_range(self) -> tuple:
-        return (self._min_photons.value(), self._max_photons.value())
+        return (self._min_photoelectrons.value(), self._max_photoelectrons.value())
 
     @property
     def data_dir(self) -> str:

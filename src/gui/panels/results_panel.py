@@ -175,7 +175,7 @@ class ResultsPanel(QWidget):
         self._tabs.addTab(locs_container, "Localisations")
         self._locs_container = locs_container
 
-        self._stats_tab = _FigureTab("Run fitting to see photon statistics.")
+        self._stats_tab = _FigureTab("Run fitting to see photoelectron statistics.")
         self._tabs.addTab(self._stats_tab, "Statistics")
 
         self._drift_tab = _FigureTab("Run drift correction to see the drift trace.")

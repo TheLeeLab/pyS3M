@@ -53,7 +53,7 @@ def optical_system(nrf):
 
 def _synthetic_locs_df(n_locs, nrf, optical_system, wavelength_left=610.0,
                         wavelength_right=640.0, fov_nm=1000.0, camera_pixel_size=69.0,
-                        seed=1, with_photons=True, with_aggregate=False):
+                        seed=1, with_photoelectrons=True, with_aggregate=False):
     wavelength_array, pixel_QYs, filter_spectra = optical_system
     rng = np.random.default_rng(seed)
     x_nm = rng.uniform(0, fov_nm, n_locs)
@@ -91,9 +91,9 @@ def _synthetic_locs_df(n_locs, nrf, optical_system, wavelength_left=610.0,
         "A_R_err": A_R_err, "A_G_err": A_G_err, "A_B_err": A_B_err,
         "s_x_err": s_x_err, "s_y_err": s_y_err,
     }
-    if with_photons:
-        data["photons"] = rng.uniform(500, 2000, n_locs)
-        data["background_photons"] = rng.uniform(20, 80, n_locs)
+    if with_photoelectrons:
+        data["photoelectrons"] = rng.uniform(500, 2000, n_locs)
+        data["background_photoelectrons"] = rng.uniform(20, 80, n_locs)
     if with_aggregate:
         data["cluster_id"] = np.where(x_nm < fov_nm / 2, 0.0, 1.0)
     return pd.DataFrame(data)
@@ -295,7 +295,7 @@ class TestValidColourRows:
             "A_R_err": [0.01, 0.01, np.nan, 0.01, 0.01, 0.01],
             "A_G_err": [0.01, 0.01, 0.01, 0.0, 0.01, 0.01],
             "A_B_err": [0.01, 0.01, 0.01, 0.01, 0.01, 0.01],
-            "photons": [500.0, 500.0, 500.0, 500.0, 500.0, np.nan],
+            "photoelectrons": [500.0, 500.0, 500.0, 500.0, 500.0, np.nan],
         })
 
     def test_rejects_nonfinite_and_nonpositive(self):
@@ -303,7 +303,7 @@ class TestValidColourRows:
         np.testing.assert_array_equal(valid, [True, False, False, False, False, True])
 
     def test_require_photons(self):
-        valid = NileRedFunctions.NileRed_Functions._valid_colour_rows(self._df(), require_photons=True)
+        valid = NileRedFunctions.NileRed_Functions._valid_colour_rows(self._df(), require_photoelectrons=True)
         np.testing.assert_array_equal(valid, [True, False, False, False, False, False])
 
 
@@ -530,7 +530,7 @@ class TestFitWavelengthsFromH5:
             nrf.fit_wavelengths_from_h5(str(path), FILTER_NAMES, self._camera_params(optical_system))
 
     def test_basic_fit(self, nrf, optical_system, tmp_path):
-        df = _synthetic_locs_df(10, nrf, optical_system, with_photons=True, seed=2)
+        df = _synthetic_locs_df(10, nrf, optical_system, with_photoelectrons=True, seed=2)
         path = tmp_path / "locs.h5"
         df.to_hdf(path, key="data", mode="w", format="table")
         out = nrf.fit_wavelengths_from_h5(
@@ -541,7 +541,7 @@ class TestFitWavelengthsFromH5:
         assert out["wl_fit"].notna().any()
 
     def test_basic_fit_without_photons_column(self, nrf, optical_system, tmp_path):
-        df = _synthetic_locs_df(8, nrf, optical_system, with_photons=False, seed=3)
+        df = _synthetic_locs_df(8, nrf, optical_system, with_photoelectrons=False, seed=3)
         path = tmp_path / "locs_no_photons.h5"
         df.to_hdf(path, key="data", mode="w", format="table")
         out = nrf.fit_wavelengths_from_h5(
@@ -550,7 +550,7 @@ class TestFitWavelengthsFromH5:
         assert "wl_fit" in out.columns
 
     def test_camera_parameters_without_wavelength_falls_back(self, nrf, optical_system, tmp_path):
-        df = _synthetic_locs_df(6, nrf, optical_system, with_photons=True, seed=4)
+        df = _synthetic_locs_df(6, nrf, optical_system, with_photoelectrons=True, seed=4)
         path = tmp_path / "locs_nowl.h5"
         df.to_hdf(path, key="data", mode="w", format="table")
         _, pixel_QYs, _ = optical_system
@@ -560,7 +560,7 @@ class TestFitWavelengthsFromH5:
         assert "wl_fit" in out.columns
 
     def test_aggregate_id_column_missing_raises(self, nrf, optical_system, tmp_path):
-        df = _synthetic_locs_df(6, nrf, optical_system, with_photons=True, seed=5)
+        df = _synthetic_locs_df(6, nrf, optical_system, with_photoelectrons=True, seed=5)
         path = tmp_path / "locs_agg_missing.h5"
         df.to_hdf(path, key="data", mode="w", format="table")
         with pytest.raises(ValueError, match="aggregate_id_column"):
@@ -570,17 +570,17 @@ class TestFitWavelengthsFromH5:
             )
 
     def test_aggregate_requires_photons(self, nrf, optical_system, tmp_path):
-        df = _synthetic_locs_df(6, nrf, optical_system, with_photons=False, with_aggregate=True, seed=5)
+        df = _synthetic_locs_df(6, nrf, optical_system, with_photoelectrons=False, with_aggregate=True, seed=5)
         path = tmp_path / "locs_agg_no_photons.h5"
         df.to_hdf(path, key="data", mode="w", format="table")
-        with pytest.raises(ValueError, match="photons"):
+        with pytest.raises(ValueError, match="photoelectrons"):
             nrf.fit_wavelengths_from_h5(
                 str(path), FILTER_NAMES, self._camera_params(optical_system),
                 aggregate_id_column="cluster_id",
             )
 
     def test_aggregate_id_column_two_step_fit(self, nrf, optical_system, tmp_path):
-        df = _synthetic_locs_df(15, nrf, optical_system, with_photons=True, with_aggregate=True, seed=6)
+        df = _synthetic_locs_df(15, nrf, optical_system, with_photoelectrons=True, with_aggregate=True, seed=6)
         path = tmp_path / "locs_agg.h5"
         df.to_hdf(path, key="data", mode="w", format="table")
         out = nrf.fit_wavelengths_from_h5(
@@ -590,7 +590,7 @@ class TestFitWavelengthsFromH5:
         assert "wl_fit_aggregate" in out.columns
 
     def test_aggregate_with_zero_rgb_sum_is_skipped(self, nrf, optical_system, tmp_path):
-        df = _synthetic_locs_df(15, nrf, optical_system, with_photons=True, with_aggregate=True, seed=14)
+        df = _synthetic_locs_df(15, nrf, optical_system, with_photoelectrons=True, with_aggregate=True, seed=14)
         df.loc[df["cluster_id"] == 0.0, ["A_R", "A_G", "A_B"]] = 0.0
         path = tmp_path / "locs_agg_zero.h5"
         df.to_hdf(path, key="data", mode="w", format="table")
@@ -601,7 +601,7 @@ class TestFitWavelengthsFromH5:
         assert "wl_fit" in out.columns
 
     def test_output_path_saves_file(self, nrf, optical_system, tmp_path):
-        df = _synthetic_locs_df(6, nrf, optical_system, with_photons=True, seed=7)
+        df = _synthetic_locs_df(6, nrf, optical_system, with_photoelectrons=True, seed=7)
         path = tmp_path / "locs_save.h5"
         df.to_hdf(path, key="data", mode="w", format="table")
         out_path = tmp_path / "locs_out.h5"
@@ -612,7 +612,7 @@ class TestFitWavelengthsFromH5:
         assert out_path.exists()
 
     def test_all_zero_rgb_rows_are_skipped(self, nrf, optical_system, tmp_path):
-        df = _synthetic_locs_df(6, nrf, optical_system, with_photons=True, seed=8)
+        df = _synthetic_locs_df(6, nrf, optical_system, with_photoelectrons=True, seed=8)
         df.loc[0, ["A_R", "A_G", "A_B"]] = 0.0
         path = tmp_path / "locs_zero.h5"
         df.to_hdf(path, key="data", mode="w", format="table")
@@ -622,7 +622,7 @@ class TestFitWavelengthsFromH5:
         assert np.isnan(out.loc[0, "wl_fit"])
 
     def test_nonfinite_error_rows_are_skipped(self, nrf, optical_system, tmp_path):
-        df = _synthetic_locs_df(6, nrf, optical_system, with_photons=True, seed=8)
+        df = _synthetic_locs_df(6, nrf, optical_system, with_photoelectrons=True, seed=8)
         df.loc[1, "A_G_err"] = np.nan
         df.loc[2, "A_B_err"] = 0.0
         path = tmp_path / "locs_bad_err.h5"
@@ -657,7 +657,7 @@ class TestFitWavelengthsPixelatedSupplementary:
             nrf.fit_wavelengths_pixelated(str(path), FILTER_NAMES, self._camera_params(optical_system))
 
     def test_aggregate_id_column_missing_raises(self, nrf, optical_system, tmp_path):
-        df = _synthetic_locs_df(10, nrf, optical_system, with_photons=True, seed=9)
+        df = _synthetic_locs_df(10, nrf, optical_system, with_photoelectrons=True, seed=9)
         path = tmp_path / "locs.h5"
         df.to_hdf(path, key="data", mode="w", format="table")
         with pytest.raises(ValueError, match="aggregate_id_column"):
@@ -667,17 +667,17 @@ class TestFitWavelengthsPixelatedSupplementary:
             )
 
     def test_missing_photons_raises(self, nrf, optical_system, tmp_path):
-        df = _synthetic_locs_df(10, nrf, optical_system, with_photons=False, seed=10)
+        df = _synthetic_locs_df(10, nrf, optical_system, with_photoelectrons=False, seed=10)
         path = tmp_path / "locs_no_photons.h5"
         df.to_hdf(path, key="data", mode="w", format="table")
-        with pytest.raises(ValueError, match="photons"):
+        with pytest.raises(ValueError, match="photoelectrons"):
             nrf.fit_wavelengths_pixelated(
                 str(path), FILTER_NAMES, self._camera_params(optical_system),
                 pixel_size_nm=200.0, min_localisations=2,
             )
 
     def test_return_dataframe_only(self, nrf, optical_system, tmp_path):
-        df = _synthetic_locs_df(10, nrf, optical_system, with_photons=True, seed=10)
+        df = _synthetic_locs_df(10, nrf, optical_system, with_photoelectrons=True, seed=10)
         path = tmp_path / "locs_df_only.h5"
         df.to_hdf(path, key="data", mode="w", format="table")
         out = nrf.fit_wavelengths_pixelated(
@@ -687,7 +687,7 @@ class TestFitWavelengthsPixelatedSupplementary:
         assert "wl_pixel" in out.columns
 
     def test_camera_parameters_without_wavelength_falls_back(self, nrf, optical_system, tmp_path):
-        df = _synthetic_locs_df(10, nrf, optical_system, with_photons=True, seed=11)
+        df = _synthetic_locs_df(10, nrf, optical_system, with_photoelectrons=True, seed=11)
         path = tmp_path / "locs_nowl.h5"
         df.to_hdf(path, key="data", mode="w", format="table")
         _, pixel_QYs, _ = optical_system
@@ -698,7 +698,7 @@ class TestFitWavelengthsPixelatedSupplementary:
         assert "wl_pixel" in out.columns
 
     def test_output_path_saves_file(self, nrf, optical_system, tmp_path):
-        df = _synthetic_locs_df(10, nrf, optical_system, with_photons=True, seed=12)
+        df = _synthetic_locs_df(10, nrf, optical_system, with_photoelectrons=True, seed=12)
         path = tmp_path / "locs_save.h5"
         df.to_hdf(path, key="data", mode="w", format="table")
         out_path = tmp_path / "locs_pixel_out.h5"
@@ -709,7 +709,7 @@ class TestFitWavelengthsPixelatedSupplementary:
         assert out_path.exists()
 
     def test_aggregate_group_all_zero_rgb_is_skipped(self, nrf, optical_system, tmp_path):
-        df = _synthetic_locs_df(12, nrf, optical_system, with_photons=True, with_aggregate=True, seed=13)
+        df = _synthetic_locs_df(12, nrf, optical_system, with_photoelectrons=True, with_aggregate=True, seed=13)
         df.loc[df["cluster_id"] == 0.0, ["A_R", "A_G", "A_B"]] = 0.0
         path = tmp_path / "locs_agg_zero.h5"
         df.to_hdf(path, key="data", mode="w", format="table")
@@ -720,7 +720,7 @@ class TestFitWavelengthsPixelatedSupplementary:
         assert isinstance(grid_info, dict)
 
     def test_nan_aggregate_id_row_is_skipped(self, nrf, optical_system, tmp_path):
-        df = _synthetic_locs_df(12, nrf, optical_system, with_photons=True, with_aggregate=True, seed=15)
+        df = _synthetic_locs_df(12, nrf, optical_system, with_photoelectrons=True, with_aggregate=True, seed=15)
         df.loc[0, "cluster_id"] = np.nan
         path = tmp_path / "locs_agg_nan.h5"
         df.to_hdf(path, key="data", mode="w", format="table")
@@ -731,7 +731,7 @@ class TestFitWavelengthsPixelatedSupplementary:
         assert np.isnan(out.loc[0, "wl_pixel"])
 
     def test_aggregate_without_usable_rows_is_skipped(self, nrf, optical_system, tmp_path):
-        df = _synthetic_locs_df(12, nrf, optical_system, with_photons=True, with_aggregate=True, seed=16)
+        df = _synthetic_locs_df(12, nrf, optical_system, with_photoelectrons=True, with_aggregate=True, seed=16)
         df.loc[df["cluster_id"] == 0.0, "A_R_err"] = np.nan
         path = tmp_path / "locs_agg_bad.h5"
         df.to_hdf(path, key="data", mode="w", format="table")
@@ -743,8 +743,8 @@ class TestFitWavelengthsPixelatedSupplementary:
         assert out.loc[df["cluster_id"] == 1.0, "wl_pixel"].notna().any()
 
     def test_unusable_rows_do_not_count_towards_min_localisations(self, nrf, optical_system, tmp_path):
-        df = _synthetic_locs_df(12, nrf, optical_system, with_photons=True, seed=17)
-        df["photons"] = np.nan
+        df = _synthetic_locs_df(12, nrf, optical_system, with_photoelectrons=True, seed=17)
+        df["photoelectrons"] = np.nan
         path = tmp_path / "locs_pix_bad.h5"
         df.to_hdf(path, key="data", mode="w", format="table")
         out, grid_info = nrf.fit_wavelengths_pixelated(
@@ -755,9 +755,9 @@ class TestFitWavelengthsPixelatedSupplementary:
 
     def test_overlapping_aggregates_accumulate_photon_grid(self, nrf, optical_system, tmp_path):
         # Two different aggregates whose points all land in the same spatial
-        # pixel (very large pixel_size_nm) -> total_photons_grid gets written
+        # pixel (very large pixel_size_nm) -> total_photoelectrons_grid gets written
         # by one aggregate's pixel group, then accumulated by the other's.
-        df = _synthetic_locs_df(6, nrf, optical_system, with_photons=True, fov_nm=50.0, seed=18)
+        df = _synthetic_locs_df(6, nrf, optical_system, with_photoelectrons=True, fov_nm=50.0, seed=18)
         df["cluster_id"] = np.where(np.arange(len(df)) % 2 == 0, 0.0, 1.0)
         path = tmp_path / "locs_overlap.h5"
         df.to_hdf(path, key="data", mode="w", format="table")
@@ -765,7 +765,7 @@ class TestFitWavelengthsPixelatedSupplementary:
             str(path), FILTER_NAMES, self._camera_params(optical_system),
             pixel_size_nm=100000.0, min_localisations=2, aggregate_id_column="cluster_id", verbose=False,
         )
-        assert grid_info["total_photons_grid"][~np.isnan(grid_info["total_photons_grid"])].sum() > 0
+        assert grid_info["total_photoelectrons_grid"][~np.isnan(grid_info["total_photoelectrons_grid"])].sum() > 0
 
 
 # ======================================================================
@@ -792,7 +792,7 @@ class TestSimulateWavelengthPrecision:
             df = pd.DataFrame({
                 "wl_fit": np.full(n, com) + np.random.default_rng(0).normal(0, 0.5, n),
                 "photon_level": np.zeros(n, dtype=int),
-                "photons": np.full(n, float(n_photon_space[0])),
+                "photoelectrons": np.full(n, float(n_photon_space[0])),
             })
             path = Path(save_folder) / f"{starting_flag}rawresults.h5"
             df.to_hdf(path, key="data", mode="w", format="table")
@@ -881,7 +881,7 @@ class TestSimulateWavelengthPrecision:
             df = pd.DataFrame({
                 "wl_fit": np.full(3, com),
                 "photon_level": np.zeros(3, dtype=int),
-                "photons": np.full(3, float(n_photon_space[0])),
+                "photoelectrons": np.full(3, float(n_photon_space[0])),
             })
             (Path(save_folder) / f"{starting_flag}rawresults.h5").parent.mkdir(parents=True, exist_ok=True)
             df.to_hdf(Path(save_folder) / f"{starting_flag}rawresults.h5", key="data", mode="w", format="table")

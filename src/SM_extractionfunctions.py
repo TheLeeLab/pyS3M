@@ -77,10 +77,8 @@ class extract_SMs(HDBSCANMixin, DBSCANMixin, LinkedMixin, BatchMixin,
         min_sigma=None,       # px; None → FilteringConstants.MIN_SIGMA_NM / self.pixel_size_nm
         max_sigma=None,       # px; None → FilteringConstants.MAX_SIGMA_NM / self.pixel_size_nm
         max_sigma_error=None, # px; None → FilteringConstants.MAX_SIGMA_ERROR_NM / self.pixel_size_nm
-        min_photons=FilteringConstants.MIN_PHOTONS,
-        max_photons=None,
-        min_photoelectrons=None,
-        max_photoelectrons=None,
+        min_photoelectrons=FilteringConstants.MIN_PHOTOELECTRONS,
+        max_photoelectrons=FilteringConstants.MAX_PHOTOELECTRONS,
         max_background_error=None,
         criteria: FilteringCriteria = None,
     ):
@@ -102,10 +100,9 @@ class extract_SMs(HDBSCANMixin, DBSCANMixin, LinkedMixin, BatchMixin,
                 colour is poorly constrained when one channel is near zero).
             min_sigma, max_sigma, max_sigma_error: PSF sigma bounds (pixels);
                 ``None`` → derived from ``FilteringConstants`` / pixel size.
-            min_photons, max_photons: Bounds on ``photons`` (A_B + A_G + A_R, which overcounts
-                the detected photoelectrons 2-4x; see ``IO_Functions.add_photoelectron_columns``).
             min_photoelectrons, max_photoelectrons: Bounds on the detected ``photoelectrons``
-                (sum_p f_p * A_p); ``None`` → no cut. Applied in addition to the photon bounds.
+                (sum_p m_p * A_p, m_p = pixel type p's share of the mosaic; default 50 and
+                10,000); ``None`` → no cut.
             criteria: If provided, overrides all individual kwargs above.
 
         Returns:
@@ -118,8 +115,6 @@ class extract_SMs(HDBSCANMixin, DBSCANMixin, LinkedMixin, BatchMixin,
             min_sigma             = criteria.min_sigma
             max_sigma             = criteria.max_sigma
             max_sigma_error       = criteria.max_sigma_error
-            min_photons           = criteria.min_photons
-            max_photons           = criteria.max_photons
             min_photoelectrons    = criteria.min_photoelectrons
             max_photoelectrons    = criteria.max_photoelectrons
             max_background_error  = criteria.max_background_error
@@ -154,19 +149,12 @@ class extract_SMs(HDBSCANMixin, DBSCANMixin, LinkedMixin, BatchMixin,
             filtered_data = filtered_data[filtered_data[key] < max_sigma]
             filtered_data = filtered_data[filtered_data[key] > min_sigma]
 
-        # Add photons column using centralized method and apply photon count filters
-        if "photons" not in filtered_data.columns:
-            filtered_data = self.io._add_photon_columns(filtered_data, normalise=True)
-        if max_photons is not None:
-            filtered_data = filtered_data[filtered_data["photons"] < max_photons]
-        filtered_data = filtered_data[filtered_data["photons"] > min_photons]
-        if min_photoelectrons is not None or max_photoelectrons is not None:
-            if "photoelectrons" not in filtered_data.columns:
-                filtered_data = self.io.add_photoelectron_columns(filtered_data)
-            if min_photoelectrons is not None:
-                filtered_data = filtered_data[filtered_data["photoelectrons"] > min_photoelectrons]
-            if max_photoelectrons is not None:
-                filtered_data = filtered_data[filtered_data["photoelectrons"] < max_photoelectrons]
+        # Detected-photoelectron bounds (old databases / raw fit results get the column first)
+        filtered_data = self.io.ensure_photoelectrons(filtered_data, normalise=True)
+        if min_photoelectrons is not None:
+            filtered_data = filtered_data[filtered_data["photoelectrons"] > min_photoelectrons]
+        if max_photoelectrons is not None:
+            filtered_data = filtered_data[filtered_data["photoelectrons"] < max_photoelectrons]
 
         return filtered_data.reset_index(drop=True)
 
@@ -184,7 +172,6 @@ class extract_SMs(HDBSCANMixin, DBSCANMixin, LinkedMixin, BatchMixin,
         labels = np.sort(np.unique(dbscan_labels))
         labels = labels[labels > -1]
         dict_obj = {}
-        dict_obj["photons"] = np.zeros(len(labels))
         dict_obj["frames"] = np.zeros(len(labels))
         for column in np.array(data.columns):
             if column == "index":
@@ -206,28 +193,12 @@ class extract_SMs(HDBSCANMixin, DBSCANMixin, LinkedMixin, BatchMixin,
                         data[column][dbscan_labels == label]
                     )
             dict_obj["frames"][label] = len(data[column][dbscan_labels == label])
-            # Use existing photons column if available, otherwise calculate manually
-            if "photons" in data.columns:
-                dict_obj["photons"][label] = np.sum(
-                    data["photons"][dbscan_labels == label]
-                )
-            else:
-                dict_obj["photons"][label] = (
-                    np.average(
-                        data["A_B"][dbscan_labels == label],
-                        weights=data["A_B_err"][dbscan_labels == label] ** -2,
-                    )
-                    + np.average(
-                        data["A_G"][dbscan_labels == label],
-                        weights=data["A_G_err"][dbscan_labels == label] ** -2,
-                    )
-                    + np.average(
-                        data["A_R"][dbscan_labels == label],
-                        weights=data["A_R_err"][dbscan_labels == label] ** -2,
-                    )
+            # A molecule's detected photoelectrons are the sum over its frames
+            if "photoelectrons" in data.columns:
+                dict_obj["photoelectrons"][label] = np.sum(
+                    data["photoelectrons"][dbscan_labels == label]
                 )
         df = pd.DataFrame.from_dict(dict_obj)
-        # Normalise photon fractions using centralised IOFunctions method
         return df
 
     # ------------------------------------------------------------------

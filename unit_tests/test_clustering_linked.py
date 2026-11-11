@@ -47,7 +47,7 @@ def _make_two_molecules(n_frames=20, seed=1):
     df["xc_err"] = 0.05
     df["yc_err"] = 0.05
     df["chi_sqr"] = 1.0
-    df["photons"] = 1000.0
+    df["photoelectrons"] = 1000.0
     return df
 
 
@@ -147,7 +147,7 @@ class TestExtractSingleMoleculesSpectralLapExtra:
         )
         sm_db, sf_db = SM_E.extract_single_molecules_spectral_lap(
             df.copy(), config=cfg, max_distance=0.001,  # overridden by config
-            chi_val=10.0, max_localisation_error=1.0, min_photons=100, max_photons=1e6,
+            chi_val=10.0, max_localisation_error=1.0, min_photoelectrons=100, max_photoelectrons=1e6,
         )
         assert isinstance(sm_db, pd.DataFrame)
 
@@ -172,13 +172,13 @@ class TestExtractSingleMoleculesSpectralLapExtra:
             ("A_R_err", 0.03), ("A_G_err", 0.03), ("A_B_err", 0.03),
             ("bg_R_err", 0.01), ("bg_G_err", 0.01), ("bg_B_err", 0.01),
             ("s_x", 1.5), ("s_y", 1.5), ("s_x_err", 0.1), ("s_y_err", 0.1),
-            ("xc_err", 0.05), ("yc_err", 0.05), ("chi_sqr", 1.0), ("photons", 1000.0),
+            ("xc_err", 0.05), ("yc_err", 0.05), ("chi_sqr", 1.0), ("photoelectrons", 1000.0),
         ]:
             df[col] = val
 
         sm_db, sf_db = SM_E.extract_single_molecules_spectral_lap(
             df.copy(), max_distance=2.0, max_dark_time=1, min_frames=1,
-            chi_val=10.0, max_localisation_error=1.0, min_photons=100, max_photons=1e6,
+            chi_val=10.0, max_localisation_error=1.0, min_photoelectrons=100, max_photoelectrons=1e6,
             remove_static=True, static_eps=0.5, static_min_samples=10, verbose=True,
         )
         # Only the mobile molecule should survive static removal.

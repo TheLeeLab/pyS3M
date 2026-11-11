@@ -84,7 +84,7 @@ def _make_crossing_trajectories(
     df["xc_err"] = 0.05
     df["yc_err"] = 0.05
     df["chi_sqr"] = 1.0
-    df["photons"] = 1000.0
+    df["photoelectrons"] = 1000.0
 
     return df
 
@@ -203,8 +203,8 @@ class TestSpectralLAPLinking(unittest.TestCase):
             w_spectral=0.5,
             chi_val=10.0,  # permissive filter
             max_localisation_error=1.0,
-            min_photons=100,
-            max_photons=1e6,
+            min_photoelectrons=100,
+            max_photoelectrons=1e6,
             # Molecule C is deliberately stationary (see _make_crossing_trajectories),
             # and extract_single_molecules_spectral_lap's remove_static=True default
             # correctly flags/drops it (DBSCAN eps=1.0, min_samples=10 vs. C's 20

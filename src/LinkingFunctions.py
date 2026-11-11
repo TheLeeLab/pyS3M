@@ -11,7 +11,7 @@ collapsed into a single improved localisation:
 
 * position (xc, yc)          — inverse-variance weighted mean  (1/σ² weights)
 * errors  (xc_err, yc_err)   — combined as 1/√(Σ 1/σ²)
-* photons, photoelectrons    — summed
+* photoelectrons             — summed
 * bg_B, bg_G, bg_R           — summed  (total background accumulated)
 * A_B, A_G, A_R, s_x, s_y   — inverse-variance weighted mean using paired _err columns;
                                falls back to simple mean if _err absent
@@ -177,7 +177,7 @@ def link_localisations(
         Localisation table as produced by the SR pipeline.  Must contain
         ``frame``, ``xc``, ``yc``, ``xc_err``, ``yc_err``.  The following
         optional columns are aggregated if present:
-        ``photons``, ``photoelectrons`` — summed
+        ``photoelectrons`` — summed
         ``bg_B``, ``bg_G``, ``bg_R`` — summed
         ``A_B``,  ``A_G``,  ``A_R``  — averaged (spectral fractions)
         ``s_x``, ``s_y``         — averaged
@@ -203,7 +203,7 @@ def link_localisations(
         Reduced localisation table with the same columns as ``df`` plus:
         ``n``            — number of raw localisations merged
         ``len``          — frame span (last_frame - first_frame + 1)
-        ``photon_rate``  — photons / n  (if photons present)
+        ``photoelectron_rate``  — photoelectrons / n  (if photoelectrons present)
     """
     if len(df) == 0:
         return df.copy()
@@ -242,7 +242,7 @@ def link_localisations(
     columns["yc_err"] = np.sqrt(1.0 / sum_wy).astype(np.float32)
 
     # Summed columns (accumulated over the on-time)
-    for col in ("photons", "photoelectrons", "bg_B", "bg_G", "bg_R"):
+    for col in ("photoelectrons", "bg_B", "bg_G", "bg_R"):
         if col in df.columns:
             columns[col] = _link_group_sum(
                 df[col].to_numpy(dtype=np.float32), link_group, n, n_groups
@@ -276,7 +276,7 @@ def link_localisations(
     # across the linked group so no data is silently discarded.
     handled = {
         "frame", "xc", "yc", "xc_err", "yc_err",
-        "photons", "photoelectrons", "bg_B", "bg_G", "bg_R",
+        "photoelectrons", "bg_B", "bg_G", "bg_R",
         "A_B", "A_G", "A_R", "A_B_err", "A_G_err", "A_R_err",
         "s_x", "s_y", "s_x_err", "s_y_err",
         "chi_sqr",
@@ -293,8 +293,8 @@ def link_localisations(
     columns["len"] = (last_frame - first_frame + 1).astype(np.uint32)
     columns["n"] = n_
 
-    if "photons" in columns:
-        columns["photon_rate"] = (columns["photons"] / n_).astype(np.float32)
+    if "photoelectrons" in columns:
+        columns["photoelectron_rate"] = (columns["photoelectrons"] / n_).astype(np.float32)
 
     linked = pd.DataFrame(columns)
 

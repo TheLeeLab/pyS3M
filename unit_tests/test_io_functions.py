@@ -66,71 +66,67 @@ class _FakeStat:
 
 
 # ======================================================================
-# _normalize_color_channels / _add_photon_columns
+# _add_photoelectron_columns (raw fit results)
 # ======================================================================
 
-class TestNormalizeColorChannels:
-    def test_normalizes_by_total(self, io):
-        df = pd.DataFrame({"total": [10.0, 0.0], "a": [5.0, 3.0], "a_err": [1.0, 0.5]})
-        out = io._normalize_color_channels(df, "total", ["a"])
-        assert out["a"].iloc[0] == pytest.approx(0.5)
-        # errors untouched: the fitter already reports errors of the normalised fractions
-        assert out["a_err"].iloc[0] == pytest.approx(1.0)
-        # zero-total row untouched (division-by-zero mask)
-        assert out["a"].iloc[1] == pytest.approx(3.0)
+def _legacy_df(df, io):
+    """``df`` (raw amplitudes) as a database written before 2026-11-11: fractions plus the old sums."""
+    out = df.copy()
+    for prefix, total in (("A_", "photons"), ("bg_", "background_photons")):
+        cols = [f"{prefix}{c}" for c in "BGR"]
+        out[total] = df[cols].sum(axis=1)
+        for c in cols:
+            out[c] = df[c] / out[total]
+    return out
 
 
-class TestAddPhotonColumns:
-    def test_adds_and_normalises_photon_columns(self, io):
-        df = _loc_df(4)
-        out = io._add_photon_columns(df, normalise=True)
-        assert "photons" in out.columns
-        assert "background_photons" in out.columns
+class TestAddPhotoelectronColumnsRaw:
+    def test_adds_photoelectrons_and_normalises(self, io):
+        out = io._add_photoelectron_columns(_loc_df(4), normalise=True)
+        assert {"photoelectrons", "background_photoelectrons"} <= set(out.columns)
+        assert not {"photons", "background_photons"} & set(out.columns)
         np.testing.assert_allclose(out["A_B"] + out["A_G"] + out["A_R"], 1.0)
+        np.testing.assert_allclose(out["bg_B"] + out["bg_G"] + out["bg_R"], 1.0)
 
     def test_no_normalise_keeps_raw_amplitudes(self, io):
         df = _loc_df(4)
-        raw_sum = (df["A_B"] + df["A_G"] + df["A_R"]).to_numpy()
-        out = io._add_photon_columns(df, normalise=False)
-        np.testing.assert_allclose(out["photons"].to_numpy(), raw_sum)
+        out = io._add_photoelectron_columns(df, normalise=False)
         np.testing.assert_allclose(out["A_B"].to_numpy(), df["A_B"].to_numpy())
+        # errors are left as they are (the fitter reports errors of the fractions)
+        np.testing.assert_allclose(out["A_B_err"].to_numpy(), df["A_B_err"].to_numpy())
 
-    def test_missing_colour_columns_skips_photon_columns(self, io):
-        df = _loc_df(4, with_colour=False)
-        out = io._add_photon_columns(df)
-        assert "photons" not in out.columns
-        assert "background_photons" not in out.columns
+    def test_zero_amplitude_sum_left_unnormalised(self, io):
+        df = _loc_df(2)
+        df.loc[0, ["A_B", "A_G", "A_R"]] = 0.0
+        out = io._add_photoelectron_columns(df)
+        assert out.loc[0, ["A_B", "A_G", "A_R"]].tolist() == [0.0, 0.0, 0.0]
+        assert out["photoelectrons"].iloc[0] == 0.0
+
+    def test_missing_colour_columns_add_nothing(self, io):
+        out = io._add_photoelectron_columns(_loc_df(4, with_colour=False))
         assert "photoelectrons" not in out.columns
+        assert "background_photoelectrons" not in out.columns
 
     @pytest.mark.parametrize("normalise", [True, False])
     def test_photoelectrons_weight_amplitudes_by_pixel_fraction(self, io, normalise):
         df = _loc_df(4)
-        out = io._add_photon_columns(df, normalise=normalise)
+        out = io._add_photoelectron_columns(df, normalise=normalise)
         expected = df["A_B"] / 4 + df["A_G"] / 2 + df["A_R"] / 4
         np.testing.assert_allclose(out["photoelectrons"].to_numpy(), expected.to_numpy())
         expected_bg = df["bg_B"] / 4 + df["bg_G"] / 2 + df["bg_R"] / 4
         np.testing.assert_allclose(out["background_photoelectrons"].to_numpy(), expected_bg.to_numpy())
 
-
-class TestAddPhotoelectronColumns:
-    def test_matches_raw_amplitudes_after_normalisation(self, io):
-        df = _loc_df(4)
-        saved = io._add_photon_columns(df).drop(columns=["photoelectrons", "background_photoelectrons"])
-        out = io.add_photoelectron_columns(saved)
-        np.testing.assert_allclose(out["photoelectrons"].to_numpy(),
-                                   (df["A_B"] / 4 + df["A_G"] / 2 + df["A_R"] / 4).to_numpy())
-        np.testing.assert_allclose(out["background_photoelectrons"].to_numpy(),
-                                   (df["bg_B"] / 4 + df["bg_G"] / 2 + df["bg_R"] / 4).to_numpy())
-
-    def test_fractions_follow_mosaic_unit(self):
-        io = IO_Functions(mosaic_unit=np.array([["B", "B"], ["G", "R"]]))
-        df = pd.DataFrame({"photons": [100.0], "A_B": [0.2], "A_G": [0.3], "A_R": [0.5]})
-        out = io.add_photoelectron_columns(df)
-        assert out["photoelectrons"].iloc[0] == pytest.approx(100 * (0.2 / 2 + 0.3 / 4 + 0.5 / 4))
+    def test_explicit_pixel_fractions(self, io):
+        df = _loc_df(3)
+        shares = {"B": 0.5, "G": 0.25, "R": 0.25}
+        out = io._add_photoelectron_columns(df, pixel_fractions=shares)
+        expected = df["A_B"] / 2 + df["A_G"] / 4 + df["A_R"] / 4
+        np.testing.assert_allclose(out["photoelectrons"].to_numpy(), expected.to_numpy())
 
     def test_equals_signal_collected_on_the_mosaic(self, io):
         # A unit-integral spot of amplitude A_p on each pixel type: the image summed over the
-        # sensor is the detected signal, sum_p fraction_p * A_p.
+        # sensor is the detected signal, sum_p fraction_p * A_p (the old A_B + A_G + A_R
+        # overcounted it more than 2x).
         from pyS3M.MaskFunctions import Mask_Functions
         masks = Mask_Functions().get_stacked_masks(0, 0, 64, 64)
         y, x = np.mgrid[:64, :64]
@@ -138,13 +134,96 @@ class TestAddPhotoelectronColumns:
         amplitudes = np.array([300.0, 1200.0, 500.0])   # A_B, A_G, A_R
         image = (masks * amplitudes).sum(axis=2) * spot
         df = pd.DataFrame({f"A_{c}": [a] for c, a in zip("BGR", amplitudes)} | {f"A_{c}_err": [0.0] for c in "BGR"})
-        out = io._add_photon_columns(df)
+        out = io._add_photoelectron_columns(df)
         assert out["photoelectrons"].iloc[0] == pytest.approx(image.sum(), rel=1e-3)
-        assert out["photons"].iloc[0] > 2 * image.sum()
+        assert amplitudes.sum() > 2 * image.sum()
 
-    def test_missing_columns_add_nothing(self, io):
-        out = io.add_photoelectron_columns(pd.DataFrame({"photons": [1.0]}))
-        assert list(out.columns) == ["photons"]
+
+# ======================================================================
+# add_photoelectron_columns (databases written before 2026-11-11)
+# ======================================================================
+
+class TestAddPhotoelectronColumns:
+    def test_legacy_database_matches_raw_amplitudes(self, io):
+        df = _loc_df(4)
+        out = io.add_photoelectron_columns(_legacy_df(df, io))
+        np.testing.assert_allclose(out["photoelectrons"].to_numpy(),
+                                   (df["A_B"] / 4 + df["A_G"] / 2 + df["A_R"] / 4).to_numpy())
+        np.testing.assert_allclose(out["background_photoelectrons"].to_numpy(),
+                                   (df["bg_B"] / 4 + df["bg_G"] / 2 + df["bg_R"] / 4).to_numpy())
+        assert not {"photons", "background_photons"} & set(out.columns)
+
+    def test_recomputes_old_per_frame_photoelectrons(self, io):
+        # old molecule tables: photoelectrons was the mean per frame, photons the sum
+        legacy = _legacy_df(_loc_df(2), io)
+        legacy["photoelectrons"] = -1.0
+        out = io.add_photoelectron_columns(legacy)
+        assert (out["photoelectrons"] > 0).all()
+
+    def test_fractions_follow_mosaic_unit(self):
+        io = IO_Functions(mosaic_unit=np.array([["B", "B"], ["G", "R"]]))
+        df = pd.DataFrame({"photons": [100.0], "A_B": [0.2], "A_G": [0.3], "A_R": [0.5]})
+        out = io.add_photoelectron_columns(df)
+        assert out["photoelectrons"].iloc[0] == pytest.approx(100 * (0.2 / 2 + 0.3 / 4 + 0.5 / 4))
+        assert "photons" not in out.columns
+
+    def test_photon_rate_becomes_photoelectron_rate(self, io):
+        legacy = _legacy_df(_loc_df(3), io)
+        legacy["n"] = [1, 2, 4]
+        legacy["photon_rate"] = legacy["photons"] / legacy["n"]
+        out = io.add_photoelectron_columns(legacy)
+        np.testing.assert_allclose(out["photoelectron_rate"], out["photoelectrons"] / legacy["n"])
+        assert "photon_rate" not in out.columns
+
+    def test_unconvertible_old_columns_are_kept(self, io):
+        out = io.add_photoelectron_columns(pd.DataFrame({"photons": [1.0], "photon_rate": [1.0]}))
+        assert list(out.columns) == ["photons", "photon_rate"]
+
+    def test_current_database_unchanged(self, io):
+        df = io._add_photoelectron_columns(_loc_df(3))
+        out = io.add_photoelectron_columns(df)
+        pd.testing.assert_frame_equal(out, df)
+        assert out is not df
+
+
+class TestEnsurePhotoelectrons:
+    def test_legacy_is_upgraded(self, io):
+        out = io.ensure_photoelectrons(_legacy_df(_loc_df(3), io))
+        assert "photoelectrons" in out.columns and "photons" not in out.columns
+
+    @pytest.mark.parametrize("normalise", [True, False])
+    def test_raw_fit_results_get_photoelectrons(self, io, normalise):
+        df = _loc_df(3)
+        out = io.ensure_photoelectrons(df, normalise=normalise)
+        np.testing.assert_allclose(out["photoelectrons"], df["A_B"] / 4 + df["A_G"] / 2 + df["A_R"] / 4)
+        assert np.allclose(out["A_B"] + out["A_G"] + out["A_R"], 1.0) == normalise
+
+    def test_current_database_returned_as_is(self, io):
+        df = io._add_photoelectron_columns(_loc_df(3))
+        assert io.ensure_photoelectrons(df) is df
+
+
+class TestChannelAmplitudes:
+    def test_recovers_raw_amplitudes(self, io):
+        df = _loc_df(4)
+        db = io._add_photoelectron_columns(df)
+        for prefix in ("A_", "bg_"):
+            amps = io.channel_amplitudes(db, prefix)
+            assert list(amps) == ["B", "G", "R"]
+            for c in "BGR":
+                np.testing.assert_allclose(amps[c].to_numpy(), df[f"{prefix}{c}"].to_numpy())
+
+    def test_single_row(self, io):
+        df = _loc_df(2)
+        row = io._add_photoelectron_columns(df).iloc[1]
+        assert io.channel_amplitudes(row)["G"] == pytest.approx(df["A_G"].iloc[1])
+
+    def test_explicit_pixel_fractions(self, io):
+        df = _loc_df(3)
+        shares = {"B": 0.5, "G": 0.25, "R": 0.25}
+        db = io._add_photoelectron_columns(df, pixel_fractions=shares)
+        amps = io.channel_amplitudes(db, "A_", pixel_fractions=shares)
+        np.testing.assert_allclose(amps["R"].to_numpy(), df["A_R"].to_numpy())
 
 
 # ======================================================================
@@ -158,7 +237,8 @@ class TestReadWriteH5Database:
         io.write_h5_database(df, path)
         out = io.read_h5_database(path)
         assert len(out) == 6
-        assert "photons" in out.columns
+        assert "photoelectrons" in out.columns
+        assert "photons" not in out.columns
 
     def test_empty_dataframe_writes_nothing(self, io, tmp_path):
         df = pd.DataFrame({"frame": [], "xc": []})
@@ -181,13 +261,38 @@ class TestReadWriteH5Database:
         out = io.read_h5_database(path)
         assert "frame" not in out.columns
 
-    def test_photons_column_already_present_skips_recompute(self, io, tmp_path):
+    def test_photoelectrons_already_present_skips_recompute(self, io, tmp_path):
         df = _loc_df(3)
-        df["photons"] = 999.0
+        df["photoelectrons"] = 999.0
         path = tmp_path / "locs.h5"
         io.write_h5_database(df, path)
         out = io.read_h5_database(path)
-        np.testing.assert_allclose(out["photons"].to_numpy(), 999.0)
+        np.testing.assert_allclose(out["photoelectrons"].to_numpy(), 999.0)
+
+    def test_no_normalise_writes_as_is(self, io, tmp_path):
+        df = _loc_df(3)
+        path = tmp_path / "locs.h5"
+        io.write_h5_database(df, path, normalise_photons=False)
+        out = io.read_h5_database(path)
+        assert "photoelectrons" not in out.columns
+        np.testing.assert_allclose(out["A_B"].to_numpy(), df["A_B"].to_numpy())
+
+    @pytest.mark.parametrize("normalise", [True, False])
+    def test_legacy_database_written_upgraded(self, io, tmp_path, normalise):
+        df = _loc_df(3)
+        path = tmp_path / "locs.h5"
+        io.write_h5_database(_legacy_df(df, io), path, normalise_photons=normalise)
+        out = pd.read_hdf(path)
+        assert "photons" not in out.columns
+        np.testing.assert_allclose(out["photoelectrons"], df["A_B"] / 4 + df["A_G"] / 2 + df["A_R"] / 4)
+
+    def test_legacy_file_upgraded_on_read(self, io, tmp_path):
+        df = _loc_df(3)
+        path = tmp_path / "old.h5"
+        _legacy_df(df, io).to_hdf(path, key="data")
+        out = io.read_h5_database(path)
+        assert "photons" not in out.columns
+        np.testing.assert_allclose(out["photoelectrons"], df["A_B"] / 4 + df["A_G"] / 2 + df["A_R"] / 4)
 
     def test_append_sorts_by_frame(self, io, tmp_path):
         path = tmp_path / "locs.h5"
@@ -220,7 +325,7 @@ class TestReadWriteH5Database:
         for df in chunks[1:]:
             io.write_h5_database(df, path, append=True, verbose=False)
         assert not rewrites
-        expected = io._add_photon_columns(pd.concat(
+        expected = io._add_photoelectron_columns(pd.concat(
             [c.assign(frame=c["frame"].astype("int32")) for c in chunks], ignore_index=True))
         expected = expected.sort_values("frame", kind="mergesort", ignore_index=True)
         pd.testing.assert_frame_equal(io.read_h5_database(path), expected, check_dtype=False)

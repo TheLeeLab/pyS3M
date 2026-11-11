@@ -13,7 +13,7 @@ class ClusteringConfig:
     ``ClusteringConfig`` instance via the ``config=`` keyword instead of the
     individual keyword arguments to reduce call-site verbosity.
 
-    Filtering thresholds (chi_val, min_photons, etc.) remain in a separate
+    Filtering thresholds (chi_val, min_photoelectrons, etc.) remain in a separate
     :class:`~Constants.FilteringCriteria` object so the two concerns stay
     independent.
 
@@ -36,7 +36,7 @@ class ClusteringConfig:
             min_cluster_size=5,
             start_frame=100,
         )
-        filt = FilteringCriteria(min_photons=1000)
+        filt = FilteringCriteria(min_photoelectrons=200)
 
         sm_db, sf_db = SM_E.extract_single_molecules_batch(
             files, config=cfg, criteria=filt

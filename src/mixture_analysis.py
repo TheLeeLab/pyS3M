@@ -208,7 +208,7 @@ class MixtureAnalysisMixin:
         covariance_type: str = "full",
         max_iter: int = 100,
         n_reweighting_iterations: int = 2,
-        photons: NDArray[np.float64] | None = None,
+        photoelectrons: NDArray[np.float64] | None = None,
         A_R: NDArray[np.float64] | None = None,
         A_G: NDArray[np.float64] | None = None,
         has_error_columns: bool = False,
@@ -228,7 +228,7 @@ class MixtureAnalysisMixin:
             covariance_type (str): Type of covariance ('full', 'tied', 'diag', 'spherical')
             max_iter (int): Maximum EM iterations
             n_reweighting_iterations (int): Number of re-weighting iterations (default: 2)
-            photons (np.ndarray): Photon counts for weighting (optional)
+            photoelectrons (np.ndarray): Photoelectron counts for weighting (optional)
             A_R (np.ndarray): A_R values for uncertainty calculation (optional)
             A_G (np.ndarray): A_G values for uncertainty calculation (optional)
             has_error_columns (bool): Whether error columns are available
@@ -273,8 +273,8 @@ class MixtureAnalysisMixin:
                 component_data = X[component_mask]
 
                 # Apply error-based weighting within this component only
-                if photons is not None and A_R is not None and A_G is not None:
-                    component_photons = photons[component_mask]
+                if photoelectrons is not None and A_R is not None and A_G is not None:
+                    component_photoelectrons = photoelectrons[component_mask]
                     component_A_R = A_R[component_mask]
                     component_A_G = A_G[component_mask]
 
@@ -284,8 +284,8 @@ class MixtureAnalysisMixin:
                         component_sigma_A_G = sigma_A_G[component_mask]
                         sigma_combined_k = np.sqrt(component_sigma_A_R**2 + component_sigma_A_G**2)
                     else:
-                        sigma_A_R_k = np.sqrt(component_A_R * (1 - component_A_R) / (component_photons + 1))
-                        sigma_A_G_k = np.sqrt(component_A_G * (1 - component_A_G) / (component_photons + 1))
+                        sigma_A_R_k = np.sqrt(component_A_R * (1 - component_A_R) / (component_photoelectrons + 1))
+                        sigma_A_G_k = np.sqrt(component_A_G * (1 - component_A_G) / (component_photoelectrons + 1))
                         sigma_combined_k = np.sqrt(sigma_A_R_k**2 + sigma_A_G_k**2)
 
                     # Weight = 1/sigma
@@ -298,7 +298,7 @@ class MixtureAnalysisMixin:
 
                     X_reweighted_list.append(np.repeat(component_data, rep_counts_k, axis=0))
                 else:
-                    # No photon weighting - just use the data as is
+                    # No photoelectron weighting - just use the data as is
                     X_reweighted_list.append(component_data)
 
             # Combine all components
@@ -472,7 +472,7 @@ class MixtureAnalysisMixin:
     def extract_reference_means(
         self,
         data_db: pd.DataFrame,
-        reference_photon_threshold: float | None = None,
+        reference_photoelectron_threshold: float | None = None,
         n_components: int = 2,
         covariance_type: str = "full",
         fit_type: str = "MLE",
@@ -483,28 +483,28 @@ class MixtureAnalysisMixin:
         Extract reference means from molecule data using GMM (analytical approach).
 
         Fits a Gaussian Mixture Model to establish reference mean positions for each dye
-        population. These fixed means are then used with photon-dependent covariance fitting
+        population. These fixed means are then used with photoelectron-dependent covariance fitting
         to analytically calculate misidentification rates.
 
         This is the first step in the analytical approach:
         1. Extract means from reference data (this function)
-        2. Fit covariances at each photon level with fixed means
+        2. Fit covariances at each photoelectron level with fixed means
         3. Analytically calculate overlap/error rates from distributions
 
         Two modes of operation:
 
-        - **Photon accumulation database + threshold**: Use highest-photon data only.
-          Pass photon_accumulation_db with reference_photon_threshold to extract
+        - **Photon accumulation database + threshold**: Use highest-photoelectron data only.
+          Pass photon_accumulation_db with reference_photoelectron_threshold to extract
           molecules reaching threshold for stable mean estimates.
         - **Single molecule database**: Use all molecules (no threshold). Pass
-          single_molecule_database with reference_photon_threshold=None to use
+          single_molecule_database with reference_photoelectron_threshold=None to use
           averaged RGB values from all molecules.
 
         Args:
             data_db (pd.DataFrame): Either:
-                - Photon accumulation database (with 'photons_accumulated' column)
+                - Photon accumulation database (with 'photoelectrons_accumulated' column)
                 - Single molecule database (with 'A_R', 'A_G', 'A_B' columns)
-            reference_photon_threshold (float, optional): Minimum photons for reference.
+            reference_photoelectron_threshold (float, optional): Minimum photoelectrons for reference.
                 - If provided: Filters accumulation DB to molecules >= threshold
                 - If None: Uses all molecules (assumes single molecule database)
                 (default: None - use all molecules)
@@ -520,21 +520,21 @@ class MixtureAnalysisMixin:
         Returns:
             tuple: (reference_means, reference_db, gmm_model)
                 - reference_means (np.ndarray): Shape (n_components, 2) - fixed means for [A_R, A_G]
-                - reference_db (pd.DataFrame): Reference molecules with assignments — molecular_index (unique molecule ID), true_label (0 or 1, e.g. 0=Red, 1=Green), A_R_ref/A_G_ref/A_B_ref (reference RGB values), posterior_prob_0/posterior_prob_1 (posterior probabilities), photons or max_photons (from single molecule DB or accumulation DB respectively), fov_index/fov_name (FOV tracking, if available)
+                - reference_db (pd.DataFrame): Reference molecules with assignments — molecular_index (unique molecule ID), true_label (0 or 1, e.g. 0=Red, 1=Green), A_R_ref/A_G_ref/A_B_ref (reference RGB values), posterior_prob_0/posterior_prob_1 (posterior probabilities), photoelectrons or max_photoelectrons (from single molecule DB or accumulation DB respectively), fov_index/fov_name (FOV tracking, if available)
                 - gmm_model (GaussianMixture): Fitted GMM (for reference only)
 
         Examples:
             >>> # Mode A: High-photon data from accumulation database
             >>> means, ref_db, gmm = SM_E.extract_reference_means(
             ...     pa_db,
-            ...     reference_photon_threshold=200000,
+            ...     reference_photoelectron_threshold=200000,
             ...     verbose=True
             ... )
 
             >>> # Mode B: All molecules from single molecule database
             >>> means, ref_db, gmm = SM_E.extract_reference_means(
             ...     sm_db,
-            ...     reference_photon_threshold=None,
+            ...     reference_photoelectron_threshold=None,
             ...     verbose=True
             ... )
 
@@ -547,68 +547,80 @@ class MixtureAnalysisMixin:
             logger.info("Extracting Reference Means (Analytical Approach)")
             logger.info("=" * 60)
 
+        if "photons_accumulated" in data_db.columns and "photoelectrons_accumulated" not in data_db.columns:
+            raise ValueError(
+                "Old photon accumulation database ('photons_accumulated', the overcounted A_B + A_G + A_R): "
+                "rebuild it with build_photon_accumulation_database (photoelectrons_accumulated)."
+            )
+        if any(c in data_db.columns for c in ("photons", "background_photons")):   # database written before 2026-11-11
+            io = getattr(self, "io", None)
+            if io is None:
+                from pyS3M.IOFunctions import IO_Functions
+                io = IO_Functions()
+            data_db = io.add_photoelectron_columns(data_db)
+
         # Detect database type and extract reference data accordingly
-        is_photon_accumulation_db = "photons_accumulated" in data_db.columns
+        is_photon_accumulation_db = "photoelectrons_accumulated" in data_db.columns
 
         if is_photon_accumulation_db:
             # Mode A: Photon accumulation database with threshold
-            if reference_photon_threshold is None:
+            if reference_photoelectron_threshold is None:
                 raise ValueError(
-                    "reference_photon_threshold must be provided when using photon accumulation database. "
+                    "reference_photoelectron_threshold must be provided when using photon accumulation database. "
                     "To use all molecules, pass a single molecule database instead."
                 )
 
             if verbose:
                 logger.info("Mode: Photon Accumulation Database")
-                logger.info(f"Using highest-photon data (threshold: {reference_photon_threshold:,.0f})")
+                logger.info(f"Using highest-photoelectron data (threshold: {reference_photoelectron_threshold:,.0f})")
 
-            # Get maximum photons accumulated for each molecule
-            max_photons_per_mol = (
-                data_db.groupby("molecular_index")["photons_accumulated"]
+            # Get maximum photoelectrons accumulated for each molecule
+            max_photoelectrons_per_mol = (
+                data_db.groupby("molecular_index")["photoelectrons_accumulated"]
                 .max()
                 .reset_index()
             )
-            max_photons_per_mol.columns = ["molecular_index", "max_photons"]
+            max_photoelectrons_per_mol.columns = ["molecular_index", "max_photoelectrons"]
 
             if verbose:
-                logger.info(f"Total molecules in database: {len(max_photons_per_mol)}")
+                logger.info(f"Total molecules in database: {len(max_photoelectrons_per_mol)}")
 
             # Filter molecules that reach reference threshold
-            qualified_molecules = max_photons_per_mol[
-                max_photons_per_mol["max_photons"] >= reference_photon_threshold
+            qualified_molecules = max_photoelectrons_per_mol[
+                max_photoelectrons_per_mol["max_photoelectrons"] >= reference_photoelectron_threshold
             ]
 
             if verbose:
                 n_qualified = len(qualified_molecules)
-                n_total = len(max_photons_per_mol)
+                n_total = len(max_photoelectrons_per_mol)
                 pct_qualified = 100 * n_qualified / n_total
                 logger.info(f"Molecules reaching threshold: {n_qualified}/{n_total} ({pct_qualified:.1f}%)")
 
             if len(qualified_molecules) == 0:
                 raise ValueError(
-                    f"No molecules reach photon threshold {reference_photon_threshold}. "
-                    f"Maximum photons in dataset: {max_photons_per_mol['max_photons'].max():.0f}"
+                    f"No molecules reach photoelectron threshold {reference_photoelectron_threshold}. "
+                    f"Maximum photoelectrons in dataset: {max_photoelectrons_per_mol['max_photoelectrons'].max():.0f}"
                 )
 
-            # Get data at maximum photons for each qualified molecule
+            # Get data at maximum photoelectrons for each qualified molecule
             reference_data = []
             for mol_idx in qualified_molecules["molecular_index"]:
                 mol_data = data_db[data_db["molecular_index"] == mol_idx]
-                # Get row with maximum photons
-                max_row = mol_data.loc[mol_data["photons_accumulated"].idxmax()]
+                # Get row with maximum photoelectrons
+                max_row = mol_data.loc[mol_data["photoelectrons_accumulated"].idxmax()]
                 reference_data.append(max_row)
 
             reference_df = pd.DataFrame(reference_data).reset_index(drop=True)
-            photon_column = "photons_accumulated"  # For later reference
+            photoelectron_column = "photoelectrons_accumulated"  # For later reference
 
         else:
             # Mode B: Single molecule database
             if verbose:
                 logger.info("Mode: Single Molecule Database")
-                if reference_photon_threshold is not None:
-                    logger.info(f"Filtering molecules with photons >= {reference_photon_threshold:,.0f}")
+                if reference_photoelectron_threshold is not None:
+                    logger.info(f"Filtering molecules with photoelectrons >= {reference_photoelectron_threshold:,.0f}")
                 else:
-                    logger.info("Using all molecules (no photon threshold)")
+                    logger.info("Using all molecules (no photoelectron threshold)")
 
             # Check required columns
             required_cols = ["A_R", "A_G", "A_B"]
@@ -619,14 +631,14 @@ class MixtureAnalysisMixin:
                     f"Available columns: {list(data_db.columns)}"
                 )
 
-            # Apply photon threshold if provided
-            if reference_photon_threshold is not None:
-                if "photons" not in data_db.columns:
+            # Apply photoelectron threshold if provided
+            if reference_photoelectron_threshold is not None:
+                if "photoelectrons" not in data_db.columns:
                     raise ValueError(
-                        "reference_photon_threshold provided but 'photons' column not found in database. "
-                        "Either provide a database with 'photons' column or set reference_photon_threshold=None."
+                        "reference_photoelectron_threshold provided but 'photoelectrons' column not found in database. "
+                        "Either provide a database with 'photoelectrons' column or set reference_photoelectron_threshold=None."
                     )
-                reference_df = data_db[data_db["photons"] >= reference_photon_threshold].copy()
+                reference_df = data_db[data_db["photoelectrons"] >= reference_photoelectron_threshold].copy()
 
                 if verbose:
                     n_qualified = len(reference_df)
@@ -637,15 +649,15 @@ class MixtureAnalysisMixin:
 
                 if len(reference_df) == 0:
                     raise ValueError(
-                        f"No molecules have photons >= {reference_photon_threshold}. "
-                        f"Maximum photons in dataset: {data_db['photons'].max():.0f}"
+                        f"No molecules have photoelectrons >= {reference_photoelectron_threshold}. "
+                        f"Maximum photoelectrons in dataset: {data_db['photoelectrons'].max():.0f}"
                     )
             else:
                 reference_df = data_db.copy()
                 if verbose:
                     logger.info(f"Total molecules in database: {len(reference_df)}")
 
-            photon_column = "photons" if "photons" in reference_df.columns else None
+            photoelectron_column = "photoelectrons" if "photoelectrons" in reference_df.columns else None
 
         if verbose:
             logger.info(f"\nFitting {n_components}-component Gaussian Mixture Model...")
@@ -675,14 +687,14 @@ class MixtureAnalysisMixin:
             weights = weights / weights.mean()  # Normalize
 
             # Store for later use in EM
-            photons = reference_df[photon_column].values if photon_column is not None else None
+            photoelectrons = reference_df[photoelectron_column].values if photoelectron_column is not None else None
             A_R = reference_df["A_R"].values
             A_G = reference_df["A_G"].values
             A_B = reference_df["A_B"].values if "A_B" in reference_df.columns else None
 
-        elif photon_column is not None:
-            # Fall back to calculating uncertainty from photon statistics
-            photons = reference_df[photon_column].values
+        elif photoelectron_column is not None:
+            # Fall back to calculating uncertainty from photoelectron statistics
+            photoelectrons = reference_df[photoelectron_column].values
 
             # Get amplitude ratios
             A_R = reference_df["A_R"].values
@@ -690,10 +702,10 @@ class MixtureAnalysisMixin:
             A_B = reference_df["A_B"].values
 
             # Uncertainty in A_R = R/(R+G+B) using error propagation
-            # σ(A_R) ≈ sqrt(A_R*(1-A_R)/total_photons) for Poisson statistics
+            # σ(A_R) ≈ sqrt(A_R*(1-A_R)/total_photoelectrons) for Poisson statistics
 
-            sigma_A_R = np.sqrt(A_R * (1 - A_R) / (photons + 1))  # +1 to avoid division by zero
-            sigma_A_G = np.sqrt(A_G * (1 - A_G) / (photons + 1))
+            sigma_A_R = np.sqrt(A_R * (1 - A_R) / (photoelectrons + 1))  # +1 to avoid division by zero
+            sigma_A_G = np.sqrt(A_G * (1 - A_G) / (photoelectrons + 1))
 
             # Combined uncertainty (quadrature sum for 2D Gaussian)
             sigma_combined = np.sqrt(sigma_A_R**2 + sigma_A_G**2)
@@ -704,7 +716,7 @@ class MixtureAnalysisMixin:
         else:
             # No weighting information available
             weights = None
-            photons = None
+            photoelectrons = None
             A_R = None
             A_G = None
             A_B = None
@@ -735,9 +747,9 @@ class MixtureAnalysisMixin:
                 if has_error_columns:
                     logger.info(f"  Using error-weighted GMM fitting (1/σ weighting from A_R_err, A_G_err columns)")
                 else:
-                    logger.info(f"  Using error-weighted GMM fitting (1/σ weighting calculated from photon statistics)")
-                if photons is not None:
-                    logger.info(f"    Photon range: {photons.min():.0f} - {photons.max():.0f}")
+                    logger.info(f"  Using error-weighted GMM fitting (1/σ weighting calculated from photoelectron statistics)")
+                if photoelectrons is not None:
+                    logger.info(f"    Photoelectron range: {photoelectrons.min():.0f} - {photoelectrons.max():.0f}")
                 logger.info(f"    Uncertainty range: σ={sigma_combined.min():.4f} - {sigma_combined.max():.4f}")
                 logger.info(f"    Weight range: {weights.min():.2f} - {weights.max():.2f}")
                 logger.info(f"    Replication range: {replication_counts.min()} - {replication_counts.max()} copies")
@@ -746,7 +758,7 @@ class MixtureAnalysisMixin:
             X_fit = X_weighted
         else:
             if verbose:
-                logger.info(f"  Using uniform weights (no photon column available)")
+                logger.info(f"  Using uniform weights (no photoelectron column available)")
             X_fit = X
 
         # Validate fit_type parameter
@@ -855,7 +867,7 @@ class MixtureAnalysisMixin:
                 covariance_type=covariance_type,
                 max_iter=100,
                 n_reweighting_iterations=2,
-                photons=photons,
+                photoelectrons=photoelectrons,
                 A_R=A_R,
                 A_G=A_G,
                 has_error_columns=has_error_columns,
@@ -913,12 +925,12 @@ class MixtureAnalysisMixin:
         if "molecular_index" in reference_df.columns:
             ref_db_dict["molecular_index"] = reference_df["molecular_index"].values
 
-        # Add photon information based on database type
-        if photon_column is not None:
+        # Add photoelectron information based on database type
+        if photoelectron_column is not None:
             if is_photon_accumulation_db:
-                ref_db_dict["max_photons"] = reference_df[photon_column].values
+                ref_db_dict["max_photoelectrons"] = reference_df[photoelectron_column].values
             else:
-                ref_db_dict["photons"] = reference_df[photon_column].values
+                ref_db_dict["photoelectrons"] = reference_df[photoelectron_column].values
 
         reference_db = pd.DataFrame(ref_db_dict)
 
@@ -999,7 +1011,7 @@ class MixtureAnalysisMixin:
         Fit covariance matrices with fixed means using either MLE or EM algorithm.
 
         This is the core of the analytical approach: given fixed mean positions
-        from high-photon data, fit covariances at a specific photon level to
+        from high-photoelectron data, fit covariances at a specific photoelectron level to
         characterize measurement uncertainty.
 
         Args:
@@ -1020,12 +1032,12 @@ class MixtureAnalysisMixin:
                 - converged (bool): Whether fitting converged
 
         Example:
-            >>> # Get reference means from high-photon data
+            >>> # Get reference means from high-photoelectron data
             >>> means, ref_db, _ = SM_E.extract_reference_means(pa_db, threshold=200000)
             >>>
-            >>> # Fit covariances at lower photon level using MLE
-            >>> low_photon_data = pa_db[pa_db['photons_accumulated'].between(5000, 6000)]
-            >>> X = low_photon_data[['A_R', 'A_G']].values
+            >>> # Fit covariances at lower photoelectron level using MLE
+            >>> low_pe_data = pa_db[pa_db['photoelectrons_accumulated'].between(5000, 6000)]
+            >>> X = low_pe_data[['A_R', 'A_G']].values
             >>> cov, weights, converged = SM_E.fit_covariances_fixed_means(X, means, fit_type="MLE")
         """
         n_samples, n_features = X.shape
@@ -1198,7 +1210,7 @@ class MixtureAnalysisMixin:
         Args:
             X (np.ndarray): Data matrix, shape (n_samples, n_features)
             fixed_means (np.ndarray): Fixed component means, shape (n_components, n_features)
-            reference_covariances (np.ndarray, optional): Reference covariances from high-photon
+            reference_covariances (np.ndarray, optional): Reference covariances from high-photoelectron
                 data for comparison/diagnostics, shape (n_components, n_features, n_features)
             estimator_type (str): Type of M-estimator to use:
                 - "huber": Huber loss (moderate robustness, c=1.345)
@@ -1213,13 +1225,13 @@ class MixtureAnalysisMixin:
             point_weights (list): Per-point weights for each component (for diagnostics)
 
         Example:
-            >>> # Get reference means from high-photon fit
-            >>> ref_means, ref_db, gmm = SM_E.extract_reference_means(high_photon_data)
+            >>> # Get reference means from high-photoelectron fit
+            >>> ref_means, ref_db, gmm = SM_E.extract_reference_means(high_pe_data)
             >>> ref_covs = gmm.covariances_
             >>>
-            >>> # Robustly fit at lower photon level using M-estimators
-            >>> low_photon_data = pa_db[pa_db['photons'].between(5000, 6000)]
-            >>> X = low_photon_data[['A_R', 'A_G']].values
+            >>> # Robustly fit at lower photoelectron level using M-estimators
+            >>> low_pe_data = pa_db[pa_db['photoelectrons'].between(5000, 6000)]
+            >>> X = low_pe_data[['A_R', 'A_G']].values
             >>> cov, weights, pt_wts = SM_E.fit_covariances_fixed_means_mestimator(
             ...     X, ref_means, reference_covariances=ref_covs, estimator_type="tukey"
             ... )
@@ -1385,7 +1397,7 @@ class MixtureAnalysisMixin:
                 - 'overall_error_rate': float; weighted average error rate
 
         Example:
-            >>> # After fitting covariances at specific photon level
+            >>> # After fitting covariances at specific photoelectron level
             >>> cov, weights, _ = SM_E.fit_covariances_fixed_means(X, fixed_means)
             >>> stats = SM_E.calculate_analytical_misidentification(
             ...     fixed_means, cov, weights, n_samples=10000
@@ -1458,7 +1470,7 @@ class MixtureAnalysisMixin:
         photon_accumulation_db: pd.DataFrame,
         fixed_means: NDArray[np.float64],
         reference_db: pd.DataFrame,
-        photon_bins: NDArray[np.float64] | list[float],
+        photoelectron_bins: NDArray[np.float64] | list[float],
         reference_covariances: NDArray[np.float64] | None = None,
         use_earliest_entry: bool = True,
         n_mc_samples: int = 10000,
@@ -1467,31 +1479,31 @@ class MixtureAnalysisMixin:
         verbose: bool = True,
     ) -> pd.DataFrame:
         """
-        Analytically analyze misidentification rates across photon bins using robust M-estimator fitting.
+        Analytically analyze misidentification rates across photoelectron bins using robust M-estimator fitting.
 
-        Fits covariances at each photon level with fixed means using M-estimators (Huber or Tukey),
+        Fits covariances at each photoelectron level with fixed means using M-estimators (Huber or Tukey),
         then analytically calculates misidentification rates from distribution overlap using Monte Carlo
         integration.
 
         This approach:
         1. Separates signal (means - dye properties) from noise (covariances - measurement uncertainty)
-        2. Robustly characterizes the noise model at each photon level (soft down-weighting of outliers)
+        2. Robustly characterizes the noise model at each photoelectron level (soft down-weighting of outliers)
         3. Provides stable and interpretable error rate predictions
 
         Workflow:
 
-        1. For each photon bin, extract data at that photon level, robustly fit
+        1. For each photon bin, extract data at that photoelectron level, robustly fit
            covariances with fixed means using M-estimators, and analytically
            calculate misidentification from overlap
-        2. Return summary of error rates vs photon count
+        2. Return summary of error rates vs photoelectron count
 
         Args:
             photon_accumulation_db (pd.DataFrame): Photon accumulation database
             fixed_means (np.ndarray): Fixed mean positions from extract_reference_means(),
                 shape (n_components, 2) for [A_R, A_G]
             reference_db (pd.DataFrame): Reference molecules from extract_reference_means()
-            photon_bins (array-like): Photon bin edges (e.g., [1000, 2000, 5000, 10000])
-            reference_covariances (np.ndarray, optional): Reference covariances from high-photon fit
+            photoelectron_bins (array-like): Photoelectron bin edges (e.g., [1000, 2000, 5000, 10000])
+            reference_covariances (np.ndarray, optional): Reference covariances from high-photoelectron fit
                 for comparison/diagnostics. Can be obtained from ``gmm.covariances_`` after extract_reference_means()
             use_earliest_entry (bool): If True, use earliest crossing into each bin.
                 If False, use midpoint of bin. (default: True)
@@ -1502,7 +1514,7 @@ class MixtureAnalysisMixin:
 
         Returns:
             pd.DataFrame: Summary database with columns:
-                - photon_bin_min, photon_bin_max: Bin edges
+                - photoelectron_bin_min, photoelectron_bin_max: Bin edges
                 - n_molecules: Number of molecules in bin
                 - converged: Whether fitting converged
                 - overall_accuracy: Predicted classification accuracy (analytical)
@@ -1515,21 +1527,21 @@ class MixtureAnalysisMixin:
                 - weight_0, weight_1: Fitted component weights
 
         Example:
-            >>> # Extract fixed means from high-photon data
+            >>> # Extract fixed means from high-photoelectron data
             >>> means, ref_db, gmm = SM_E.extract_reference_means(pa_db, threshold=200000)
             >>> ref_covs = gmm.covariances_  # Get reference covariances
             >>>
-            >>> # Analyze error rates across photon levels using M-estimators
-            >>> photon_bins = np.logspace(3, 5, 11)  # 1k to 100k photons
+            >>> # Analyze error rates across photoelectron levels using M-estimators
+            >>> photoelectron_bins = np.logspace(3, 5, 11)  # 1k to 100k photoelectrons
             >>> summary = SM_E.analyze_photon_dependent_misidentification_analytical(
-            ...     pa_db, means, ref_db, photon_bins,
+            ...     pa_db, means, ref_db, photoelectron_bins,
             ...     reference_covariances=ref_covs,
             ...     estimator_type="tukey",  # Aggressive outlier down-weighting
             ...     verbose=True
             ... )
             >>>
             >>> # Plot results
-            >>> plt.plot(summary['photon_bin_min'], summary['overall_accuracy'])
+            >>> plt.plot(summary['photoelectron_bin_min'], summary['overall_accuracy'])
             >>> plt.xlabel('Photons')
             >>> plt.ylabel('Predicted Accuracy')
         """
@@ -1537,11 +1549,17 @@ class MixtureAnalysisMixin:
             logger.info("=" * 60)
             logger.info("Analytical Misidentification Analysis")
             logger.info("=" * 60)
-            logger.info(f"Photon bins: {len(photon_bins)-1} bins")
-            logger.info(f"  Range: {photon_bins[0]:,.0f} - {photon_bins[-1]:,.0f} photons")
+            logger.info(f"Photoelectron bins: {len(photoelectron_bins)-1} bins")
+            logger.info(f"  Range: {photoelectron_bins[0]:,.0f} - {photoelectron_bins[-1]:,.0f} photoelectrons")
             logger.info(f"Reference molecules: {len(reference_db)}")
             logger.info(f"Fixed means: {fixed_means.shape[0]} components")
             logger.info("")
+
+        if "photoelectrons_accumulated" not in photon_accumulation_db.columns:
+            raise ValueError(
+                "photon_accumulation_db has no 'photoelectrons_accumulated' (an old database with "
+                "'photons_accumulated'?): rebuild it with build_photon_accumulation_database."
+            )
 
         # Filter photon accumulation data to only include reference molecules
         reference_mol_ids = set(reference_db["molecular_index"].values)
@@ -1557,17 +1575,17 @@ class MixtureAnalysisMixin:
         n_components = len(fixed_means)
 
         # Process each photon bin
-        for i in range(len(photon_bins) - 1):
-            bin_min = photon_bins[i]
-            bin_max = photon_bins[i + 1]
+        for i in range(len(photoelectron_bins) - 1):
+            bin_min = photoelectron_bins[i]
+            bin_max = photoelectron_bins[i + 1]
 
             if verbose:
-                logger.info(f"\nBin {i+1}/{len(photon_bins)-1}: [{bin_min:,.0f}, {bin_max:,.0f}) photons...")
+                logger.info(f"\nBin {i+1}/{len(photoelectron_bins)-1}: [{bin_min:,.0f}, {bin_max:,.0f}) photoelectrons...")
 
             # Get molecules in this bin
             bin_data = pa_filtered[
-                (pa_filtered["photons_accumulated"] >= bin_min)
-                & (pa_filtered["photons_accumulated"] < bin_max)
+                (pa_filtered["photoelectrons_accumulated"] >= bin_min)
+                & (pa_filtered["photoelectrons_accumulated"] < bin_max)
             ]
 
             if len(bin_data) == 0:
@@ -1578,7 +1596,7 @@ class MixtureAnalysisMixin:
             # Get one row per molecule (earliest entry or midpoint)
             if use_earliest_entry:
                 bin_molecules = (
-                    bin_data.sort_values("photons_accumulated")
+                    bin_data.sort_values("photoelectrons_accumulated")
                     .groupby("molecular_index")
                     .first()
                     .reset_index()
@@ -1586,7 +1604,7 @@ class MixtureAnalysisMixin:
             else:
                 bin_midpoint = (bin_min + bin_max) / 2
                 bin_data["dist_to_midpoint"] = np.abs(
-                    bin_data["photons_accumulated"] - bin_midpoint
+                    bin_data["photoelectrons_accumulated"] - bin_midpoint
                 )
                 bin_molecules = (
                     bin_data.sort_values("dist_to_midpoint")
@@ -1654,7 +1672,7 @@ class MixtureAnalysisMixin:
                                   linewidth=2, label=f'Mean {k}: {fixed_means[k, 0]:.3f}')
                     ax1.set_xlabel('A_R')
                     ax1.set_ylabel('Count')
-                    ax1.set_title(f'Bin {i+1}: [{bin_min:.0f}, {bin_max:.0f}) photons\nA_R Distribution (Acc: {stats["overall_accuracy"]:.3f})')
+                    ax1.set_title(f'Bin {i+1}: [{bin_min:.0f}, {bin_max:.0f}) photoelectrons\nA_R Distribution (Acc: {stats["overall_accuracy"]:.3f})')
                     ax1.legend(fontsize=8)
                     ax1.grid(True, alpha=0.3)
 
@@ -1683,8 +1701,8 @@ class MixtureAnalysisMixin:
 
             # Build summary row
             summary_row = {
-                "photon_bin_min": bin_min,
-                "photon_bin_max": bin_max,
+                "photoelectron_bin_min": bin_min,
+                "photoelectron_bin_max": bin_max,
                 "n_molecules": n_molecules,
                 "converged": converged,
                 "overall_accuracy": stats['overall_accuracy'],

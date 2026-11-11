@@ -443,7 +443,7 @@ class TestFilterAndCluster:
     def test_explicit_criteria_forwarded(self, fitted_pipeline):
         pipe = fitted_pipeline["pipe"]
         locs = fitted_pipeline["locs"]
-        filt = FilteringCriteria(min_photons=0)
+        filt = FilteringCriteria(min_photoelectrons=0)
         cc = ClusteringConfig(min_cluster_size=2)
         sm_db, sf_db = pipe.filter_and_cluster(locs, criteria=filt, clustering_config=cc)
         assert isinstance(sm_db, pd.DataFrame)

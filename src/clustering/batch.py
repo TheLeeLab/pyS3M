@@ -60,10 +60,8 @@ class BatchMixin:
         min_sigma: float | None = None,
         max_sigma: float | None = None,
         max_sigma_error: float | None = None,
-        min_photons: float = FilteringConstants.MIN_PHOTONS,
-        max_photons: float = 1e6,
-        min_photoelectrons: float | None = None,
-        max_photoelectrons: float | None = None,
+        min_photoelectrons: float | None = FilteringConstants.MIN_PHOTOELECTRONS,
+        max_photoelectrons: float | None = FilteringConstants.MAX_PHOTOELECTRONS,
         max_background_error: float | None = None,
         max_distance: float = 0.5,
         max_frames: int = 10,
@@ -90,10 +88,8 @@ class BatchMixin:
             min_sigma (float, optional): Quality filter parameter.
             max_sigma (float, optional): Quality filter parameter.
             max_sigma_error (float, optional): Quality filter parameter.
-            min_photons (float): Quality filter parameter.
-            max_photons (float): Quality filter parameter.
             min_photoelectrons, max_photoelectrons (float, optional): Bounds on the detected
-                photoelectrons (see filter_quality_localisations); None → no cut.
+                photoelectrons (see filter_quality_localisations; default 50 and 10,000); None → no cut.
             max_background_error (float, optional): Cut on the background colour-fraction
                 errors (see filter_quality_localisations); None → no cut.
             max_distance (float): Maximum distance for linked method (pixels).
@@ -151,8 +147,6 @@ class BatchMixin:
                     min_sigma=min_sigma,
                     max_sigma=max_sigma,
                     max_sigma_error=max_sigma_error,
-                    min_photons=min_photons,
-                    max_photons=max_photons,
                     min_photoelectrons=min_photoelectrons,
                     max_photoelectrons=max_photoelectrons,
                     max_background_error=max_background_error,
@@ -168,8 +162,6 @@ class BatchMixin:
                     min_sigma=min_sigma,
                     max_sigma=max_sigma,
                     max_sigma_error=max_sigma_error,
-                    min_photons=min_photons,
-                    max_photons=max_photons,
                     min_photoelectrons=min_photoelectrons,
                     max_photoelectrons=max_photoelectrons,
                     max_background_error=max_background_error,
@@ -187,8 +179,6 @@ class BatchMixin:
                     min_sigma=min_sigma,
                     max_sigma=max_sigma,
                     max_sigma_error=max_sigma_error,
-                    min_photons=min_photons,
-                    max_photons=max_photons,
                     min_photoelectrons=min_photoelectrons,
                     max_photoelectrons=max_photoelectrons,
                     max_background_error=max_background_error,
@@ -247,24 +237,25 @@ class BatchMixin:
 
         For each molecule, creates a cumulative sum trace showing how A_R, A_G,
         A_B evolve as more frames are accumulated, enabling analysis of
-        parameter precision vs. photon count.
+        parameter precision vs. detected photoelectrons.
 
         Args:
             single_frame_database (pd.DataFrame): Output from
                 extract_single_molecules_*.  Must contain columns
-                molecular_index, frame, A_R, A_G, A_B, photons, A_R_err,
+                molecular_index, frame, A_R, A_G, A_B, photoelectrons, A_R_err,
                 A_G_err, A_B_err, xc, yc.
             verbose (bool): Print progress information.
 
         Returns:
             pd.DataFrame: Photon accumulation database with one row per
             (molecule, accumulated-frame-count).  Key columns:
-            molecular_index, frames_accumulated, photons_accumulated,
+            molecular_index, frames_accumulated, photoelectrons_accumulated,
             A_R, A_G, A_B, A_R_err, A_G_err, A_B_err, xc_mean, yc_mean,
             xc_std, yc_std, s_x_mean, s_y_mean (plus fov_index/fov_name
             when present in input).
         """
-        required_cols = ["molecular_index", "frame", "A_R", "A_G", "A_B", "photons"]
+        single_frame_database = self.io.ensure_photoelectrons(single_frame_database)
+        required_cols = ["molecular_index", "frame", "A_R", "A_G", "A_B", "photoelectrons"]
         missing_cols = [col for col in required_cols if col not in single_frame_database.columns]
         if missing_cols:
             raise ValueError(f"Missing required columns: {missing_cols}")
@@ -290,7 +281,7 @@ class BatchMixin:
             if verbose and (mol_idx % 100 == 0 or mol_idx == unique_molecules[0]):
                 logger.debug(f"  Molecule {mol_idx + 1}/{len(unique_molecules)} ({n_frames} frames)")
 
-            cumsum_photons = np.cumsum(mol_data["photons"].values)
+            cumsum_photoelectrons = np.cumsum(mol_data["photoelectrons"].values)
             frames_range = np.arange(1, n_frames + 1)
 
             if "A_R_err" in mol_data.columns:
@@ -353,7 +344,7 @@ class BatchMixin:
                 record = {
                     "molecular_index": mol_idx,
                     "frames_accumulated": i + 1,
-                    "photons_accumulated": cumsum_photons[i],
+                    "photoelectrons_accumulated": cumsum_photoelectrons[i],
                     "A_R": A_R_mean[i],
                     "A_G": A_G_mean[i],
                     "A_B": A_B_mean[i],
@@ -403,10 +394,8 @@ class BatchMixin:
         min_sigma: float | None = None,
         max_sigma: float | None = None,
         max_sigma_error: float | None = None,
-        min_photons: float = FilteringConstants.MIN_PHOTONS,
-        max_photons: float = 1e6,
-        min_photoelectrons: float | None = None,
-        max_photoelectrons: float | None = None,
+        min_photoelectrons: float | None = FilteringConstants.MIN_PHOTOELECTRONS,
+        max_photoelectrons: float | None = FilteringConstants.MAX_PHOTOELECTRONS,
         max_background_error: float | None = None,
         max_distance: float = 0.5,
         max_frames: int = 10,
@@ -430,10 +419,8 @@ class BatchMixin:
             min_sigma (float, optional): Quality filter parameter.
             max_sigma (float, optional): Quality filter parameter.
             max_sigma_error (float, optional): Quality filter parameter.
-            min_photons (float): Quality filter parameter.
-            max_photons (float): Quality filter parameter.
             min_photoelectrons, max_photoelectrons (float, optional): Bounds on the detected
-                photoelectrons (see filter_quality_localisations); None → no cut.
+                photoelectrons (see filter_quality_localisations; default 50 and 10,000); None → no cut.
             max_background_error (float, optional): Cut on the background colour-fraction
                 errors (see filter_quality_localisations); None → no cut.
             max_distance (float): Maximum distance for linked method (pixels).
@@ -462,8 +449,6 @@ class BatchMixin:
             min_sigma=min_sigma,
             max_sigma=max_sigma,
             max_sigma_error=max_sigma_error,
-            min_photons=min_photons,
-            max_photons=max_photons,
             min_photoelectrons=min_photoelectrons,
             max_photoelectrons=max_photoelectrons,
             max_background_error=max_background_error,
