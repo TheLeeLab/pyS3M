@@ -130,7 +130,7 @@ def sized_image(img, height_pt, pixel_nm, scalebar_nm, scalebar_label, scalebar_
 
 
 def render_red_share(render, locs, c_min, c_max, oversampling, mindensperc=1.0, maxdensperc=99.5,
-                     min_blur_width=0.0):
+                     min_blur_width=0.0, viewport=None):
     """The relative pixel 3 QE render used for every Figure 5 panel (S. aureus and alpha-syn alike).
 
     Each localisation is a Gaussian of its own precision (at least ``min_blur_width``); hue = photon-weighted
@@ -146,6 +146,7 @@ def render_red_share(render, locs, c_min, c_max, oversampling, mindensperc=1.0, 
         c_min, c_max: Colour scale (relative pixel 3 QE).
         oversampling: Render pixels per camera pixel.
         min_blur_width: Smallest Gaussian width (camera px); 0 (the S. aureus render) for none.
+        viewport: ((y_min, x_min), (y_max, x_max)) in camera px; default (0, 0) to the localisations' maxima.
 
     Returns:
         (density image, RGB image), both (rows, cols) in render pixels, origin at camera (0, 0).
@@ -154,7 +155,7 @@ def render_red_share(render, locs, c_min, c_max, oversampling, mindensperc=1.0, 
 
     _, grey, colour = render.render(
         locs=locs.to_records(index=False), oversampling=oversampling,
-        viewport=((0, 0), (np.max(locs["yc"]), np.max(locs["xc"]))),
+        viewport=viewport if viewport is not None else ((0, 0), (np.max(locs["yc"]), np.max(locs["xc"]))),
         blur_method="gaussian_colour", cparam="red_share", c_min=c_min, c_max=c_max,
         min_blur_width=min_blur_width)
     lo, hi = np.percentile(grey, mindensperc), np.percentile(grey, maxdensperc)
@@ -315,3 +316,90 @@ def print_per_pixel_stats(stats):
     for col, s in stats.items():
         print(f"{col}: {s['mean']:.4g} +/- {s['sd']:.2g} (SD) over {s['n']:,} pixels; r with log10 pe = "
               f"{s['r_log_pe']:.3f}; {100 * s['frac_outside']:.2f} % outside the histogram axis")
+
+
+def replicate_figure(sr_image, colour_image, oversampling, pixel_nm, crop, zoom, cbar, height_mm=46.25,
+                     inset_frac=0.53, scalebar_um=10, inset_scalebar_um=1, sr_vmax_pct=99.9):
+    """Two-panel replicate figure (as the published ZWO S. aureus SI figure): a) super-resolved render, b) colour
+    render, each with an inset of the same region (bottom left, white frame, connector lines to its box).
+
+    Args:
+        sr_image: Density render (rows, cols), ``oversampling`` render px per camera px, origin at camera (0, 0).
+        colour_image: RGB render on the same grid (e.g. ``render_red_share``).
+        pixel_nm: Camera pixel (sample-plane nm).
+        crop: dict(x0, y0, w, h), camera px: the part of the field shown.
+        zoom: dict(x0, y0, size), camera px (field coordinates): the inset's region.
+        cbar: dict(c_min, c_max, label, cmap="jet") for panel b.
+        height_mm: Image height; widths follow the crop's aspect.
+
+    Returns:
+        (fig, (ax_a, ax_b)) in mm-exact layout (save without ``bbox_inches``).
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+
+    mm = 1 / 25.4
+    os_ = oversampling
+    sr_px_nm = pixel_nm / os_
+
+    def cut(img, x0, y0, w, h):
+        return img[int(round(y0 * os_)):int(round((y0 + h) * os_)), int(round(x0 * os_)):int(round((x0 + w) * os_))]
+
+    img_w = height_mm * crop["w"] / crop["h"]
+    gap, cb_gap, cb_w, cb_lab = 1.5, 0.7, 1.6, 12.0
+    W, H = 2 * img_w + gap + cb_gap + cb_w + cb_lab, height_mm + 0.5
+    fig = plt.figure(figsize=(W * mm, H * mm))
+    fig.set_layout_engine("none")
+    vmax = np.percentile(sr_image, sr_vmax_pct)
+    axs = []
+    for k, (img, letter) in enumerate([(sr_image, "a"), (colour_image, "b")]):
+        x_mm = k * (img_w + gap)
+        ax = fig.add_axes([x_mm / W, 0.25 / H, img_w / W, height_mm / H])
+        main = cut(img, crop["x0"], crop["y0"], crop["w"], crop["h"])
+        kw = dict(cmap="hot", vmin=0, vmax=vmax) if img.ndim == 2 else {}
+        ax.imshow(main, origin="lower", interpolation="none", aspect="auto", **kw)
+        ax.set_xlim(-0.5, main.shape[1] - 0.5); ax.set_ylim(-0.5, main.shape[0] - 0.5)
+        ax.set_axis_off()
+        # the inset's region on the main image
+        zx, zy, zs = (zoom["x0"] - crop["x0"]) * os_, (zoom["y0"] - crop["y0"]) * os_, zoom["size"] * os_
+        ax.add_patch(Rectangle((zx, zy), zs, zs, fill=False, edgecolor="white", lw=0.8))
+        _scalebar(ax, main.shape, sr_px_nm, scalebar_um, height_mm)
+        ax.text(0.015, 0.985, f"{letter})", transform=ax.transAxes, color="white", fontsize=9, fontweight="bold",
+                ha="left", va="top")
+        # inset, bottom left, square
+        side = inset_frac * height_mm
+        ix, iy = x_mm + 0.4, 0.25 + 0.4
+        iax = fig.add_axes([ix / W, iy / H, side / W, side / H])
+        inset = cut(img, zoom["x0"], zoom["y0"], zoom["size"], zoom["size"])
+        iax.imshow(inset, origin="lower", interpolation="none", aspect="auto", **kw)
+        iax.set_xlim(-0.5, inset.shape[1] - 0.5); iax.set_ylim(-0.5, inset.shape[0] - 0.5)
+        iax.set_xticks([]); iax.set_yticks([])
+        for sp in iax.spines.values():
+            sp.set_edgecolor("white"); sp.set_linewidth(1.2)
+        _scalebar(iax, inset.shape, sr_px_nm, inset_scalebar_um, side)
+        # connector lines: inset's right corners to the box's left corners
+        for (cx, cy), (bx, by) in [((1, 1), (zx, zy + zs)), ((1, 0), (zx, zy))]:
+            p0 = fig.transFigure.inverted().transform(iax.transAxes.transform((cx, cy)))
+            p1 = fig.transFigure.inverted().transform(ax.transData.transform((bx, by)))
+            fig.add_artist(plt.Line2D([p0[0], p1[0]], [p0[1], p1[1]], transform=fig.transFigure, color="white",
+                                      lw=0.8))
+        axs.append(ax)
+    cax = fig.add_axes([(2 * img_w + gap + cb_gap) / W, 0.25 / H, cb_w / W, height_mm / H])
+    sm = plt.cm.ScalarMappable(cmap=cbar.get("cmap", "jet"), norm=plt.Normalize(cbar["c_min"], cbar["c_max"]))
+    cb = fig.colorbar(sm, cax=cax)
+    cb.ax.tick_params(labelsize=7, length=2, width=0.5, pad=1)
+    cb.outline.set_linewidth(0.5)
+    cb.set_label(cbar["label"], fontsize=8, labelpad=2)
+    return fig, tuple(axs)
+
+
+def _scalebar(ax, shape, px_nm, um, ax_height_mm, margin_mm=0.8, thick_mm=0.55, fontsize=6):
+    """White scale bar of ``um`` micrometres, lower right of an image axes (data = image px, origin lower)."""
+    from matplotlib.patches import Rectangle
+
+    px_per_mm = shape[0] / ax_height_mm
+    length = um * 1000 / px_nm
+    x1, y0 = shape[1] - 0.5 - margin_mm * px_per_mm, -0.5 + margin_mm * px_per_mm
+    ax.add_patch(Rectangle((x1 - length, y0), length, thick_mm * px_per_mm, color="white", lw=0))
+    ax.text(x1 - length / 2, y0 + (thick_mm + 0.3) * px_per_mm, f"{um:g} µm", color="white", fontsize=fontsize,
+            ha="center", va="bottom")
