@@ -218,3 +218,100 @@ def rebrighten(colour, grey, lo_pct=1.0, hi_pct=99.5, occupied_only=False):
     hsv = mcolors.rgb_to_hsv(np.clip(colour, 0, 1))
     hsv[..., 2] = np.clip((grey - lo) / (hi - lo), 0, 1)
     return mcolors.hsv_to_rgb(hsv)
+
+
+def per_pixel_table(df, camera_pixel_size_nm, pixel_size_nm=50.0, min_localisations=10,
+                    aggregate_id_column="cluster_id"):
+    """One row per analysis pixel: relative pixel 3 QE, fitted wavelength and summed photoelectrons.
+
+    A pixel is (aggregate, ``pixel_ix``, ``pixel_iy``) on the grid of
+    ``NileRed_Functions.fit_wavelengths_pixelated`` (``pixel_ix`` alone is only the x column of the grid).
+    Only pixels with at least ``min_localisations`` (the others take their aggregate's value).
+
+    Args:
+        df: Localisations after ``fit_wavelengths_pixelated`` (``wl_pixel``, ``pixel_ix``, ``pixel_iy``) with
+            ``A_R``, ``A_G``, ``A_B``, ``photoelectrons``, ``xc``, ``yc`` and the aggregate column.
+        camera_pixel_size_nm: Camera pixel (sample-plane nm), as passed to the wavelength fit.
+        pixel_size_nm: Analysis pixel (sample-plane nm), as passed to the wavelength fit.
+
+    Returns:
+        DataFrame: ``agg``, ``ix``, ``iy``, ``red_share``, ``red_share_err``, ``n_locs``, ``photoelectrons``,
+        ``log_photoelectrons``, ``wl_pixel``.
+
+    Raises:
+        ValueError: The wavelength fit used another grid (pixel or camera pixel size).
+    """
+    for axis, col in (("x", "pixel_ix"), ("y", "pixel_iy")):
+        nm = df[f"{axis}c"].to_numpy() * camera_pixel_size_nm
+        idx = np.floor((nm - np.floor(nm.min() / pixel_size_nm) * pixel_size_nm) / pixel_size_nm).astype(int)
+        if not np.array_equal(idx, df[col].to_numpy()):
+            raise ValueError(f"{col} is not the {pixel_size_nm:g} nm grid of a {camera_pixel_size_nm:g} nm camera "
+                             "pixel: fit the wavelengths with the same pixel_size_nm and camera_pixel_size")
+    _, pixels = red_share_pixelated(df, pixel_size_nm=pixel_size_nm, camera_pixel_size_nm=camera_pixel_size_nm,
+                                    min_localisations=min_localisations, aggregate_id_column=aggregate_id_column)
+    wl = (df.groupby([aggregate_id_column, "pixel_ix", "pixel_iy"], as_index=False)
+          .agg(wl_pixel=("wl_pixel", "first"))
+          .rename(columns={aggregate_id_column: "agg", "pixel_ix": "ix", "pixel_iy": "iy"}))
+    pixels = pixels.merge(wl, on=["agg", "ix", "iy"], how="left")
+    pixels["log_photoelectrons"] = np.log10(pixels["photoelectrons"])
+    return pixels
+
+
+def _outward(lo, hi, step):
+    return np.floor(lo / step) * step, np.ceil(hi / step) * step
+
+
+def plot_per_pixel(pixels, xlims=None, ylim=None, n_sd=3.5):
+    """The SI per-pixel figure: relative pixel 3 QE (top) and wavelength (bottom) of each analysis pixel.
+
+    Left: distribution (grey, density), mean (dashed red) +- SD (red band). Right: filled KDE against
+    log10 of the pixel's summed photoelectrons. 481.68 pt wide, 216 pt per row: the published panel's size.
+
+    Args:
+        pixels: From ``per_pixel_table``.
+        xlims: {"red_share": (lo, hi), "wl_pixel": (lo, hi)}; default mean +- ``n_sd`` SD, rounded out to
+            0.01 / 1 nm. Values outside are left out of the histogram (the KDE uses all).
+        ylim: log10 photoelectron range; default the 0.5-99.5th percentiles +- 0.25, rounded out to 0.5.
+
+    Returns:
+        (fig, axs, stats): stats[col] = dict(mean, sd, n, r_log_pe, frac_outside).
+    """
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    rows = [("red_share", PIXEL3_LABEL, 0.01), ("wl_pixel", "mean wavelength/nm", 1.0)]
+    log_pe = pixels["log_photoelectrons"].to_numpy()
+    if ylim is None:
+        ylim = _outward(np.percentile(log_pe, 0.5) - 0.25, np.percentile(log_pe, 99.5) + 0.25, 0.5)
+    fig, axs = plt.subplots(2, 2, figsize=(481.68 / 72, 2 * 216 / 72))
+    stats = {}
+    for (col, label, step), (ax_h, ax_k) in zip(rows, axs):
+        v = pixels[col].to_numpy()
+        mean, sd = v.mean(), v.std()
+        xlim = (xlims or {}).get(col) or _outward(mean - n_sd * sd, mean + n_sd * sd, step)
+        shown = v[(v >= xlim[0]) & (v <= xlim[1])]
+        ax_h.hist(shown, bins=np.histogram_bin_edges(shown, "fd"), density=True, color="grey")
+        ax_h.axvspan(mean - sd, mean + sd, color="red", alpha=0.15, lw=0, label=r"$\sigma$")
+        ax_h.axvline(mean, color="red", ls="--", lw=2, label=r"$\mu$")
+        ax_h.set_ylabel(r"probability $\rho$", fontsize=8)
+        handles, labels = ax_h.get_legend_handles_labels()
+        ax_h.legend(handles[::-1], labels[::-1], fontsize=6, loc="upper right")
+
+        sns.kdeplot(data=pixels, x=col, y="log_photoelectrons", ax=ax_k, fill=True)
+        ax_k.set_ylabel(r"log$_{10}$(photoelectrons)", fontsize=8)
+        ax_k.set_ylim(ylim)
+        for a in (ax_h, ax_k):
+            a.set_xlim(xlim)
+            a.set_xlabel(label, fontsize=8)
+            a.tick_params(labelsize=7)
+            a.grid(True, ls="--", lw=0.6, alpha=0.6, color="grey")
+            a.set_axisbelow(True)
+        stats[col] = dict(mean=mean, sd=sd, n=len(v), r_log_pe=np.corrcoef(v, log_pe)[0, 1],
+                          frac_outside=1 - len(shown) / len(v))
+    return fig, axs, stats
+
+
+def print_per_pixel_stats(stats):
+    for col, s in stats.items():
+        print(f"{col}: {s['mean']:.4g} +/- {s['sd']:.2g} (SD) over {s['n']:,} pixels; r with log10 pe = "
+              f"{s['r_log_pe']:.3f}; {100 * s['frac_outside']:.2f} % outside the histogram axis")
