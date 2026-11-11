@@ -1,5 +1,5 @@
 """Shared helper for the SI "example puncta" panels (raw / weights / fit / residual /
-spectral fingerprint), used by `SI/FigureSI_ExampleFitting_QDots.ipynb`.
+spectral fingerprint), used by `SI/FigureSI_ExampleFitting_QDots.ipynb`, `_MassiveCells` and `_SAureus`.
 
 Picks single-frame localisations from a fit result (`fit_SM_data` / `fit_imaging_data`), crops
 the raw frame each one came from, recomputes the photoelectron image exactly as the fitter does
