@@ -36,9 +36,9 @@ PAIRS = {
                        ("ATTO 647N", "QD800")),
 }
 
-# Spot detection and fitting, as for the single dyes (fraction_true 0.2, not the QDots' 0.05);
+# Spot detection and fitting, as for the single dyes (fraction_true 0: not used);
 # the PSF wavelength is set per pair (PAIRS).
-FIT_PARAMS = dict(pfa=1e-3, sigma=1.5, fraction_true=0.2, ROI_size=12, NA=1.49, pixel_size=0.069)
+FIT_PARAMS = dict(pfa=1e-3, sigma=1.5, fraction_true=0.0, ROI_size=12, NA=1.49, pixel_size=0.069)
 DRIFT_PARAMS = dict(segmentation=5, intersect_d=0.5, roi_r=2.0)
 
 # Molecules: DBSCAN clusters, as in the published panels' analysis (min. cluster size per pair).

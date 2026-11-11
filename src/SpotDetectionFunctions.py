@@ -491,6 +491,8 @@ class SpotDetection_Functions:
             reference_interval (int): Width of non-zero band.
             sigma (float): Threshold sigma multiplier (default: 1.5).
             fraction_true (float): Fraction of inner pixels that must exceed threshold (default: 0.0).
+                DEPRECATED (2026-11-11), to be removed: always 0.0 in the paper's analyses. At 0.0 a
+                punctum still needs at least one inner pixel above background + sigma x std.
             return_quality (bool): If True, return quality metrics dict in addition to indices.
 
         Returns:

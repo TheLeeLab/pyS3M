@@ -48,7 +48,7 @@ DYES = {
 
 # Spot detection and fitting: the paper's 12 px ROI; the PSF model's wavelength is each dye's
 # emission peak (set per dye in the notebook).
-FIT_PARAMS = dict(pfa=1e-3, sigma=1.5, fraction_true=0.05, ROI_size=12, NA=1.49, pixel_size=0.069)
+FIT_PARAMS = dict(pfa=1e-3, sigma=1.5, fraction_true=0.0, ROI_size=12, NA=1.49, pixel_size=0.069)
 # Molecules = HDBSCAN clusters of >= 10 localisations (paper's Methods).
 # Quality cuts: > 50 detected photoelectrons (Methods; `photons` = A_B + A_G + A_R overcounts them 2-4x);
 # chi^2 < 3; colour errors < 1 (100 %: the fitter's errors are realistic, so the library's 0.15

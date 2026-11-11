@@ -47,7 +47,7 @@ class FittingConfig:
     peak_wavelength: float = 0.638
     NA: float = 1.49
     sigma: float = 1.5
-    fraction_true: float = 0.0
+    fraction_true: float = 0.0   # DEPRECATED (2026-11-11), to be removed; keep at 0.0
     image_type: str = ".tif"
     use_variance_aware_demosaic: bool = True
     # Optional PSF sigma bounds (pixels) for keeping a fit straight after fitting; None = no
