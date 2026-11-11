@@ -67,7 +67,7 @@ DRIFT_PARAMS = dict(segmentation=10, intersect_d=20 / PIXEL_NM, roi_r=60 / PIXEL
 CLUSTER_PARAMS = dict(clustering_method="HDBSCAN", min_cluster_size=10, chi_val=3,
                       max_localisation_error=1.0, max_colour_error=np.inf,
                       min_sigma=75 / PIXEL_NM, max_sigma=250 / PIXEL_NM,
-                      min_photons=0, max_photons=1e7, min_photoelectrons=50)
+                      min_photoelectrons=50)
 
 # A bead must be found in at least this many of the 200 frames. Clusters with fewer are mostly
 # out-of-focus or transient spots; HDBSCAN also returns some of those as spread-out clusters.
@@ -216,7 +216,7 @@ def bead_precision(sf_db, min_frames=MIN_FRAMES, pixel_nm=PIXEL_NM):
 
     Args:
         sf_db: Single-frame database from ``cluster_sample`` (xc, yc in px; normalised A_B/G/R;
-            photons; ``photoelectrons`` is added if missing).
+            ``photoelectrons``; databases with the old ``photons`` column are upgraded).
         min_frames: Minimum number of localisations per bead.
         pixel_nm: Pixel size (nm).
 
@@ -226,9 +226,10 @@ def bead_precision(sf_db, min_frames=MIN_FRAMES, pixel_nm=PIXEL_NM):
         if the input has ``background_photoelectrons``), and for X in B, G, R: ``A_X`` (mean),
         ``prec_X`` (std / mean, fraction) and ``pe_X``.
     """
-    d = sf_db.copy()
-    if "photoelectrons" not in d.columns:
-        d = IO_Functions(camera="ximea").add_photoelectron_columns(d)
+    io = IO_Functions(camera="ximea")
+    d = io.add_photoelectron_columns(sf_db)
+    for ch, amp in io.channel_amplitudes(d).items():
+        d["pe_" + ch] = PIXEL_FRACTIONS[ch] * amp
     d["bead"] = d["molecular_index"]
     keys = ["fov_name", "bead"]
     d = d[d.groupby(keys)["xc"].transform("size") >= min_frames]
@@ -262,7 +263,7 @@ def bead_precision(sf_db, min_frames=MIN_FRAMES, pixel_nm=PIXEL_NM):
         a = g["A_" + ch]
         out["A_" + ch] = a.mean()
         out["prec_" + ch] = a.std() / a.mean()
-        out["pe_" + ch] = PIXEL_FRACTIONS[ch] * g["photons"].mean() * out["A_" + ch]
+        out["pe_" + ch] = g["pe_" + ch].mean()
     return out.reset_index()
 
 

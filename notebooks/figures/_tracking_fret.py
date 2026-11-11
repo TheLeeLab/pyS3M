@@ -282,8 +282,8 @@ def segment_table(df, cps):
                 continue
             rows.append(dict(puncta_id=pid, segment_number=k, frame_start=int(seg["frame"].min()),
                              frame_end=int(seg["frame"].max()), n_points=len(seg),
-                             **{f"{col}_mean": seg[col].mean() for col in ("A_R", "A_G", "A_B", "photons")},
-                             **{f"{col}_std": seg[col].std() for col in ("A_R", "A_G", "A_B", "photons")}))
+                             **{f"{col}_mean": seg[col].mean() for col in ("A_R", "A_G", "A_B", "photoelectrons")},
+                             **{f"{col}_std": seg[col].std() for col in ("A_R", "A_G", "A_B", "photoelectrons")}))
     return pd.DataFrame(rows)
 
 
@@ -465,13 +465,16 @@ def example_fret_puncta(SR, tif, fits, cal, roi_xy, roi_size, n_puncta, seed, qu
 
     The ROIs are cut exactly as ``fit_FRET_data`` cuts them (``SR._rois_from_frames``: photoelectrons,
     weights 1 / (read_noise^2 + max(pe, 0) / gain)); the model is the stored fit, a Gaussian times
-    each pixel type's amplitude (``A_X`` x ``photons``) plus its background (``bg_X`` x
-    ``background_photons``). ``cal``: full-sensor calibration maps; ``roi_xy``: the camera ROI origin
+    each pixel type's amplitude plus its background, in photoelectrons (``IO_Functions.channel_amplitudes``
+    with ``SR``'s mosaic; fit files written before 2026-11-11 are upgraded first). ``cal``:
+    full-sensor calibration maps; ``roi_xy``: the camera ROI origin
     of the position (metadata). Each result has ``origin``, the sensor (row, column) of its pixel
     [0, 0], for the Bayer key.
     """
     import pyS3M.gaussoptfuncs as gaussoptfuncs
     import tifffile
+    io = SR.io
+    fits = io.ensure_photoelectrons(fits)
     with tifffile.TiffFile(str(tif), is_ome=False) as t:
         height, width = t.pages[0].shape
     x0, y0 = roi_xy
@@ -497,11 +500,12 @@ def example_fret_puncta(SR, tif, fits, cal, roi_xy, roi_size, n_puncta, seed, qu
         g = gaussoptfuncs.gaussian_unscaled_model(np.zeros((roi_size, roi_size), np.float32), x_arr, roi_size,
                                                   xy[0], xy[1], r["s_x"], r["s_y"])
         A = np.array([r["A_B"], r["A_G"], r["A_R"]])          # mask channels are B, G, R
-        bg = np.array([r["bg_B"], r["bg_G"], r["bg_R"]]) * r["background_photons"]
+        amp, bg = io.channel_amplitudes(r, "A_"), io.channel_amplitudes(r, "bg_")
+        amp, bg = np.array([amp[c] for c in "BGR"]), np.array([bg[c] for c in "BGR"])
         model = np.zeros((roi_size, roi_size), np.float32)
         for c in range(3):
             mc = roi_masks[k][:, :, c].astype(bool)
-            model[mc] = A[c] * r["photons"] * g[mc] + bg[c]
+            model[mc] = amp[c] * g[mc] + bg[c]
         out.append(dict(raw=raw[k], weights=weights[k], model=model, residual=raw[k] - model, spectrum=A, xy=xy,
                         frame=int(r["frame"]), puncta_id=r["puncta_id"], origin=(y0 + ymin, x0 + xmin)))
     return out

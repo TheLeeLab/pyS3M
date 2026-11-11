@@ -11,13 +11,11 @@ weights; `ImageAnalysisFunctions.StandardDataFittingProcessor`). The stored para
 chi^2 come from the last pass, weighted 1 / (max(pe, 0) + 1 + read_noise^2) per pixel, so those are
 the weights shown.
 
-Units: the fit databases store normalised `A_*`/`bg_*` fractions plus their totals `photons`
-(= A_B + A_G + A_R) and `background_photons` (= bg_B + bg_G + bg_R). Those totals add up what
-each pixel type would collect if it covered the whole sensor, so they are not what was detected:
-the detected signal and the background per pixel are `photoelectrons` and
-`background_photoelectrons` (`IO_Functions.add_photoelectron_columns`). The model rebuilt here is
-in photoelectrons per pixel, like the data it is compared to; numbers printed on the figure are
-the detected photoelectrons.
+Units: the fit databases store normalised `A_*`/`bg_*` fractions plus the detected signal
+`photoelectrons` and the background per pixel `background_photoelectrons`; each pixel type's
+fitted amplitude and background follow from those (`IO_Functions.channel_amplitudes`, with the
+Ximea/ZWO Bayer mosaic of `IO`). The model rebuilt here is in photoelectrons per pixel, like the
+data it is compared to; numbers printed on the figure are the detected photoelectrons.
 Ported from developer:notebooks/figures/SI/FigureSI_ExampleAnalysisWorkflow_*.ipynb.
 """
 import numpy as np
@@ -126,9 +124,9 @@ def build_example_puncta(rows, reader, cropped_maps, masks, roi_size):
         # Final-pass (raw-data) weights, as StandardDataFittingProcessor._raw_data_weights
         weights = 1.0 / (np.maximum(pe, 0) + 1.0 + np.square(cropped_maps["read_noise"][sl])).astype(np.float32)
 
-        # Mask/h5 channel order is B, G, R. A_*/bg_* are normalised fractions of `photons` /
-        # `background_photons`; times those totals they are the fitted amplitude and background of
-        # each pixel type, in photoelectrons, i.e. the model the fitter compared to the data.
+        # Mask/h5 channel order is B, G, R. A_*/bg_* are normalised fractions; channel_amplitudes
+        # turns them into the fitted amplitude and background of each pixel type, in
+        # photoelectrons, i.e. the model the fitter compared to the data.
         # The model works in the ROI's [row, column] frame: row centre and width first (yc, s_y),
         # while the database reports xc = column, yc = row.
         xc_local, yc_local = row["xc"] - xmin, row["yc"] - ymin
@@ -137,8 +135,8 @@ def build_example_puncta(rows, reader, cropped_maps, masks, roi_size):
         )
         A_frac = np.array([row["A_B"], row["A_G"], row["A_R"]])
         A_err = np.array([row["A_B_err"], row["A_G_err"], row["A_R_err"]])
-        A_pe = A_frac * row["photons"]
-        bg_pe = np.array([row["bg_B"], row["bg_G"], row["bg_R"]]) * row["background_photons"]
+        A_pe = np.array([IO.channel_amplitudes(row, "A_")[c] for c in "BGR"])
+        bg_pe = np.array([IO.channel_amplitudes(row, "bg_")[c] for c in "BGR"])
         model = np.zeros((roi_size, roi_size), dtype=np.float32)
         mask_roi = masks[sl[0], sl[1], :]
         for c in range(3):

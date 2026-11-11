@@ -57,7 +57,7 @@ FIT_PARAMS = dict(pfa=1e-3, ROI_size=12, NA=1.49, pixel_size=0.069)
 # PSF sigma 75-250 nm (the library default).
 CLUSTER_PARAMS = dict(clustering_method="HDBSCAN", min_cluster_size=10, chi_val=3,
                       max_localisation_error=1.0, max_colour_error=1.0,
-                      min_photons=0, max_photons=1e6, min_photoelectrons=50)
+                      min_photoelectrons=50)
 
 # Single-step photobleaching screen (SI_Single_Dye_Photobleaching).
 ROI_SIZE = 12        # px; square trace ROI centred on the molecule

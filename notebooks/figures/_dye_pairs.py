@@ -51,7 +51,7 @@ DRIFT_PARAMS = dict(segmentation=5, intersect_d=0.5, roi_r=2.0)
 # PSF sigma 75-250 nm.
 _QC = dict(clustering_method="DBSCAN", chi_val=3, max_colour_error=1.0,
            min_sigma=75 / mf.PIXEL_SIZE_NM, max_sigma=250 / mf.PIXEL_SIZE_NM,
-           min_photons=0, max_photons=1e6, min_photoelectrons=50)
+           min_photoelectrons=50)
 CLUSTER_PARAMS = {
     "ATTO520_Rho6G":   dict(_QC, min_cluster_size=2, max_localisation_error=1.0),
     "ATTO565_ATTO594": dict(_QC, min_cluster_size=5, max_localisation_error=0.5),
@@ -59,13 +59,16 @@ CLUSTER_PARAMS = {
     "ATTO647N_QD800":  dict(_QC, min_cluster_size=5, max_localisation_error=1.0),
 }
 
-# Molecules that define the two mean colours: bright (`photons`, as in the published analysis)
-# and inside a colour box that excludes outliers. (min photons, min A_R, min A_G, max A_G)
+# Molecules that define the two mean colours: bright and inside a colour box that excludes
+# outliers. (min photoelectrons, min A_R, min A_G, max A_G)
+# The published cuts were 5,000 / 2,000 / 20,000 / 25,000 `photons` (A_B + A_G + A_R). On the Bayer
+# mosaic photoelectrons = photons x 0.25 (1 + A_G), so each is converted with the mean A_G of the
+# pair's two reference colours (0.72 / 0.29 / 0.33 / 0.27: x 0.43 / 0.32 / 0.33 / 0.32), to 2 s.f.
 REFERENCE_CUTS = {
-    "ATTO520_Rho6G":   (5000, 0.175, 0.64, 1.0),
-    "ATTO565_ATTO594": (2000, 0.55, 0.15, 1.0),
-    "ATTO565_ATTO633": (20000, 0.40, 0.15, 1.0),
-    "ATTO647N_QD800":  (25000, 0.40, 0.10, 1.0),
+    "ATTO520_Rho6G":   (2200, 0.175, 0.64, 1.0),
+    "ATTO565_ATTO594": (640, 0.55, 0.15, 1.0),
+    "ATTO565_ATTO633": (6600, 0.40, 0.15, 1.0),
+    "ATTO647N_QD800":  (7900, 0.40, 0.10, 1.0),
 }
 
 # Bins of accumulated photoelectrons for the misidentification rate (the same for every pair):
@@ -95,8 +98,8 @@ def cluster_sample(pair, sm_extractor, files, out_dir, recluster=False):
 
 def reference_molecules(pair, sm_db):
     """The bright, in-box molecules that define the pair's two mean colours."""
-    min_photons, min_ar, min_ag, max_ag = REFERENCE_CUTS[pair]
-    keep = ((sm_db["photons"] > min_photons) & (sm_db["A_R"] > min_ar)
+    min_pe, min_ar, min_ag, max_ag = REFERENCE_CUTS[pair]
+    keep = ((sm_db["photoelectrons"] > min_pe) & (sm_db["A_R"] > min_ar)
             & (sm_db["A_G"] > min_ag) & (sm_db["A_G"] < max_ag))
     return sm_db[keep]
 
@@ -106,12 +109,10 @@ def photoelectron_accumulation(sf_db, io):
 
     One row per (molecule, frame), frames in time order: ``photoelectrons_accumulated`` is the
     running sum, and ``A_R``/``A_G``/``A_B`` the running inverse-variance weighted means with
-    their errors (as ``build_photon_accumulation_database``, which accumulates ``photons``).
-    ``photons_accumulated`` is set to the photoelectrons too, because that is the column the
-    misidentification analysis bins on.
+    their errors (as ``build_photon_accumulation_database``). Databases with the old ``photons``
+    column are upgraded first.
     """
-    if "photoelectrons" not in sf_db.columns:
-        sf_db = io.add_photoelectron_columns(sf_db)
+    sf_db = io.add_photoelectron_columns(sf_db)
     df = sf_db.sort_values(["molecular_index", "frame"]).reset_index(drop=True)
     g = df.groupby("molecular_index", sort=False)
     out = pd.DataFrame({"molecular_index": df["molecular_index"],
@@ -122,7 +123,6 @@ def photoelectron_accumulation(sf_db, io):
         wsum = (w).groupby(df["molecular_index"], sort=False).cumsum()
         out[c] = (w * df[c]).groupby(df["molecular_index"], sort=False).cumsum() / wsum
         out[f"{c}_err"] = 1.0 / np.sqrt(wsum)
-    out["photons_accumulated"] = out["photoelectrons_accumulated"]
     return out
 
 
@@ -146,7 +146,7 @@ def error_rate_points(summary, min_molecules=50):
     """Bin centres (geometric) and % misidentification, for bins with enough molecules and a
     non-zero rate (zero cannot be drawn on the log axis)."""
     s = summary[(summary["n_molecules"] >= min_molecules) & (summary["overall_error_rate"] > 0)]
-    return np.sqrt(s["photon_bin_min"] * s["photon_bin_max"]).to_numpy(), \
+    return np.sqrt(s["photoelectron_bin_min"] * s["photoelectron_bin_max"]).to_numpy(), \
         100 * s["overall_error_rate"].to_numpy()
 
 
