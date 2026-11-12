@@ -398,7 +398,14 @@ def misidentification_analysis(pair, sm_db, pa_db, sm_extractor, bins=PE_BINS):
     """The Figure 3c analysis of one pair: mean colours from a 2-component GMM on the reference
     molecules (sorted by A_R, as the dyes in PAIRS), then per bin of accumulated photoelectrons the
     covariances and weights with the means fixed (Tukey) and the misidentification rate (Monte
-    Carlo overlap, 1e5 samples). Returns dict(means, ref_db, ref_covs, ref_weights, summary)."""
+    Carlo overlap, 1e5 samples). Returns dict(means, ref_db, ref_covs, ref_weights, summary,
+    ref_covs_robust, ref_weights_robust).
+
+    ``ref_covs_robust``/``ref_weights_robust``: the reference molecules' widths refitted with the
+    means fixed by the same Tukey M-estimator as the bins. The GMM's (MLE) widths are inflated by
+    the ~4 % of reference molecules that are two overlapping emitters (an intermediate colour in
+    every frame, wider PSF) or two merged in time; the means hardly move (< 0.005). The GMM
+    covariances still seed the bins, as for Figure 3c."""
     refs = reference_molecules(pair, sm_db)
     means, ref_db, gmm = sm_extractor.extract_reference_means(
         refs, n_components=2, covariance_type="full", fit_type="MLE", verbose=False)
@@ -407,7 +414,11 @@ def misidentification_analysis(pair, sm_db, pa_db, sm_extractor, bins=PE_BINS):
     summary = sm_extractor.analyze_photon_dependent_misidentification_analytical(
         pa_db, means, ref_db, bins, reference_covariances=covs, use_earliest_entry=True,
         estimator_type="tukey", max_iter=20, n_mc_samples=100000, verbose=False)
-    return dict(means=means, ref_db=ref_db, ref_covs=covs, ref_weights=weights, summary=summary)
+    covs_r, weights_r, _ = sm_extractor.fit_covariances_fixed_means_mestimator(
+        X=ref_db[["A_R_ref", "A_G_ref"]].to_numpy(), fixed_means=means, reference_covariances=covs,
+        estimator_type="tukey", max_iter=20, tol=1e-4, verbose=False)
+    return dict(means=means, ref_db=ref_db, ref_covs=covs, ref_weights=weights, summary=summary,
+                ref_covs_robust=covs_r, ref_weights_robust=weights_r)
 
 
 def bin_example(analysis, pa_db, lo):
@@ -480,7 +491,8 @@ WORKFLOW_XLIM = {"A_R": (0.35, 0.9), "A_G": (0.0, 0.55)}
 
 def plot_workflow(ref_db, ref_weights, means, ref_covs, bin_mols, covs, weights, bin_range):
     """S79 b)-d) for one pair, two columns (pixel 3 = A_R, pixel 2 = A_G):
-    b) the reference molecules (> REFERENCE_CUTS photoelectrons) with the 2-component GMM;
+    b) the reference molecules (> REFERENCE_CUTS photoelectrons): the 2-component GMM's means, and
+       widths and weights refitted with those means fixed (Tukey, as in c; pass ref_*_robust);
     c) the molecules of one bin with the components refitted, means fixed;
     d) the same molecules sorted by Bayes' decision rule with the bin's model.
     Row a) (the schematic) is left free (its height ``schematic_mm``) for the drawn flow diagram."""
@@ -496,7 +508,7 @@ def plot_workflow(ref_db, ref_weights, means, ref_covs, bin_mols, covs, weights,
         ax = axs[0, j]
         ax.hist(ref_db[f"{dim}_ref"], bins=bins, density=True, color=PIXEL_HIST_COLOUR[dim], alpha=0.6,
                 label=f"{PIXEL_LABEL[dim].split(' relative')[0]} QE")
-        _components(ax, x, d, means, ref_covs, ref_weights, "fit mean", WORKFLOW_PAIR)
+        _components(ax, x, d, means, ref_covs, ref_weights, "GMM mean", WORKFLOW_PAIR)
         _style(ax, PIXEL_LABEL[dim], "probability density")
         ax = axs[1, j]
         ax.hist(bin_mols[dim], bins=bins, density=True, color=PIXEL_HIST_COLOUR[dim], alpha=0.6,
