@@ -53,6 +53,35 @@ def _lm_stuck(pfit: np.ndarray, x0: np.ndarray) -> bool:
     return bool(np.array_equal(np.asarray(pfit), np.asarray(x0)))
 
 
+def _leastsq(func, x0, args=(), **kwargs):
+    """``scipy.optimize.leastsq(..., full_output=True)``, with the covariance filled in when
+    leastsq returns none.
+
+    leastsq returns ``cov_x = None`` when it judges J^T J singular. That happens for good fits
+    whose background (or amplitude) in one colour channel sits at zero: those are fitted as
+    sqrt-values, b = p^2, so at p ~ 0 the model no longer depends on p. Without a covariance every
+    error became NaN and the fit was dropped (e.g. bright beads behind a single-band filter, whose
+    off-band pixels see no background). For a successful fit (ier 1-4) without ``cov_x`` this
+    uses the pseudo-inverse of J^T J at the solution (central-difference Jacobian): the
+    well-determined parameters get their usual errors, the undetermined one a very large one.
+    Fits that have ``cov_x`` are unchanged.
+    """
+    pfit, cov_x, infodict, errmsg, ier = leastsq(func, x0, args=args, full_output=True, **kwargs)
+    if cov_x is None and ier in (1, 2, 3, 4):
+        p = np.asarray(pfit, dtype=np.float64)
+        f0 = np.asarray(func(p, *args), dtype=np.float64)
+        jac = np.empty((f0.size, p.size))
+        for k in range(p.size):
+            h = 1e-6 * max(1.0, abs(p[k]))
+            dp = np.zeros_like(p)
+            dp[k] = h
+            jac[:, k] = (np.asarray(func(p + dp, *args), dtype=np.float64)
+                         - np.asarray(func(p - dp, *args), dtype=np.float64)) / (2.0 * h)
+        if np.all(np.isfinite(jac)):
+            cov_x = np.linalg.pinv(jac.T @ jac, rcond=1e-10)
+    return pfit, cov_x, infodict, errmsg, ier
+
+
 def median_of_arrays(arrays, batch_values: int = 4_000_000):
     """``np.median(np.concatenate([np.ravel(a) for a in arrays]))``, without the concatenation.
 
@@ -789,11 +818,10 @@ class StandardFittingProcessor(FittingProcessor):
         ravelsize = int(np.prod(data.shape))
 
         try:
-            pfit, pcov, infodict, errmsg, success = leastsq(
+            pfit, pcov, infodict, errmsg, success = _leastsq(
                 gaussoptfuncs.WLS_chi_nobounds,
                 x0=initial_guess,
                 args=(data, masks, weights, size, ravelsize),
-                full_output=True,
                 ftol=FittingConstants.DEFAULT_FTOL,
                 xtol=FittingConstants.DEFAULT_XTOL,
             )
@@ -887,11 +915,10 @@ class StandardDataFittingProcessor(StandardFittingProcessor):
         size: int,
     ):
         """Single Levenberg-Marquardt step; returns (pfit, pcov, ok)."""
-        pfit, pcov, _, _, ok = leastsq(
+        pfit, pcov, _, _, ok = _leastsq(
             gaussoptfuncs.WLS_chi_nobounds,
             x0=x0,
             args=(data, masks, weights, size, size * size),
-            full_output=True,
             ftol=FittingConstants.DEFAULT_FTOL,
             xtol=FittingConstants.DEFAULT_XTOL,
         )
@@ -1029,11 +1056,10 @@ class CircularFittingProcessor(StandardDataFittingProcessor):
         size: int,
     ):
         """Single Levenberg-Marquardt step against the circular chi function."""
-        pfit, pcov, _, _, ok = leastsq(
+        pfit, pcov, _, _, ok = _leastsq(
             gaussoptfuncs.WLS_chi_circular_nobounds,
             x0=x0,
             args=(data, masks, weights, size, size * size),
-            full_output=True,
             ftol=FittingConstants.DEFAULT_FTOL,
             xtol=FittingConstants.DEFAULT_XTOL,
         )
@@ -1156,11 +1182,10 @@ class EllipticalFittingProcessor(FittingProcessor):
         dims = FittingConstants.PARAM_DIMENSIONS[FittingStrategy.ELLIPTICAL]
 
         try:
-            pfit, pcov, _, _, success = leastsq(
+            pfit, pcov, _, _, success = _leastsq(
                 gaussoptfuncs.WLS_chi_elliptical_nobounds,
                 x0=initial_guess,
                 args=(data, masks, weights, size, ravelsize),
-                full_output=True,
                 ftol=FittingConstants.DEFAULT_FTOL,
                 xtol=FittingConstants.DEFAULT_XTOL,
             )
@@ -1277,11 +1302,10 @@ class NoColourFittingProcessor(FittingProcessor):
 
         try:
             # Perform no-colour fitting using weighted least squares optimization
-            pfit, pcov, infodict, errmsg, success = leastsq(
+            pfit, pcov, infodict, errmsg, success = _leastsq(
                 gaussoptfuncs.WLS_chi_nocolour_nobounds,
                 x0=initial_guess,
                 args=(data, weights, size, ravelsize),
-                full_output=True,
                 ftol=FittingConstants.DEFAULT_FTOL,
                 xtol=FittingConstants.DEFAULT_XTOL,
             )
