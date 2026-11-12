@@ -173,22 +173,19 @@ def render_region(locs, x0, y0, size, oversampling, min_blur_nm=0.0, pixel_nm=69
                           min_blur_width=min_blur_nm / pixel_nm)[1]
 
 
-def colour_limits(img, clim=(None, None), vmax_pct=99.9):
-    """(vmin, vmax) for an image: each ``None`` in ``clim`` falls back to 0 / the ``vmax_pct``
-    percentile."""
-    vmin, vmax = clim
-    return (0.0 if vmin is None else vmin,
-            float(np.percentile(img, vmax_pct)) if vmax is None else vmax)
+def colour_limits(img, pct=(0.0, 99.9)):
+    """(vmin, vmax) of an image's colour scale from (low, high) percentiles of its pixels."""
+    lo, hi = pct
+    return float(np.percentile(img, lo)), float(np.percentile(img, hi))
 
 
-def plot_overview(locs, width, height, oversampling=2, grid_px=50, clim=(None, None),
-                  vmax_pct=99.5):
+def plot_overview(locs, width, height, oversampling=2, grid_px=50, clim=(0.0, 99.5)):
     """Whole field of view with a camera-pixel grid, to choose ``VIEWS``.
 
-    ``clim``: (vmin, vmax) of the colour scale; ``None`` = 0 / the ``vmax_pct`` percentile.
+    ``clim``: (low, high) percentiles of the image setting the colour scale.
     Returns (fig, ax, (vmin, vmax) used)."""
     img = render_region(locs, 0, 0, max(width, height), oversampling)
-    lims = colour_limits(img, clim, vmax_pct)
+    lims = colour_limits(img, clim)
     fig, ax = plt.subplots(figsize=(10, 10))
     ext = (0, max(width, height), 0, max(width, height))
     ax.imshow(img, origin="lower", cmap="hot", vmin=lims[0], vmax=lims[1], extent=ext,
@@ -204,22 +201,22 @@ def plot_overview(locs, width, height, oversampling=2, grid_px=50, clim=(None, N
 
 
 def plot_views(fov_img, zoom_img, fov, zoom, oversampling_fov, oversampling_zoom, pixel_nm,
-               fov_bar_nm=1000, zoom_bar_nm=80, clim_fov=(None, None), clim_zoom=(None, None),
-               vmax_pct=(99.9, 99.9), grid_px=None):
+               fov_bar_nm=1000, zoom_bar_nm=80, clim_fov=(0.0, 99.9), clim_zoom=(0.0, 99.9),
+               grid_px=None):
     """Panels a) field of view with the zoom box and b) the zoom-in, connected as in S76/S77.
 
-    ``fov``/``zoom``: dicts x0, y0, size (camera px). ``clim_fov``/``clim_zoom``: (vmin, vmax) of
-    each panel's colour scale (render units); ``None`` = 0 / the ``vmax_pct`` percentile.
+    ``fov``/``zoom``: dicts x0, y0, size (camera px). ``clim_fov``/``clim_zoom``: (low, high)
+    percentiles of each panel's own image setting its colour scale.
     ``grid_px``: draw a camera-pixel grid on panel a (for choosing the zoom; leave None for the
     figure). Returns (fig, (ax_a, ax_b), {"fov": (vmin, vmax), "zoom": (vmin, vmax)} used).
     """
     fig, (ax_a, ax_b) = plt.subplots(1, 2, figsize=(167.8 * MM, 80 * MM),
                                      gridspec_kw=dict(wspace=0.08))
     used = {}
-    for ax, img, os_, bar, vp, clim, key in (
-            (ax_a, fov_img, oversampling_fov, fov_bar_nm, vmax_pct[0], clim_fov, "fov"),
-            (ax_b, zoom_img, oversampling_zoom, zoom_bar_nm, vmax_pct[1], clim_zoom, "zoom")):
-        used[key] = colour_limits(img, clim, vp)
+    for ax, img, os_, bar, clim, key in (
+            (ax_a, fov_img, oversampling_fov, fov_bar_nm, clim_fov, "fov"),
+            (ax_b, zoom_img, oversampling_zoom, zoom_bar_nm, clim_zoom, "zoom")):
+        used[key] = colour_limits(img, clim)
         ax.imshow(img, origin="lower", cmap="hot", vmin=used[key][0], vmax=used[key][1],
                   interpolation="none")
         ax.set_axis_off()
