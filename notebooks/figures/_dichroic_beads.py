@@ -431,13 +431,15 @@ def range_label(lo, hi):
 
 
 # --------------------------------------------------------------------------- figure
-def plot_figure(wavelength, spectra, fov_frames, fov_refs, fov_calls, scale_bar_px,
+def plot_figure(wavelength, spectra, fov_frames, fov_events, fov_noref, scale_bar_px,
                 events, noref_calls, st: Settings, sm_range, high_ranges, hist_bins=None,
                 fov_note=""):
     """Fig. S78.
 
     a)-c) filter transmission and bead emission per channel; d)-f) example FOV in the YG, R and
-    combined channels (reference localisations circled; S3M calls circled in the bead colours);
+    combined channels: only what enters the confusion matrices -- d), e) the scored reference
+    beads of that FOV, f) the same beads coloured by their S3M outcome plus the S3M calls with
+    no reference;
     g) confusion matrix for references with ``sm_range`` photoelectrons in their own filter
     channel (single-molecule-like), with the no-reference S3M calls in the same combined-channel
     photoelectron range, and the missed references by stage; h) own-channel photoelectrons of the
@@ -445,7 +447,8 @@ def plot_figure(wavelength, spectra, fov_frames, fov_refs, fov_calls, scale_bar_
     the ``high_ranges``.
 
     ``events``: scored references at timepoint 0 (definition b); ``noref_calls``: S3M calls at
-    timepoint 0 with no reference. Returns (fig, {range label: counts}).
+    timepoint 0 with no reference; ``fov_events`` / ``fov_noref``: the rows of those two tables
+    from the example FOV. Returns (fig, {range label: counts}).
     """
     # Fixed row heights (mm). The FOV row has no layout engine: the three images are placed edge
     # to edge (FOV_GAP_MM apart) at the full figure width, and the row is exactly as tall as they are.
@@ -475,11 +478,23 @@ def plot_figure(wavelength, spectra, fov_frames, fov_refs, fov_calls, scale_bar_
         ax.plot([w * 0.95 - scale_bar_px, w * 0.95], [h * 0.05] * 2, color="white", lw=2)
         ax.text(w * 0.95 - scale_bar_px / 2, h * 0.07, "10 µm", color="white", fontsize=6,
                 ha="center", va="bottom")
-    for ax, refs in zip(axs_fov[:2], fov_refs):
-        ax.scatter(refs["xc"], refs["yc"], s=40, facecolor="none", edgecolor="k", lw=0.6)
-    for call, colour in (("YG", "chartreuse"), ("R", "red")):
-        c = fov_calls[fov_calls["call"] == call]
-        axs_fov[2].scatter(c["xc"], c["yc"], s=40, facecolor="none", edgecolor=colour, lw=0.6)
+    # Every circle is one entry of g)-j): d), e) the scored references; f) their S3M outcome.
+    for ax, b in zip(axs_fov[:2], ("YG", "R")):
+        e = fov_events[fov_events["bead_type"] == b]
+        ax.scatter(e["col"], e["row"], s=40, facecolor="none", edgecolor="k", lw=0.6)
+    missed = fov_events["outcome"].str.startswith("missed")
+    for sel, colour, ls, label in (
+            (fov_events["outcome"] == "called YG", "chartreuse", "-", "called YG"),
+            (fov_events["outcome"] == "called R", "red", "-", "called R"),
+            (fov_events["outcome"] == "unclassified", "white", "-", "unclassified"),
+            (missed, "0.6", (0, (2, 1.5)), "missed")):
+        e = fov_events[sel]
+        axs_fov[2].scatter(e["col"], e["row"], s=40, facecolor="none", edgecolor=colour, lw=0.6,
+                           linestyle=ls, label=f"{label} ({len(e)})")
+    axs_fov[2].scatter(fov_noref["xc"], fov_noref["yc"], s=40, marker="s", facecolor="none",
+                       edgecolor="yellow", lw=0.6, label=f"no reference ({len(fov_noref)})")
+    axs_fov[2].legend(loc="upper left", bbox_to_anchor=(0.0, 0.9), fontsize=4.5, frameon=True, framealpha=0.85,
+                      handletextpad=0.2, borderpad=0.3, labelspacing=0.2)
     if fov_note:
         axs_fov[0].text(0.02, 0.88, fov_note, transform=axs_fov[0].transAxes, fontsize=5.5,
                         va="top", ha="left", color="k")
