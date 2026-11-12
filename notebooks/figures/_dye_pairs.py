@@ -33,7 +33,7 @@ PAIRS = {
     "ATTO565_ATTO633": (f"{PAIR_ROOT}/ATTO565_ATTO633/5pM_dyes_10p_561_20mW638_NF_SP_1", 0.62,
                         ("ATTO 565", "ATTO 633")),
     "ATTO647N_QD800": (f"{PAIR_ROOT}/10mW638_DM405488561638_NF_SP_1", 0.70,
-                       ("ATTO 647N", "QD800")),
+                       ("QD800", "ATTO 647N")),   # Qdot 800 has the lower A_R (SI fingerprint table)
 }
 
 # Spot detection and fitting, as for the single dyes;
@@ -369,3 +369,183 @@ def _place_labels(mols, labels, n, keep_clear, radius=2.6, char_px=1.15, height_
         if best is None or cost < best[0]:
             best = (cost, [(p[0], p[1]) for p in placed])
     return best
+
+
+# ---------------------------------------------------------------------------------------------
+# SI Figs. S79 (workflow, ATTO 565 + ATTO 633) and S80 (the four pairs at one photoelectron level):
+# the steps of the Figure 3c analysis drawn for single bins of dp.PE_BINS, so every number shown is
+# one of Figure 3c's points. The published panels used `photons` (A_B + A_G + A_R); their ranges are
+# converted with each pair's photoelectrons per `photon`, 0.25 (1 + mean A_G of the two dyes), and
+# the PE_BINS bin holding the converted mean is shown.
+WORKFLOW_PAIR = "ATTO565_ATTO633"
+WORKFLOW_BIN = 562.3413      # S79 c), d): published 1,760-2,508 `photons` x 0.33 = 580-830 pe
+EXAMPLE_BINS = {             # S80: published mean `photons` x the pair's factor
+    "ATTO520_Rho6G": 2371.3737,     # 5,737 x 0.43 = 2,470 pe
+    "ATTO565_ATTO633": 1333.5214,   # 5,008 x 0.33 = 1,660 pe
+    "ATTO565_ATTO594": 1333.5214,   # 4,989 x 0.32 = 1,610 pe
+    "ATTO647N_QD800": 1333.5214,    # 4,963 x 0.32 = 1,570 pe
+}
+EXAMPLE_TEXT_LEFT = {"ATTO520_Rho6G": True, "ATTO565_ATTO633": False,   # the emptier side
+                     "ATTO565_ATTO594": True, "ATTO647N_QD800": False}
+EXAMPLE_PIXEL = {"ATTO520_Rho6G": "A_G", "ATTO565_ATTO633": "A_R",   # the pixel that separates
+                 "ATTO565_ATTO594": "A_R", "ATTO647N_QD800": "A_R"}   # the pair (as published)
+PIXEL_LABEL = {"A_R": "pixel 3 relative QE", "A_G": "pixel 2 relative QE"}
+PIXEL_HIST_COLOUR = {"A_R": "#c0504d", "A_G": "#4f9a3a"}
+COMPONENT_COLOURS = ("#4a5bc4", "#b04aa8")   # dye 1 (lower A_R), dye 2
+
+
+def misidentification_analysis(pair, sm_db, pa_db, sm_extractor, bins=PE_BINS):
+    """The Figure 3c analysis of one pair: mean colours from a 2-component GMM on the reference
+    molecules (sorted by A_R, as the dyes in PAIRS), then per bin of accumulated photoelectrons the
+    covariances and weights with the means fixed (Tukey) and the misidentification rate (Monte
+    Carlo overlap, 1e5 samples). Returns dict(means, ref_db, ref_covs, ref_weights, summary)."""
+    refs = reference_molecules(pair, sm_db)
+    means, ref_db, gmm = sm_extractor.extract_reference_means(
+        refs, n_components=2, covariance_type="full", fit_type="MLE", verbose=False)
+    order = np.argsort(means[:, 0])
+    means, covs, weights = means[order], gmm.covariances_[order], gmm.weights_[order]
+    summary = sm_extractor.analyze_photon_dependent_misidentification_analytical(
+        pa_db, means, ref_db, bins, reference_covariances=covs, use_earliest_entry=True,
+        estimator_type="tukey", max_iter=20, n_mc_samples=100000, verbose=False)
+    return dict(means=means, ref_db=ref_db, ref_covs=covs, ref_weights=weights, summary=summary)
+
+
+def bin_example(analysis, pa_db, lo):
+    """One bin of ``misidentification_analysis``: dict(row, covs, weights, mols, labels)."""
+    row = bin_row(analysis["summary"], lo)
+    covs, weights = bin_model(row)
+    mols = bin_molecules(pa_db, analysis["ref_db"], row["photoelectron_bin_min"],
+                         row["photoelectron_bin_max"])
+    labels = bayes_labels(mols[["A_R", "A_G"]].to_numpy(), analysis["means"], covs, weights)
+    return dict(row=row, covs=covs, weights=weights, mols=mols, labels=labels,
+                error_rate=row["overall_error_rate"])
+
+
+def bin_row(summary, lo):
+    """The Figure 3c summary row of the bin starting at ``lo`` photoelectrons."""
+    row = summary[np.isclose(summary["photoelectron_bin_min"], lo)]
+    if len(row) != 1:
+        raise ValueError(f"no bin starting at {lo} photoelectrons")
+    return row.iloc[0]
+
+
+def bin_model(row):
+    """(covariances (2, 2, 2) in (A_R, A_G), weights (2,)) fitted in one bin (means fixed)."""
+    covs = np.array([[[row[f"cov_{k}_AR_AR"], row[f"cov_{k}_AR_AG"]],
+                      [row[f"cov_{k}_AR_AG"], row[f"cov_{k}_AG_AG"]]] for k in (0, 1)])
+    return covs, np.array([row["weight_0"], row["weight_1"]])
+
+
+def bin_molecules(pa_db, ref_db, lo, hi):
+    """The molecules of one bin as the analysis takes them: reference molecules only, each at its
+    earliest entry into [lo, hi) accumulated photoelectrons."""
+    pa = pa_db[pa_db["molecular_index"].isin(ref_db["molecular_index"])]
+    pa = pa[(pa["photoelectrons_accumulated"] >= lo) & (pa["photoelectrons_accumulated"] < hi)]
+    return (pa.sort_values("photoelectrons_accumulated").groupby("molecular_index").first()
+            .reset_index())
+
+
+def bayes_labels(X, means, covs, weights):
+    """Bayes' decision rule: the component of highest weight x density at each (A_R, A_G)."""
+    from scipy.stats import multivariate_normal
+    logp = np.column_stack([multivariate_normal(means[k], covs[k]).logpdf(X) + np.log(weights[k])
+                            for k in range(len(means))])
+    return np.argmax(logp, axis=1)
+
+
+def _style(ax, xlabel, ylabel):
+    ax.set_xlabel(xlabel, fontsize=7, labelpad=1)
+    ax.set_ylabel(ylabel, fontsize=7, labelpad=1)
+    ax.tick_params(labelsize=6, length=2.5, width=0.6)
+    ax.grid(color="#808080", ls="--", lw=0.5, alpha=0.4)
+    ax.set_axisbelow(True)
+
+
+def _dye_name(pair, k):
+    name = PAIRS[pair][2][k]
+    return DYE_LABELS.get(name, name)
+
+
+def _components(ax, x, dim, means, covs, weights, mean_label, pair):
+    """Each component's marginal Gaussian (weighted) along ``dim`` (0 A_R, 1 A_G), and its mean."""
+    from scipy.stats import norm
+    for k, c in enumerate(COMPONENT_COLOURS):
+        ax.plot(x, weights[k] * norm.pdf(x, means[k, dim], np.sqrt(covs[k, dim, dim])), color=c,
+                lw=1.2, label=f"component {k + 1} ({_dye_name(pair, k)})")
+        ax.axvline(means[k, dim], color=c, ls="--", lw=1, label=f"{mean_label} {k + 1}")
+
+
+WORKFLOW_XLIM = {"A_R": (0.35, 0.9), "A_G": (0.0, 0.55)}
+
+
+def plot_workflow(ref_db, ref_weights, means, ref_covs, bin_mols, covs, weights, bin_range):
+    """S79 b)-d) for one pair, two columns (pixel 3 = A_R, pixel 2 = A_G):
+    b) the reference molecules (> REFERENCE_CUTS photoelectrons) with the 2-component GMM;
+    c) the molecules of one bin with the components refitted, means fixed;
+    d) the same molecules sorted by Bayes' decision rule with the bin's model.
+    Row a) (the schematic) is left free (its height ``schematic_mm``) for the drawn flow diagram."""
+    import matplotlib.pyplot as plt
+    mm = 1 / 25.4
+    fig, axs = plt.subplots(3, 2, figsize=(174 * mm, 120 * mm), layout="constrained")
+    labels = bayes_labels(bin_mols[["A_R", "A_G"]].to_numpy(), means, covs, weights)
+    lo, hi = bin_range
+    for j, dim in enumerate(("A_R", "A_G")):
+        d = 0 if dim == "A_R" else 1
+        bins = np.linspace(*WORKFLOW_XLIM[dim], 101)
+        x = np.linspace(*WORKFLOW_XLIM[dim], 400)
+        ax = axs[0, j]
+        ax.hist(ref_db[f"{dim}_ref"], bins=bins, density=True, color=PIXEL_HIST_COLOUR[dim], alpha=0.6,
+                label=f"{PIXEL_LABEL[dim].split(' relative')[0]} QE")
+        _components(ax, x, d, means, ref_covs, ref_weights, "fit mean", WORKFLOW_PAIR)
+        _style(ax, PIXEL_LABEL[dim], "probability density")
+        ax = axs[1, j]
+        ax.hist(bin_mols[dim], bins=bins, density=True, color=PIXEL_HIST_COLOUR[dim], alpha=0.6,
+                label=f"{PIXEL_LABEL[dim].split(' relative')[0]} QE")
+        _components(ax, x, d, means, covs, weights, "fixed mean", WORKFLOW_PAIR)
+        _style(ax, PIXEL_LABEL[dim], "probability density")
+        ax = axs[2, j]
+        for k, c in enumerate(COMPONENT_COLOURS):
+            ax.hist(bin_mols.loc[labels == k, dim], bins=bins, color=c, alpha=0.45,
+                    label=f"component {k + 1} prediction ({_dye_name(WORKFLOW_PAIR, k)})")
+        _style(ax, PIXEL_LABEL[dim], "molecules")
+        for ax in axs[:, j]:
+            ax.set_xlim(WORKFLOW_XLIM[dim])
+    for ax in axs.ravel():
+        ax.legend(fontsize=5.5, loc="upper left" if ax in axs[:, 1] else "upper right",
+                  framealpha=0.85, handlelength=1.5, labelspacing=0.25, borderpad=0.4)
+    for ax, letter in zip(axs[:, 0], "bcd"):
+        ax.set_title(f"{letter})", loc="left", fontsize=8, fontweight="bold", x=-0.12, y=1.0,
+                     pad=2)   # panel letter, not a title
+    note = (f"b) {len(ref_db):,} reference molecules (> {REFERENCE_CUTS[WORKFLOW_PAIR][0]:,} pe); "
+            f"c), d) {len(bin_mols):,} of them at {lo:,.0f}–{hi:,.0f} accumulated pe")
+    return fig, axs, note
+
+
+def plot_examples(examples):
+    """S80: one panel per pair, the separating pixel's relative QE of the molecules in the pair's
+    EXAMPLE_BINS bin, sorted by Bayes' rule, with the bin's % misidentification (Figure 3c's point)
+    and mean accumulated photoelectrons. ``examples``: {pair: dict(mols, labels, error_rate)}."""
+    import matplotlib.pyplot as plt
+    mm = 1 / 25.4
+    fig, axs = plt.subplots(2, 2, figsize=(174 * mm, 120 * mm), layout="constrained")
+    order = ["ATTO520_Rho6G", "ATTO565_ATTO633", "ATTO565_ATTO594", "ATTO647N_QD800"]   # as published
+    for ax, pair in zip(axs.ravel(), order):
+        e, dim = examples[pair], EXAMPLE_PIXEL[pair]
+        v = e["mols"][dim].to_numpy()
+        bins = np.linspace(np.percentile(v, 0.2), np.percentile(v, 99.8), 51)
+        for k, c in enumerate(COMPONENT_COLOURS):
+            ax.hist(v[e["labels"] == k], bins=bins, color=c, alpha=0.45, label=_dye_name(pair, k))
+        left = EXAMPLE_TEXT_LEFT[pair]
+        ax.text(0.02 if left else 0.98, 0.80,
+                f"{100 * e['error_rate']:.2g} % dye misidentification\n"
+                f"{len(v):,} molecules, mean {e['mols']['photoelectrons_accumulated'].mean():,.0f} "
+                f"photoelectrons", transform=ax.transAxes, fontsize=6, va="top",
+                ha="left" if left else "right")
+        _style(ax, PIXEL_LABEL[dim], "molecules")
+        ax.set_ylim(0, 1.35 * ax.get_ylim()[1])   # room for the legend and text above the bars
+        ax.legend(fontsize=6, loc="upper left" if left else "upper right", framealpha=0.85,
+                  handlelength=1.5)
+    for ax, letter in zip(axs.ravel(), "abcd"):
+        ax.set_title(f"{letter})", loc="left", fontsize=8, fontweight="bold", x=-0.12, y=1.0,
+                     pad=2)   # panel letter, not a title
+    return fig, axs
