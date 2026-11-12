@@ -154,26 +154,13 @@ def _mm_figure(plot_w_mm, plot_h_mm, margin_mm, projection=None, **kw):
     return fig, ax
 
 
-def ternary_panel(mix, side_mm=TERNARY_SIDE_MM, blue_scale=BLUE_SCALE, size=2, alpha_scale=150):
-    """Figure 3f: the mixture's molecules on a black ternary, coloured by their assigned QDot.
-
-    Top corner = pixel 3 (``A_R``), left = pixel 2 (``A_G``), right = ``blue_scale`` x pixel 1
-    (``A_B``), each axis and its dashed grid in its pixel's colour. Point opacity is
-    ``alpha_scale / n`` per QDot, so sparse and abundant QDots show alike.
-
-    Args:
-        mix: Molecules with ``A_R``, ``A_G``, ``A_B`` and ``qdot`` (a ``REFERENCES`` key).
-        side_mm: Triangle side (mm).
-
-    Returns:
-        (fig, ax).
-    """
-    import mpltern  # noqa: F401  (registers the "ternary" projection)
-    fig, ax = _mm_figure(side_mm, side_mm * np.sqrt(3) / 2, (13, 11, 13, 5), projection="ternary",
-                         ternary_sum=1)
+def _draw_ternary(ax, df, column, blue_scale=BLUE_SCALE, size=2, alpha_scale=150):
+    """The Figure 3f ternary on ``ax`` (an mpltern axes): ``df``'s molecules on black, coloured by
+    the QDot in ``column``; axes, ticks and grid in the pixel colours. Point opacity is
+    ``alpha_scale / n`` per QDot, so sparse and abundant QDots show alike."""
     ax.set_facecolor("black")
     for name, (colour, _) in REFERENCES.items():
-        sub = mix[mix["qdot"] == name]
+        sub = df[df[column] == name]
         if len(sub):
             ax.scatter(sub["A_R"], sub["A_G"], blue_scale * sub["A_B"], color=colour, s=size,
                        alpha=min(1.0, alpha_scale / len(sub)), linewidths=0, rasterized=True)
@@ -193,9 +180,57 @@ def ternary_panel(mix, side_mm=TERNARY_SIDE_MM, blue_scale=BLUE_SCALE, size=2, a
         ax.spines[spine].set_linewidth(1.0)
     for which, pixel in [("t", "pixel 3"), ("l", "pixel 2"), ("r", "pixel 1")]:
         ax.grid(axis=which, color=PIXEL_AXIS_COLOURS[pixel], lw=0.5, ls="--", alpha=0.8)
-    ax.text(0.97, 0.03, rf"$N_\mathrm{{QD}}$ = {len(mix):,}", transform=ax.transAxes, color="white",
+    ax.text(0.97, 0.03, rf"$N_\mathrm{{QD}}$ = {len(df):,}", transform=ax.transAxes, color="white",
             fontsize=7, ha="right", va="bottom")
+
+
+def ternary_panel(mix, side_mm=TERNARY_SIDE_MM, blue_scale=BLUE_SCALE, size=2, alpha_scale=150):
+    """Figure 3f: the mixture's molecules on a black ternary, coloured by their assigned QDot.
+
+    Top corner = pixel 3 (``A_R``), left = pixel 2 (``A_G``), right = ``blue_scale`` x pixel 1
+    (``A_B``), each axis and its dashed grid in its pixel's colour. Point opacity is
+    ``alpha_scale / n`` per QDot, so sparse and abundant QDots show alike.
+
+    Args:
+        mix: Molecules with ``A_R``, ``A_G``, ``A_B`` and ``qdot`` (a ``REFERENCES`` key).
+        side_mm: Triangle side (mm).
+
+    Returns:
+        (fig, ax).
+    """
+    import mpltern  # noqa: F401  (registers the "ternary" projection)
+    fig, ax = _mm_figure(side_mm, side_mm * np.sqrt(3) / 2, (13, 11, 13, 5), projection="ternary",
+                         ternary_sum=1)
+    _draw_ternary(ax, mix, "qdot", blue_scale, size, alpha_scale)
     return fig, ax
+
+
+def true_vs_sorted_panel(synthetic, side_mm=TERNARY_SIDE_MM, blue_scale=BLUE_SCALE, size=2,
+                         alpha_scale=150):
+    """SI (QuantumDots/QDotConfusion_True_vs_Sorted): the synthetic dataset of Figure 3g on two
+    Figure 3f ternaries, a) coloured by the QDot each molecule was drawn from (``true_qdot``),
+    b) by the QDot it was assigned to (``qdot``). Same size and style as Figure 3f.
+
+    Returns:
+        (fig, (ax_a, ax_b)).
+    """
+    import matplotlib.pyplot as plt
+    import mpltern  # noqa: F401
+    mm = 1 / 25.4
+    left, bottom, right, top, gap = 13, 11, 13, 6, 4            # mm
+    w, h = side_mm, side_mm * np.sqrt(3) / 2
+    W, H = 2 * (left + w + right) + gap, bottom + h + top
+    fig = plt.figure(figsize=(W * mm, H * mm))
+    fig.set_layout_engine("none")
+    axs = []
+    for k, (column, letter) in enumerate((("true_qdot", "a)"), ("qdot", "b)"))):
+        x0 = k * (left + w + right + gap) + left
+        ax = fig.add_axes([x0 / W, bottom / H, w / W, h / H], projection="ternary", ternary_sum=1)
+        _draw_ternary(ax, synthetic, column, blue_scale, size, alpha_scale)
+        fig.text((x0 - left + 1) / W, 1 - 1 / H, letter, fontsize=8, fontweight="bold",
+                 ha="left", va="top")
+        axs.append(ax)
+    return fig, tuple(axs)
 
 
 def confusion_panel(cm, names, side_mm=CONFUSION_SIDE_MM):
