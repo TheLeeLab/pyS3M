@@ -356,7 +356,7 @@ def distance_stats(rulers, design_nm=80.0, tolerance_nm=5.0, n_boot=2000, seed=0
                     "bias / nm": med - design, "bias 95% CI low / nm": ci[0],
                     "bias 95% CI high / nm": ci[1], "relative bias / %": 100 * (med / design - 1),
                     "mean / nm": v.mean(), "SD / nm": v.std(ddof=1),
-                    "robust SD / nm": 1.4826 * np.median(abs(v - med)),
+                    "MAD-based SD / nm": 1.4826 * np.median(abs(v - med)),
                     "RMSE / nm": np.sqrt(np.mean(err ** 2)),
                     f"within ±{tolerance_nm:g} nm / %": 100 * np.mean(abs(err) <= tolerance_nm),
                     "SD expected from site centres / nm": expected}
@@ -415,7 +415,7 @@ def plot_distances(rulers, stats, design_nm=80.0, tolerance_nm=5.0, half_range_n
              ["bias / nm [95% CI]"] + [ci[c] for c in stats.columns],
              row("relative bias / %", "relative bias / %", lambda x: f"{x:+.1f}"),
              row("SD / nm", "SD / nm", lambda x: f"{x:.1f}"),
-             row("robust SD / nm", "robust SD / nm", lambda x: f"{x:.1f}"),
+             row("MAD-based SD / nm", "MAD-based SD / nm", lambda x: f"{x:.1f}"),
              row("RMSE / nm", "RMSE / nm", lambda x: f"{x:.1f}"),
              row(f"within ±{tolerance_nm:g} nm / %", within, lambda x: f"{x:.0f}"),
              row("SD from site centres / nm", "SD expected from site centres / nm",
