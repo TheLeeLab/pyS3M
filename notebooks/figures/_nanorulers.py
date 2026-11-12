@@ -173,13 +173,26 @@ def render_region(locs, x0, y0, size, oversampling, min_blur_nm=0.0, pixel_nm=69
                           min_blur_width=min_blur_nm / pixel_nm)[1]
 
 
-def plot_overview(locs, width, height, oversampling=2, grid_px=50, vmax_pct=99.5):
-    """Whole field of view with a camera-pixel grid, to choose ``VIEWS``. Returns (fig, ax)."""
+def colour_limits(img, clim=(None, None), vmax_pct=99.9):
+    """(vmin, vmax) for an image: each ``None`` in ``clim`` falls back to 0 / the ``vmax_pct``
+    percentile."""
+    vmin, vmax = clim
+    return (0.0 if vmin is None else vmin,
+            float(np.percentile(img, vmax_pct)) if vmax is None else vmax)
+
+
+def plot_overview(locs, width, height, oversampling=2, grid_px=50, clim=(None, None),
+                  vmax_pct=99.5):
+    """Whole field of view with a camera-pixel grid, to choose ``VIEWS``.
+
+    ``clim``: (vmin, vmax) of the colour scale; ``None`` = 0 / the ``vmax_pct`` percentile.
+    Returns (fig, ax, (vmin, vmax) used)."""
     img = render_region(locs, 0, 0, max(width, height), oversampling)
+    lims = colour_limits(img, clim, vmax_pct)
     fig, ax = plt.subplots(figsize=(10, 10))
     ext = (0, max(width, height), 0, max(width, height))
-    ax.imshow(img, origin="lower", cmap="hot", vmin=0, vmax=np.percentile(img, vmax_pct),
-              extent=ext, interpolation="none")
+    ax.imshow(img, origin="lower", cmap="hot", vmin=lims[0], vmax=lims[1], extent=ext,
+              interpolation="none")
     ticks = np.arange(0, max(width, height) + 1, grid_px)
     ax.set_xticks(ticks)
     ax.set_yticks(ticks)
@@ -187,21 +200,27 @@ def plot_overview(locs, width, height, oversampling=2, grid_px=50, vmax_pct=99.5
     ax.grid(color="white", lw=0.3, alpha=0.4)
     ax.set(xlabel="x (column) / camera px", ylabel="y (row) / camera px", xlim=(0, width),
            ylim=(0, height))
-    return fig, ax
+    return fig, ax, lims
 
 
 def plot_views(fov_img, zoom_img, fov, zoom, oversampling_fov, oversampling_zoom, pixel_nm,
-               fov_bar_nm=1000, zoom_bar_nm=80, vmax_pct=(99.9, 99.9), grid_px=None):
+               fov_bar_nm=1000, zoom_bar_nm=80, clim_fov=(None, None), clim_zoom=(None, None),
+               vmax_pct=(99.9, 99.9), grid_px=None):
     """Panels a) field of view with the zoom box and b) the zoom-in, connected as in S76/S77.
 
-    ``fov``/``zoom``: dicts x0, y0, size (camera px). ``grid_px``: draw a camera-pixel grid
-    on panel a (for choosing the zoom; leave None for the figure). Returns (fig, (ax_a, ax_b)).
+    ``fov``/``zoom``: dicts x0, y0, size (camera px). ``clim_fov``/``clim_zoom``: (vmin, vmax) of
+    each panel's colour scale (render units); ``None`` = 0 / the ``vmax_pct`` percentile.
+    ``grid_px``: draw a camera-pixel grid on panel a (for choosing the zoom; leave None for the
+    figure). Returns (fig, (ax_a, ax_b), {"fov": (vmin, vmax), "zoom": (vmin, vmax)} used).
     """
     fig, (ax_a, ax_b) = plt.subplots(1, 2, figsize=(167.8 * MM, 80 * MM),
                                      gridspec_kw=dict(wspace=0.08))
-    for ax, img, os_, bar, vp in ((ax_a, fov_img, oversampling_fov, fov_bar_nm, vmax_pct[0]),
-                                  (ax_b, zoom_img, oversampling_zoom, zoom_bar_nm, vmax_pct[1])):
-        ax.imshow(img, origin="lower", cmap="hot", vmin=0, vmax=np.percentile(img, vp),
+    used = {}
+    for ax, img, os_, bar, vp, clim, key in (
+            (ax_a, fov_img, oversampling_fov, fov_bar_nm, vmax_pct[0], clim_fov, "fov"),
+            (ax_b, zoom_img, oversampling_zoom, zoom_bar_nm, vmax_pct[1], clim_zoom, "zoom")):
+        used[key] = colour_limits(img, clim, vp)
+        ax.imshow(img, origin="lower", cmap="hot", vmin=used[key][0], vmax=used[key][1],
                   interpolation="none")
         ax.set_axis_off()
         _scalebar(ax, bar / pixel_nm * os_, f"{bar / 1000:g} µm" if bar >= 1000 else f"{bar:g} nm",
@@ -224,7 +243,7 @@ def plot_views(fov_img, zoom_img, fov, zoom, oversampling_fov, oversampling_zoom
     for ax, letter in ((ax_a, "a)"), (ax_b, "b)")):
         ax.text(0.015, 0.985, letter, transform=ax.transAxes, color="white", fontsize=9,
                 fontweight="bold", va="top", ha="left")
-    return fig, (ax_a, ax_b)
+    return fig, (ax_a, ax_b), used
 
 
 def _scalebar(ax, length_px, label, img_px, colour="white", fs=7):
