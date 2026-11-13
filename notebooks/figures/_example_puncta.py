@@ -1,5 +1,5 @@
 """Shared helper for the SI "example puncta" panels (raw / weights / fit / residual /
-spectral fingerprint), used by `SI/FigureSI_ExampleFitting_QDots.ipynb`, `_MassiveCells` and `_SAureus`.
+spectral fingerprint), used by `SI/FigureSI_ExampleFitting_QDots.ipynb`, `_MassiveCells`, `_SAureus`, `_AlphaSyn` and Figure 4 S86 (`plot_example_grid`).
 
 Picks single-frame localisations from a fit result (`fit_SM_data` / `fit_imaging_data`), crops
 the raw frame each one came from, recomputes the photoelectron image exactly as the fitter does
@@ -192,4 +192,73 @@ def plot_example_puncta(plotter, puncta, pixel_size_nm, scalebar_nm=500):
         axs[4, k].grid(False)
     for r, label in enumerate(ROW_LABELS):
         axs[r, 0].text(-0.35, 0.5, label, transform=axs[r, 0].transAxes, fontsize=8, ha="right", va="center", rotation=90)
+    return fig, axs
+
+
+# The published example-fit grids (S86 FRET, S87 alpha-syn): 23.8 mm square panels, 2.7 mm between columns,
+# 3.5 mm between rows (measured on the published PDFs).
+GRID_PANEL_MM, GRID_COL_GAP_MM, GRID_ROW_GAP_MM = 23.8, 2.7, 3.5
+
+
+def _fixed_colorbar(fig, ax, mappable, label, gap_mm=0.8, width_mm=1.5):
+    """A colour bar as tall as ``ax``, ``gap_mm`` to its right; the axes keeps its size."""
+    W, _ = fig.get_size_inches() * 25.4
+    p = ax.get_position()
+    cb = fig.colorbar(mappable, cax=fig.add_axes([p.x1 + gap_mm / W, p.y0, width_mm / W, p.height]))
+    cb.set_label(label)
+    return cb
+
+
+def plot_example_grid(plotter, puncta, pixel_size_nm, scalebar_nm=500, weight_label="weight (pe$^{-2}$)",
+                      percentiles=(1, 99.5), panel_mm=GRID_PANEL_MM, col_gap_mm=GRID_COL_GAP_MM,
+                      row_gap_mm=GRID_ROW_GAP_MM):
+    """The published 5-row grid (raw / weights / fit / residuals / spectral fingerprint), one column per
+    punctum, every panel ``panel_mm`` square at a fixed position (no layout engine).
+
+    Raw and fit share one photoelectron scale (``percentiles`` of the raw crops), weights and residuals
+    one scale each; one colour bar per image row, right of the last column. Raw and fit carry the 2 x 2
+    Bayer key of the filters under their top-left pixels (``p["pixel_type"]``, from the masks the data
+    were recorded with). Fingerprint error bars are drawn when ``p`` has ``spectrum_err``.
+    """
+    import matplotlib.pyplot as plt
+    n, mm = len(puncta), 1 / 25.4
+    left, right, bottom, top = 9.0, 16.0, 1.0, 1.0   # room for the row labels and the colour bars
+    W = left + n * panel_mm + (n - 1) * col_gap_mm + right
+    H = bottom + 5 * panel_mm + 4 * row_gap_mm + top
+    fig = plt.figure(figsize=(W * mm, H * mm))
+    fig.set_layout_engine("none")
+    axs = np.array([[fig.add_axes([(left + k * (panel_mm + col_gap_mm)) / W,
+                                   (bottom + (4 - r) * (panel_mm + row_gap_mm)) / H, panel_mm / W, panel_mm / H])
+                     for k in range(n)] for r in range(5)])
+    raws = np.array([p["raw"] for p in puncta])
+    wts = np.array([p["weights"] for p in puncta])
+    vmin, vmax = np.percentile(raws, percentiles)
+    wmin, wmax = np.percentile(wts, percentiles)
+    rmax = max(np.abs(p["residual"]).max() for p in puncta)
+    ims = {}
+    for k, p in enumerate(puncta):
+        _, ims[0] = plotter.image_plot(axs[0, k], p["raw"], vmin=vmin, vmax=vmax, origin="upper",
+                                       pixelsize=pixel_size_nm, scalebar=(k == 0), scalebarsize=float(scalebar_nm),
+                                       scalebarlabel=f"{scalebar_nm} nm")
+        _, ims[1] = plotter.image_plot(axs[1, k], p["weights"], vmin=wmin, vmax=wmax, cmap="gray", origin="upper")
+        _, ims[2] = plotter.image_plot(axs[2, k], p["model"], vmin=vmin, vmax=vmax, origin="upper")
+        axs[2, k].plot(*p["xy"], "rx", markersize=8, markeredgewidth=2)
+        _, ims[3] = plotter.image_plot(axs[3, k], p["residual"], cmap="RdBu_r", vmin=-rmax, vmax=rmax, origin="upper")
+        for r in (0, 2):
+            PlottingBase.add_bayer_key(axs[r, k], p["pixel_type"], origin="upper")
+        for r in range(4):
+            axs[r, k].set_xticks([])
+            axs[r, k].set_yticks([])
+        err = p.get("spectrum_err")
+        axs[4, k].bar(np.arange(3), p["spectrum"], yerr=err, color=CHANNEL_COLOURS,
+                      error_kw=dict(lw=0.6, capsize=1.5))
+        axs[4, k].set(ylim=(0, 1), xticks=[], yticks=[0, 1])
+        if k:
+            axs[4, k].set_yticklabels([])
+        axs[4, k].grid(False)
+    for r, label in enumerate(["photoelectrons", weight_label, "photoelectrons", "residual (pe)"]):
+        _fixed_colorbar(fig, axs[r, -1], ims[r], label)
+    for r, label in enumerate(ROW_LABELS):
+        axs[r, 0].text(-0.08 if r < 4 else -0.22, 0.5, label, transform=axs[r, 0].transAxes, fontsize=8,
+                       ha="right", va="center", rotation=90)
     return fig, axs

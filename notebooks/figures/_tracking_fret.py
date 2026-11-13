@@ -523,42 +523,16 @@ def example_fret_puncta(SR, tif, fits, cal, roi_xy, roi_size, n_puncta, seed, qu
     return out
 
 
-def plot_example_fret_puncta(plotter, puncta, full_masks, pixel_nm, scalebar_nm=500,
-                             colours=("#5555ff", "#53b03b", "#ff2a2a")):
-    """S88 grid: raw / weights / fit / residuals / spectral fingerprint, one column per punctum.
-    The raw and fit images carry the 2 x 2 Bayer key of the sensor pixels under their top-left corner."""
+def plot_example_fret_puncta(plotter, puncta, full_masks, pixel_nm, scalebar_nm=500):
+    """S86 grid (raw / weights / fit / residuals / spectral fingerprint, one column per punctum) in the
+    published layout (``_example_puncta.plot_example_grid``). The raw and fit images carry the 2 x 2
+    Bayer key of the sensor pixels under their top-left corner (``full_masks`` at each crop's origin)."""
+    import _example_puncta as ep
     from pyS3M import PlottingBase
-    n = len(puncta)
-    fig, axs = plotter.two_column_plot(nrows=5, ncols=n, width=6.69, height=6.5)
-    raws = np.array([p["raw"] for p in puncta])
-    wts = np.array([p["weights"] for p in puncta])
-    vmin, vmax = np.percentile(raws, 5), np.percentile(raws, 98)
-    wmin, wmax = np.percentile(wts, 5), np.percentile(wts, 98)
-    rmax = max(np.abs(p["residual"]).max() for p in puncta)
-    last = n - 1
-    for k, p in enumerate(puncta):
-        axs[0, k], _ = plotter.image_plot(axs[0, k], p["raw"], vmin=vmin, vmax=vmax, origin="upper",
-                                          pixelsize=pixel_nm, scalebar=(k == 0), scalebarsize=float(scalebar_nm),
-                                          scalebarlabel=f"{scalebar_nm} nm", colorbar=(k == last),
-                                          colorbar_label="photoelectrons")
-        axs[1, k], _ = plotter.image_plot(axs[1, k], p["weights"], vmin=wmin, vmax=wmax, cmap="gray", origin="upper",
-                                          colorbar=(k == last), colorbar_label="weight")
-        axs[2, k], _ = plotter.image_plot(axs[2, k], p["model"], vmin=vmin, vmax=vmax, origin="upper",
-                                          colorbar=(k == last), colorbar_label="photoelectrons")
-        axs[2, k].plot(*p["xy"], "rx", markersize=8, markeredgewidth=2)
-        axs[3, k], _ = plotter.image_plot(axs[3, k], p["residual"], cmap="RdBu_r", vmin=-rmax, vmax=rmax,
-                                          origin="upper", colorbar=(k == last), colorbar_label="residuals")
-        for r in (0, 2):
-            PlottingBase.add_bayer_key(axs[r, k], full_masks, row_min=p["origin"][0], col_min=p["origin"][1])
-        for r in range(4):
-            axs[r, k].set_xticks([])
-            axs[r, k].set_yticks([])
-        axs[4, k].bar(np.arange(3), p["spectrum"], color=colours)
-        axs[4, k].set(ylim=(0, 1), xticks=[], yticks=[0, 1])
-        if k:
-            axs[4, k].set_yticklabels([])
-        axs[4, k].grid(False)
-    for r, label in enumerate(["raw", "weights", "fit", "residuals", "spectral fingerprint"]):
-        axs[r, 0].text(-0.35, 0.5, label, transform=axs[r, 0].transAxes, fontsize=8, ha="right", va="center",
-                       rotation=90)
-    return fig, axs
+    sensor = PlottingBase.bayer_pixel_type(full_masks)
+    for p in puncta:
+        r0, c0 = p["origin"]
+        n = p["raw"].shape[0]
+        p["pixel_type"] = sensor[r0:r0 + n, c0:c0 + n]
+    return ep.plot_example_grid(plotter, puncta, pixel_nm, scalebar_nm=scalebar_nm, weight_label="weight",
+                                percentiles=(5, 98))
