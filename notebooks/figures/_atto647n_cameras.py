@@ -162,14 +162,15 @@ def plot_fov_traces(plotter, frame_pe, boxes, traces, exposure_s, pixel_size_nm,
 
 
 def plot_zoom_ins(plotter, crops, types, pixel_size_nm, scalebar_nm=300):
-    """5 x 5 grid of photoelectron crops, each with its own colour bar and the 2 x 2 Bayer key of
-    its top-left corner."""
+    """5 x 5 grid of photoelectron crops, each with its own colour bar (labelled in the rightmost
+    column only) and the 2 x 2 Bayer key of its top-left corner."""
     fig, axs = plotter.two_column_plot(nrows=5, ncols=5, height=6.3)
-    for ax, c, pt in zip(axs.flat, crops, types):
+    n_cols = axs.shape[1]
+    for k, (ax, c, pt) in enumerate(zip(axs.flat, crops, types)):
         plotter.image_plot(
             ax, c, cmap="gray", origin="upper",
             vmin=np.percentile(c, 1), vmax=np.percentile(c, 99),
-            colorbar=True, colorbar_label="photoelectrons",
+            colorbar=True, colorbar_label="photoelectrons" if k % n_cols == n_cols - 1 else "",
             scalebar=True, pixelsize=pixel_size_nm, scalebarsize=float(scalebar_nm),
             scalebarlabel=f"{scalebar_nm} nm",
         )
