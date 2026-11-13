@@ -94,6 +94,18 @@ def mm_stack(w_mm, h_mm, n=1, gap_mm=0.0, margins_mm=(10.0, 8.0, 2.0, 2.0)):
     return fig, axs
 
 
+def mm_row(w_mm, h_mm, n=1, gap_mm=0.0, margins_mm=(16.0, 10.0, 2.0, 2.0)):
+    """As :func:`mm_stack`, but the ``n`` axes side by side, left to right. Returns (fig, [axes])."""
+    import matplotlib.pyplot as plt
+    mm = 1 / 25.4
+    left, bottom, right, top = margins_mm
+    W, H = n * w_mm + (n - 1) * gap_mm + left + right, h_mm + bottom + top
+    fig = plt.figure(figsize=(W * mm, H * mm))
+    fig.set_layout_engine("none")
+    axs = [fig.add_axes([(left + i * (w_mm + gap_mm)) / W, bottom / H, w_mm / W, h_mm / H]) for i in range(n)]
+    return fig, axs
+
+
 def side_colorbar(fig, ax, vmin, vmax, label, cmap="gray", width_mm=1.2, gap_mm=0.6, tick_fontsize=6,
                   label_fontsize=7):
     """A colour bar as tall as ``ax``, ``gap_mm`` to its right (the axes keeps its size)."""
