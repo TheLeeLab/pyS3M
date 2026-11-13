@@ -525,7 +525,7 @@ def example_fret_puncta(SR, tif, fits, cal, roi_xy, roi_size, n_puncta, seed, qu
 
 def plot_example_fret_puncta(plotter, puncta, full_masks, pixel_nm, scalebar_nm=500):
     """S86 grid (raw / weights / fit / residuals / spectral fingerprint, one column per punctum) in the
-    published layout (``_example_puncta.plot_example_grid``). The raw and fit images carry the 2 x 2
+    published layout (``_example_puncta.plot_example_grid``). The raw images carry the 2 x 2
     Bayer key of the sensor pixels under their top-left corner (``full_masks`` at each crop's origin)."""
     import _example_puncta as ep
     from pyS3M import PlottingBase

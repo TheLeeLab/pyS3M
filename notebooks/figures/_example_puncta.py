@@ -216,7 +216,7 @@ def plot_example_grid(plotter, puncta, pixel_size_nm, scalebar_nm=500, weight_la
     punctum, every panel ``panel_mm`` square at a fixed position (no layout engine).
 
     Raw and fit share one photoelectron scale (``percentiles`` of the raw crops), weights and residuals
-    one scale each; one colour bar per image row, right of the last column. Raw and fit carry the 2 x 2
+    one scale each; one colour bar per image row, right of the last column. The raw images carry the 2 x 2
     Bayer key of the filters under their top-left pixels (``p["pixel_type"]``, from the masks the data
     were recorded with). Fingerprint error bars are drawn when ``p`` has ``spectrum_err``.
     """
@@ -244,8 +244,7 @@ def plot_example_grid(plotter, puncta, pixel_size_nm, scalebar_nm=500, weight_la
         _, ims[2] = plotter.image_plot(axs[2, k], p["model"], vmin=vmin, vmax=vmax, origin="upper")
         axs[2, k].plot(*p["xy"], "rx", markersize=8, markeredgewidth=2)
         _, ims[3] = plotter.image_plot(axs[3, k], p["residual"], cmap="RdBu_r", vmin=-rmax, vmax=rmax, origin="upper")
-        for r in (0, 2):
-            PlottingBase.add_bayer_key(axs[r, k], p["pixel_type"], origin="upper")
+        PlottingBase.add_bayer_key(axs[0, k], p["pixel_type"], origin="upper")
         for r in range(4):
             axs[r, k].set_xticks([])
             axs[r, k].set_yticks([])
