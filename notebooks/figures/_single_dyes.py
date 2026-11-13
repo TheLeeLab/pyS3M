@@ -100,6 +100,11 @@ def open_stack(tif):
         return tifffile.imread(tif, **flags)
 
 
+def read_frame(tif, frame):
+    """One frame (rows, cols) of this position's TIFF, without reading the rest of the stack."""
+    return tifffile.imread(tif, key=frame, is_ome=False, is_mmstack=False, is_imagej=False)
+
+
 class BleachScreen:
     """Find molecules that photobleach in a single step, from raw photoelectron ROI traces.
 
