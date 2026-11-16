@@ -82,11 +82,11 @@ CLUSTER_PARAMS = dict(clustering_method="HDBSCAN", min_cluster_size=10, chi_val=
 # out-of-focus or transient spots; HDBSCAN also returns some of those as spread-out clusters.
 MIN_FRAMES = 50
 
-# Published-plot cleaning: positions 0.01-20 nm, colour precision 0.5-50 %, both for the scatter
+# Published-plot cleaning: positions 0.01-20 nm, colour precision 0.005-0.5 (SD/mean, 0.5-50 %), both for the scatter
 # and for the fits. The signal cap is also the plot's x limit; the published cap, < 2e4 "photons"
 # per frame, was ~7e3-9e3 detected photoelectrons, so MAX_PE keeps a round 1e4.
 LOC_RANGE_NM = (0.01, 20.0)
-COLOUR_RANGE_PCT = (0.5, 50.0)
+COLOUR_RANGE = (0.005, 0.5)
 MAX_PE = 1e4
 
 # Typical photons per localisation, 25th-75th percentiles of the literature values collected for
@@ -352,14 +352,15 @@ def mortensen_sigma(pe, s_a_nm, bg_pe, pixel_nm=PIXEL_NM):
 def colour_long(beads):
     """One row per bead and pixel: ``pe_px`` detected on that pixel type, its share of the signal
     ``A_px``, the counting factor ``g_px`` (``colour_count_factor``), the effective count
-    ``n_eff = pe_px / g_px`` (see the module docstring), and ``prec_pct``."""
+    ``n_eff = pe_px / g_px`` (see the module docstring), and ``prec``, the colour precision
+    SD / mean of that pixel's relative pixel QE (a fraction, plotted as σ_colour/relative pixel QE)."""
     g = colour_count_factor({ch: beads["A_" + ch] for ch in CHANNELS})
     rows = []
     for ch in CHANNELS:
         scale = GREEN_SCALE if ch == "G" else 1.0
         rows.append(beads.assign(channel=ch, pe_px=beads["pe_" + ch], A_px=beads["A_" + ch],
                                  g_px=g[ch], n_eff=beads["pe_" + ch] / g[ch],
-                                 prec_pct=100 * scale * beads["prec_" + ch]))
+                                 prec=scale * beads["prec_" + ch]))
     return pd.concat(rows, ignore_index=True)
 
 
@@ -369,9 +370,9 @@ def clean_loc(beads, column="sigma_xy"):
 
 
 def clean_colour(long):
-    """Colour points of beads that pass the position cut, with precision in ``COLOUR_RANGE_PCT``
+    """Colour points of beads that pass the position cut, with precision in ``COLOUR_RANGE``
     and ``n_eff`` (the plot's x axis) below ``MAX_PE``."""
-    m = (long["prec_pct"].between(*COLOUR_RANGE_PCT, inclusive="neither")
+    m = (long["prec"].between(*COLOUR_RANGE, inclusive="neither")
          & long["sigma_xy"].between(*LOC_RANGE_NM, inclusive="neither")
          & (long["n_eff"] < MAX_PE))
     return long[m]
