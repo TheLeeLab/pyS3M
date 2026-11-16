@@ -162,10 +162,13 @@ class FittingConstants:
     # the relative drop in the total chi^2 below which a fit stops, and with ~1,600 pixels 1e-2 is a
     # drop of ~35 in chi^2, so the fit stops far from the minimum. On 100 in-focus frames of
     # TetraSpeck beads (40 px boxes) the fitted fingerprint then depended on the starting guess
-    # (1 % of fits agreed between two starts); at ftol 1e-8 89 % agreed, chi^2 fell for every bead
-    # and the per-bead fingerprint scatter fell ~40 %. More evaluations are allowed for these fits.
+    # (1 % of fits agreed between two starts); at ftol and xtol 1e-8 89 % agreed, chi^2 fell for
+    # every bead and the per-bead fingerprint scatter fell ~40 %. ftol 1e-8 with xtol 1e-4 still
+    # stopped early (a third of fits at the converged answer); with both at 1e-8 every fit matched.
+    # More evaluations are allowed for these fits (28 of 700 more fits kept).
     LARGE_ROI_SIZE = 25
     LARGE_ROI_FTOL = 1e-8
+    LARGE_ROI_XTOL = 1e-8
     LARGE_ROI_MAXFEV_FACTOR = 10
 
     # Amplitude SNR threshold (Wald t-statistic, replaces all three hard gates)
@@ -189,12 +192,12 @@ class FittingConstants:
 def _lm_kwargs(size: int, n_params: int) -> dict:
     """Levenberg-Marquardt stopping settings for a ``size`` x ``size`` ROI with ``n_params`` parameters.
 
-    ROIs wider than ``FittingConstants.LARGE_ROI_SIZE`` get ``LARGE_ROI_FTOL`` and
+    ROIs wider than ``FittingConstants.LARGE_ROI_SIZE`` get ``LARGE_ROI_FTOL``, ``LARGE_ROI_XTOL`` and
     ``LARGE_ROI_MAXFEV_FACTOR`` x scipy's default evaluation limit (200 * (n_params + 1));
-    smaller ROIs keep ``DEFAULT_FTOL`` and scipy's default limit. ``xtol`` is ``DEFAULT_XTOL`` for both.
+    smaller ROIs keep ``DEFAULT_FTOL``, ``DEFAULT_XTOL`` and scipy's default limit.
     """
     if size > FittingConstants.LARGE_ROI_SIZE:
-        return dict(ftol=FittingConstants.LARGE_ROI_FTOL, xtol=FittingConstants.DEFAULT_XTOL,
+        return dict(ftol=FittingConstants.LARGE_ROI_FTOL, xtol=FittingConstants.LARGE_ROI_XTOL,
                     maxfev=FittingConstants.LARGE_ROI_MAXFEV_FACTOR * 200 * (n_params + 1))
     return dict(ftol=FittingConstants.DEFAULT_FTOL, xtol=FittingConstants.DEFAULT_XTOL)
 

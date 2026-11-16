@@ -163,7 +163,7 @@ class DeltaChi2Gate:
         """Everything a calibration depends on.
 
         For ROIs wider than ``FittingConstants.LARGE_ROI_SIZE`` this includes the fitter's stopping
-        settings for them (``LARGE_ROI_FTOL``, ``LARGE_ROI_MAXFEV_FACTOR``): the null fits stop
+        settings for them (``LARGE_ROI_FTOL``, ``LARGE_ROI_XTOL``, ``LARGE_ROI_MAXFEV_FACTOR``): the null fits stop
         elsewhere at other settings, so a calibration made before they changed is not reused.
         Smaller ROIs keep their key (and their cached calibrations).
         """
@@ -179,6 +179,7 @@ class DeltaChi2Gate:
         }
         if roi_size > FittingConstants.LARGE_ROI_SIZE:
             key["large_roi_ftol"] = FittingConstants.LARGE_ROI_FTOL
+            key["large_roi_xtol"] = FittingConstants.LARGE_ROI_XTOL
             key["large_roi_maxfev_factor"] = FittingConstants.LARGE_ROI_MAXFEV_FACTOR
         return key
 

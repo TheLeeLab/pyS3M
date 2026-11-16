@@ -20,7 +20,7 @@ def test_small_rois_keep_the_default_stopping_rule():
 def test_large_rois_get_tight_ftol_and_more_evaluations():
     kw = IAF._lm_kwargs(FittingConstants.LARGE_ROI_SIZE + 1, 10)
     assert kw["ftol"] == FittingConstants.LARGE_ROI_FTOL
-    assert kw["xtol"] == FittingConstants.DEFAULT_XTOL
+    assert kw["xtol"] == FittingConstants.LARGE_ROI_XTOL
     assert kw["maxfev"] == FittingConstants.LARGE_ROI_MAXFEV_FACTOR * 200 * 11
 
 
@@ -30,12 +30,13 @@ def test_gate_key_names_the_large_roi_settings_only_for_large_rois():
     large = gate.calibration_key(FittingStrategy.STANDARD_DATA, 40, 2.3, 3)
     assert "large_roi_ftol" not in small
     assert large["large_roi_ftol"] == FittingConstants.LARGE_ROI_FTOL
+    assert large["large_roi_xtol"] == FittingConstants.LARGE_ROI_XTOL
     assert large["large_roi_maxfev_factor"] == FittingConstants.LARGE_ROI_MAXFEV_FACTOR
 
 
 def test_large_roi_fit_reaches_the_same_minimum_from_two_starts():
     """A 3,000 photoelectron spot in a 40 px box (the fitter's own model plus Poisson and read
-    noise): two starting guesses converge to the same colours. At ftol 1e-2 they differ by ~0.008."""
+    noise): two starting guesses converge to the same colours. At ftol 1e-2 / xtol 1e-4 they differ by ~0.008."""
     import pyS3M.gaussoptfuncs as gof
 
     size = 40
@@ -57,4 +58,4 @@ def test_large_roi_fit_reaches_the_same_minimum_from_two_starts():
         assert ok in (1, 2, 3, 4)
         a = pfit[7:] ** 2
         fits.append(a / a.sum())
-    np.testing.assert_allclose(fits[0], fits[1], atol=0.004)
+    np.testing.assert_allclose(fits[0], fits[1], atol=0.002)   # the fit SD of each share is ~0.014
