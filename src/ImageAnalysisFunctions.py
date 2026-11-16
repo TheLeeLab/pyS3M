@@ -158,6 +158,16 @@ class FittingConstants:
     # 1e-4 removes both at no measurable cost; 1e-3 already does, smaller values change nothing.
     DEFAULT_XTOL = 1e-4
 
+    # Large ROIs (side > LARGE_ROI_SIZE px, e.g. the 40 px boxes of the z-defocus beads): ftol is
+    # the relative drop in the total chi^2 below which a fit stops, and with ~1,600 pixels 1e-2 is a
+    # drop of ~35 in chi^2, so the fit stops far from the minimum. On 100 in-focus frames of
+    # TetraSpeck beads (40 px boxes) the fitted fingerprint then depended on the starting guess
+    # (1 % of fits agreed between two starts); at ftol 1e-8 89 % agreed, chi^2 fell for every bead
+    # and the per-bead fingerprint scatter fell ~40 %. More evaluations are allowed for these fits.
+    LARGE_ROI_SIZE = 25
+    LARGE_ROI_FTOL = 1e-8
+    LARGE_ROI_MAXFEV_FACTOR = 10
+
     # Amplitude SNR threshold (Wald t-statistic, replaces all three hard gates)
     AMPLITUDE_SNR_THRESHOLD = 2.0  # sigma; z = sum(|q_c|)/sqrt(sum(var(q_c))) >= this
 
@@ -174,6 +184,19 @@ class FittingConstants:
         FittingStrategy.ELLIPTICAL: {"fit": 13, "error": 11},
         FittingStrategy.NOCOLOUR: {"fit": 8, "error": 6},
     }
+
+
+def _lm_kwargs(size: int, n_params: int) -> dict:
+    """Levenberg-Marquardt stopping settings for a ``size`` x ``size`` ROI with ``n_params`` parameters.
+
+    ROIs wider than ``FittingConstants.LARGE_ROI_SIZE`` get ``LARGE_ROI_FTOL`` and
+    ``LARGE_ROI_MAXFEV_FACTOR`` x scipy's default evaluation limit (200 * (n_params + 1));
+    smaller ROIs keep ``DEFAULT_FTOL`` and scipy's default limit. ``xtol`` is ``DEFAULT_XTOL`` for both.
+    """
+    if size > FittingConstants.LARGE_ROI_SIZE:
+        return dict(ftol=FittingConstants.LARGE_ROI_FTOL, xtol=FittingConstants.DEFAULT_XTOL,
+                    maxfev=FittingConstants.LARGE_ROI_MAXFEV_FACTOR * 200 * (n_params + 1))
+    return dict(ftol=FittingConstants.DEFAULT_FTOL, xtol=FittingConstants.DEFAULT_XTOL)
 
 
 @dataclass
@@ -823,8 +846,7 @@ class StandardFittingProcessor(FittingProcessor):
                 gaussoptfuncs.WLS_chi_nobounds,
                 x0=initial_guess,
                 args=(data, masks, weights, size, ravelsize),
-                ftol=FittingConstants.DEFAULT_FTOL,
-                xtol=FittingConstants.DEFAULT_XTOL,
+                **_lm_kwargs(size, len(initial_guess)),
             )
 
             if success not in np.array([1, 2, 3, 4]) or _lm_stuck(pfit, initial_guess):
@@ -920,8 +942,7 @@ class StandardDataFittingProcessor(StandardFittingProcessor):
             gaussoptfuncs.WLS_chi_nobounds,
             x0=x0,
             args=(data, masks, weights, size, size * size),
-            ftol=FittingConstants.DEFAULT_FTOL,
-            xtol=FittingConstants.DEFAULT_XTOL,
+            **_lm_kwargs(size, len(x0)),
         )
         return pfit, pcov, ok
 
@@ -1061,8 +1082,7 @@ class CircularFittingProcessor(StandardDataFittingProcessor):
             gaussoptfuncs.WLS_chi_circular_nobounds,
             x0=x0,
             args=(data, masks, weights, size, size * size),
-            ftol=FittingConstants.DEFAULT_FTOL,
-            xtol=FittingConstants.DEFAULT_XTOL,
+            **_lm_kwargs(size, len(x0)),
         )
         return pfit, pcov, ok
 
@@ -1187,8 +1207,7 @@ class EllipticalFittingProcessor(FittingProcessor):
                 gaussoptfuncs.WLS_chi_elliptical_nobounds,
                 x0=initial_guess,
                 args=(data, masks, weights, size, ravelsize),
-                ftol=FittingConstants.DEFAULT_FTOL,
-                xtol=FittingConstants.DEFAULT_XTOL,
+                **_lm_kwargs(size, len(initial_guess)),
             )
 
             if success not in np.array([1, 2, 3, 4]) or _lm_stuck(pfit, initial_guess):
@@ -1307,8 +1326,7 @@ class NoColourFittingProcessor(FittingProcessor):
                 gaussoptfuncs.WLS_chi_nocolour_nobounds,
                 x0=initial_guess,
                 args=(data, weights, size, ravelsize),
-                ftol=FittingConstants.DEFAULT_FTOL,
-                xtol=FittingConstants.DEFAULT_XTOL,
+                **_lm_kwargs(size, len(initial_guess)),
             )
 
             if success not in np.array([1, 2, 3, 4]):

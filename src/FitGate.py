@@ -160,8 +160,15 @@ class DeltaChi2Gate:
     # ---------------- calibration ----------------
 
     def calibration_key(self, strategy: Any, roi_size: int, readnoise: float, n_ch: int) -> dict:
-        """Everything a calibration depends on."""
-        return {
+        """Everything a calibration depends on.
+
+        For ROIs wider than ``FittingConstants.LARGE_ROI_SIZE`` this includes the fitter's stopping
+        settings for them (``LARGE_ROI_FTOL``, ``LARGE_ROI_MAXFEV_FACTOR``): the null fits stop
+        elsewhere at other settings, so a calibration made before they changed is not reused.
+        Smaller ROIs keep their key (and their cached calibrations).
+        """
+        from pyS3M.ImageAnalysisFunctions import FittingConstants
+        key = {
             "version": CALIBRATION_VERSION,
             "strategy": getattr(strategy, "value", str(strategy)),
             "roi_size": int(roi_size),
@@ -170,6 +177,10 @@ class DeltaChi2Gate:
             "smoothing_sigma": round(self.smoothing_sigma, 2),
             "n_null": self.n_null,
         }
+        if roi_size > FittingConstants.LARGE_ROI_SIZE:
+            key["large_roi_ftol"] = FittingConstants.LARGE_ROI_FTOL
+            key["large_roi_maxfev_factor"] = FittingConstants.LARGE_ROI_MAXFEV_FACTOR
+        return key
 
     def _cache_path(self, key: dict) -> Path:
         digest = hashlib.sha1(json.dumps(key, sort_keys=True).encode()).hexdigest()[:10]
