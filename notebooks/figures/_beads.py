@@ -11,12 +11,21 @@ the SI note "Calibrating Precision":
   share of the sensor covered by pixel type X, from the mosaic; SI Eq. S18);
 * ``pe_X`` -- detected photoelectrons on pixel type X, ``f_X * A_X``.
 
-Colour precision is plotted and fitted against ``n_eff = pe_X / (1 - A_X)``: for a fraction A of the
-signal measured from N_X photoelectrons, counting noise gives std(A) / A = sqrt((1 - A) / N_X), so
-pixel types carrying most of a bead's light (red at 638 nm, A ~ 0.7) are more precise at the same
-N_X. Against ``n_eff`` all pixel types and lasers fall on one curve; against ``pe_X`` they form
-bands. Only beads that pass the position cut (``LOC_RANGE_NM``) are used for colour as well: beads
-outside it are mostly merged or smeared clusters whose colour changes from frame to frame.
+Colour precision is plotted and fitted against the effective count ``n_eff = pe_X / g_X``. The fit
+returns amplitudes ``a_Y`` (what pixel type Y would collect over the whole sensor) from the
+``N_Y = f_Y a_Y`` photoelectrons that type detects, so counting noise gives var(a_Y) = a_Y / f_Y.
+Propagated to the share ``A_X = a_X / sum_Y a_Y`` (delta method, Poisson counts, no background):
+
+    (std(A_X) / A_X)^2 = g_X / N_X,   g_X = (1 - A_X)^2 + A_X f_X sum_{Y != X} A_Y / f_Y
+
+(``colour_count_factor``). With equal pixel fractions g_X = 1 - A_X; on the Bayer mosaic
+(f = 1/4, 1/2, 1/4) pixel 2's g is larger than 1 - A_2 (1.7x for the 488 nm beads) and pixels 1
+and 3's are smaller, so ``1 - A_X`` (used 2026-11-09 to -11-16) left pixel 2 above the other pixel types.
+Pixel types carrying most of a bead's light (pixel 3 at 638 nm, A ~ 0.7) are more precise at the
+same N_X. Against ``n_eff`` all pixel types and lasers fall on one curve; against ``pe_X`` they form
+bands (``simulate_colour_precision`` checks the formula). Only beads that pass the position cut
+(``LOC_RANGE_NM``) are used for colour as well: beads outside it are mostly merged or smeared
+clusters whose colour changes from frame to frame.
 
 The published plot used ``photons`` = A_B + A_G + A_R, which overcounts the detected photoelectrons
 2-4x, and its signal on pixel X, A_X, ignored that pixel 2 (green) covers twice the area of pixel 1
@@ -267,15 +276,59 @@ def bead_precision(sf_db, min_frames=MIN_FRAMES, pixel_nm=PIXEL_NM):
     return out.reset_index()
 
 
+def colour_count_factor(shares, fractions=None):
+    """Counting-noise factor g_X of each pixel type's share (module docstring):
+    (std(A_X) / A_X)^2 = g_X / N_X, with N_X the photoelectrons pixel type X detects.
+
+    Args:
+        shares: ``{X: A_X}`` (floats or arrays), the shares of the summed amplitude; they should
+            add up to 1.
+        fractions: ``{X: f_X}``, each pixel type's share of the sensor (default: the Ximea mosaic).
+
+    Returns:
+        dict: ``{X: g_X}``, same shapes as the shares. Equal fractions give g_X = 1 - A_X.
+    """
+    f = PIXEL_FRACTIONS if fractions is None else fractions
+    return {x: (1 - shares[x]) ** 2 + shares[x] * f[x] * sum(shares[y] / f[y] for y in shares if y != x)
+            for x in shares}
+
+
+def simulate_colour_precision(shares, n_pe, n_frames=20000, fractions=None, seed=0):
+    """Monte Carlo check of ``colour_count_factor``: Poisson photoelectrons on each pixel type, no
+    background. A bead with amplitude shares ``shares`` and ``n_pe`` detected photoelectrons per
+    frame puts N_X = n_pe f_X A_X / sum_Y f_Y A_Y on pixel type X; each frame's amplitudes are
+    a_X = N_X / f_X.
+
+    Returns:
+        pd.DataFrame: one row per pixel type: ``channel``, ``A_px``, ``pe_px`` (mean N_X),
+        ``simulated`` (std / mean of the simulated shares), ``exact`` (sqrt(g_X / N_X)) and
+        ``one_minus_a`` (sqrt((1 - A_X) / N_X)).
+    """
+    f = PIXEL_FRACTIONS if fractions is None else fractions
+    chans = list(shares)
+    a = np.array([shares[c] for c in chans], float)
+    fx = np.array([f[c] for c in chans], float)
+    n_x = n_pe * fx * a / np.sum(fx * a)
+    counts = np.random.default_rng(seed).poisson(n_x, (n_frames, len(chans)))
+    amp = counts / fx
+    sim = amp / amp.sum(axis=1, keepdims=True)
+    g = colour_count_factor(dict(zip(chans, a)), f)
+    return pd.DataFrame({"channel": chans, "A_px": a, "pe_px": n_x,
+                         "simulated": sim.std(axis=0) / sim.mean(axis=0),
+                         "exact": np.sqrt([g[c] / n for c, n in zip(chans, n_x)]),
+                         "one_minus_a": np.sqrt((1 - a) / n_x)})
+
+
 def colour_long(beads):
     """One row per bead and pixel: ``pe_px`` detected on that pixel type, its share of the signal
-    ``A_px``, the effective count ``n_eff = pe_px / (1 - A_px)`` (see the module docstring), and
-    ``prec_pct``."""
+    ``A_px``, the counting factor ``g_px`` (``colour_count_factor``), the effective count
+    ``n_eff = pe_px / g_px`` (see the module docstring), and ``prec_pct``."""
+    g = colour_count_factor({ch: beads["A_" + ch] for ch in CHANNELS})
     rows = []
     for ch in CHANNELS:
         scale = GREEN_SCALE if ch == "G" else 1.0
         rows.append(beads.assign(channel=ch, pe_px=beads["pe_" + ch], A_px=beads["A_" + ch],
-                                 n_eff=beads["pe_" + ch] / (1 - beads["A_" + ch]),
+                                 g_px=g[ch], n_eff=beads["pe_" + ch] / g[ch],
                                  prec_pct=100 * scale * beads["prec_" + ch]))
     return pd.concat(rows, ignore_index=True)
 
