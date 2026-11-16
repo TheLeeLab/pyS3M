@@ -231,7 +231,8 @@ def bead_precision(sf_db, min_frames=MIN_FRAMES, pixel_nm=PIXEL_NM):
 
     Returns:
         pd.DataFrame: One row per bead: ``fov_name``, ``bead``, ``n``, ``pe``,
-        ``sigma_xy``, ``sigma_xy_cm`` (nm), ``bg_pe`` (mean background per pixel, photoelectrons;
+        ``sigma_xy``, ``sigma_xy_cm`` (nm), ``s_nm`` (mean fitted PSF width, sqrt(s_x s_y), nm),
+        ``s_a_nm`` (``s_nm`` with the pixel size added in quadrature, ``psf_area_width``), ``bg_pe`` (mean background per pixel, photoelectrons;
         if the input has ``background_photoelectrons``), and for X in B, G, R: ``A_X`` (mean),
         ``prec_X`` (std / mean, fraction) and ``pe_X``.
     """
@@ -258,16 +259,19 @@ def bead_precision(sf_db, min_frames=MIN_FRAMES, pixel_nm=PIXEL_NM):
         others = (grp[c + "_ref"].transform("sum") - d[c].where(ref, 0.0)) / n_others.where(n_others > 0)
         d[c + "_cm"] = (d[c] - others).where(n_others >= 2)
 
+    d["s_nm"] = np.sqrt(d["s_x"] * d["s_y"]) * pixel_nm
     g = d.groupby(keys)
     out = pd.DataFrame({
         "n": g.size(),
         "pe": g["photoelectrons"].mean(),
+        "s_nm": g["s_nm"].mean(),
         "sigma_xy": (g["dxc"].std() + g["dyc"].std()) / 2,
         "sigma_xy_cm": ((g["dxc_cm"].std() + g["dyc_cm"].std()) / 2)
                        .where(g["dxc_cm"].count() >= min_frames),
     })
     if "background_photoelectrons" in d.columns:
         out["bg_pe"] = g["background_photoelectrons"].mean()
+    out["s_a_nm"] = psf_area_width(out["s_nm"], pixel_nm)
     for ch in CHANNELS:
         a = g["A_" + ch]
         out["A_" + ch] = a.mean()
@@ -317,6 +321,32 @@ def simulate_colour_precision(shares, n_pe, n_frames=20000, fractions=None, seed
                          "simulated": sim.std(axis=0) / sim.mean(axis=0),
                          "exact": np.sqrt([g[c] / n for c, n in zip(chans, n_x)]),
                          "one_minus_a": np.sqrt((1 - a) / n_x)})
+
+
+def psf_area_width(s_nm, pixel_nm=PIXEL_NM):
+    """PSF width with pixelation, s_a = sqrt(s^2 + a^2 / 12) (Mortensen et al., Nat. Methods 2010)."""
+    return np.sqrt(np.asarray(s_nm, float) ** 2 + pixel_nm ** 2 / 12)
+
+
+def density_normalised_pe(pe, s_a_nm, s_ref_nm):
+    """Photoelectrons a PSF of width ``s_ref_nm`` would need for the same photoelectron density.
+
+    Localisation precision depends on N and the PSF width only through the density N / s_a^2
+    (and the background per area): sigma^2 = (s_a^2 / N)(16/9 + 8 pi s_a^2 b / (N a^2))
+    (``mortensen_sigma``), which is (1 / D)(16/9 + 8 pi beta / D) with D = N / s_a^2 and
+    beta = b / a^2. So ``N (s_ref / s_a)^2`` puts beads of different PSF width (e.g. the three
+    lasers' emission wavelengths) on one axis, still in photoelectrons, equal to N for a bead of
+    width s_ref.
+    """
+    return np.asarray(pe, float) * (s_ref_nm / np.asarray(s_a_nm, float)) ** 2
+
+
+def mortensen_sigma(pe, s_a_nm, bg_pe, pixel_nm=PIXEL_NM):
+    """Least-squares localisation precision (nm) of a Gaussian PSF on an ideal detector
+    (Mortensen et al., Nat. Methods 2010, Eq. 4 without EM gain): N detected photoelectrons,
+    PSF width s_a (``psf_area_width``), background ``bg_pe`` photoelectrons per pixel."""
+    pe, s_a, bg = (np.asarray(v, float) for v in (pe, s_a_nm, bg_pe))
+    return np.sqrt(s_a ** 2 / pe * (16 / 9 + 8 * np.pi * s_a ** 2 * bg / (pe * pixel_nm ** 2)))
 
 
 def colour_long(beads):
