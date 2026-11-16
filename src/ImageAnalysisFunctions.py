@@ -323,7 +323,8 @@ class FittingResultProcessor:
             # (xc_err < threshold) reject these fits rather than treating them as
             # perfectly precise.  0.0 was the old value and caused eps=0 in DBSCAN
             # when chi_sqr is very small (bright spots → pcov*chisqr→0).
-            errors = np.where(diagonal > 0, np.sqrt(diagonal), np.nan)
+            # NaN before the sqrt: np.where evaluates both branches, so sqrt(diagonal) would warn
+            errors = np.sqrt(np.where(diagonal > 0, diagonal, np.nan))
 
             if pfit is not None:
                 sqrt_slice = FittingResultProcessor._sqrt_space_slice(strategy, len(pfit))
