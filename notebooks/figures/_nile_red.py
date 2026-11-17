@@ -130,7 +130,7 @@ def sized_image(img, height_pt, pixel_nm, scalebar_nm, scalebar_label, scalebar_
 
 
 def render_red_share(render, locs, c_min, c_max, oversampling, mindensperc=1.0, maxdensperc=99.5,
-                     min_blur_width=0.0, viewport=None):
+                     min_blur_width=0.0, viewport=None, occupied_only=False):
     """The relative pixel 3 QE render used for every Figure 5 panel (S. aureus and alpha-syn alike).
 
     Each localisation is a Gaussian of its own precision (at least ``min_blur_width``); hue = photon-weighted
@@ -140,6 +140,11 @@ def render_red_share(render, locs, c_min, c_max, oversampling, mindensperc=1.0, 
     field, so those faintest pixels come back grey. (This is the published S. aureus render.) Crops
     are cut from this image unchanged, so they share its brightness scale.
 
+    With ``occupied_only`` the percentiles are taken over the pixels with any density only. Use it for a
+    sparse field (the ZWO S. aureus replicate, < 1 % of the field occupied): over the whole field the
+    99.5th percentile falls in the cells' faint edges and saturates ~70 % of each cell, flattening it;
+    there, ``maxdensperc=95`` of the occupied pixels saturates ~20 %, close to the super-resolved panel.
+
     Args:
         render: The ``render`` module (passed in so this file needs no src path).
         locs: DataFrame with ``red_share`` (from ``red_share_pixelated``), ``xc``, ``yc``, ``xc_err``, ``yc_err``.
@@ -147,6 +152,7 @@ def render_red_share(render, locs, c_min, c_max, oversampling, mindensperc=1.0, 
         oversampling: Render pixels per camera pixel.
         min_blur_width: Smallest Gaussian width (camera px); 0 (the S. aureus render) for none.
         viewport: ((y_min, x_min), (y_max, x_max)) in camera px; default (0, 0) to the localisations' maxima.
+        occupied_only: Brightness percentiles over the occupied (density > 0) pixels, not the whole field.
 
     Returns:
         (density image, RGB image), both (rows, cols) in render pixels, origin at camera (0, 0).
@@ -158,7 +164,8 @@ def render_red_share(render, locs, c_min, c_max, oversampling, mindensperc=1.0, 
         viewport=viewport if viewport is not None else ((0, 0), (np.max(locs["yc"]), np.max(locs["xc"]))),
         blur_method="gaussian_colour", cparam="red_share", c_min=c_min, c_max=c_max,
         min_blur_width=min_blur_width)
-    lo, hi = np.percentile(grey, mindensperc), np.percentile(grey, maxdensperc)
+    ref = grey[grey > 0] if occupied_only else grey
+    lo, hi = np.percentile(ref, mindensperc), np.percentile(ref, maxdensperc)
     hsv = mcolors.rgb_to_hsv(colour)
     hsv[..., 2] = np.clip((grey - lo) / (hi - lo), 0, 1)
     return grey, mcolors.hsv_to_rgb(hsv)
