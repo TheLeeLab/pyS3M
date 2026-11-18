@@ -1429,6 +1429,81 @@ class NileRed_Functions:
 
         return df
 
+    def pixelate_relative_pixel3_qe(
+        self,
+        df: pd.DataFrame,
+        pixel_size_nm: float = 50.0,
+        camera_pixel_size: float | None = None,  # nm; None → self.pixel_size * 1000
+        min_localisations: int = 3,
+    ) -> tuple[pd.DataFrame, dict]:
+        """Relative pixel 3 QE of each cell of a spatial grid, with no spectral model.
+
+        Localisations are binned onto a regular grid (``pixel_size_nm`` cells, origin at the
+        lowest localisation rounded down to the grid). Each localisation adds its photoelectrons,
+        split by its fitted relative pixel QEs, to its cell, and the cell's relative pixel 3 QE is
+
+            f_R = sum_i N_i A_R,i / sum_i N_i (A_R,i + A_G,i + A_B,i),
+
+        the share of the cell's photoelectrons that fell on pixel 3 (red). A change in f_R can only
+        come from a change in the emitters' spectrum; no wavelength is assigned. Cells with fewer
+        than ``min_localisations`` usable localisations are NaN. Localisations without finite
+        relative pixel QEs (summing to > 0) or photoelectrons (> 0) are left out.
+
+        Args:
+            df: Localisations with ``xc``, ``yc`` (camera px), ``A_R``, ``A_G``, ``A_B`` and
+                ``photoelectrons``.
+            pixel_size_nm: Grid cell size (sample-plane nm).
+            camera_pixel_size: Camera pixel (sample-plane nm); default this object's pixel size.
+            min_localisations: Fewest usable localisations for a cell to get a value.
+
+        Returns:
+            (df, grid_info): ``df`` is a copy with ``pixel_ix``, ``pixel_iy`` (its cell) and
+            ``relative_pixel3_qe`` (its cell's value, NaN if the cell has none). ``grid_info``
+            holds ``pixel3_grid`` and ``n_locs_grid`` ([iy, ix] arrays), ``pixel_size_nm``,
+            ``origin_nm`` (x, y), ``grid_shape`` (ny, nx), ``n_pixels`` (cells with a value) and
+            ``n_pixels_skipped`` (occupied cells below ``min_localisations``).
+        """
+        if camera_pixel_size is None:
+            camera_pixel_size = self.pixel_size * 1000  # µm → nm
+        A = df[["A_R", "A_G", "A_B"]].to_numpy(dtype=np.float64)
+        pe = df["photoelectrons"].to_numpy(dtype=np.float64)
+        usable = np.isfinite(A).all(axis=1) & (A.sum(axis=1) > 0) & np.isfinite(pe) & (pe > 0)
+
+        x_nm = df["xc"].to_numpy(dtype=np.float64) * camera_pixel_size
+        y_nm = df["yc"].to_numpy(dtype=np.float64) * camera_pixel_size
+        x_min = np.floor(np.nanmin(x_nm) / pixel_size_nm) * pixel_size_nm
+        y_min = np.floor(np.nanmin(y_nm) / pixel_size_nm) * pixel_size_nm
+        ix = np.floor((x_nm - x_min) / pixel_size_nm).astype(int)
+        iy = np.floor((y_nm - y_min) / pixel_size_nm).astype(int)
+        ny, nx = int(iy.max()) + 1, int(ix.max()) + 1
+
+        pe_R = np.zeros((ny, nx))
+        pe_all = np.zeros((ny, nx))
+        n_locs = np.zeros((ny, nx), dtype=int)
+        u = usable
+        np.add.at(pe_R, (iy[u], ix[u]), pe[u] * A[u, 0])
+        np.add.at(pe_all, (iy[u], ix[u]), pe[u] * A[u].sum(axis=1))
+        np.add.at(n_locs, (iy[u], ix[u]), 1)
+
+        has_value = n_locs >= min_localisations
+        grid = np.full((ny, nx), np.nan)
+        grid[has_value] = pe_R[has_value] / pe_all[has_value]
+
+        out = df.copy()
+        out["pixel_ix"] = ix
+        out["pixel_iy"] = iy
+        out["relative_pixel3_qe"] = grid[iy, ix]
+        grid_info = {
+            "pixel3_grid": grid,
+            "n_locs_grid": n_locs,
+            "pixel_size_nm": pixel_size_nm,
+            "origin_nm": (x_min, y_min),
+            "grid_shape": (ny, nx),
+            "n_pixels": int(has_value.sum()),
+            "n_pixels_skipped": int(((n_locs > 0) & ~has_value).sum()),
+        }
+        return out, grid_info
+
     def fit_wavelengths_pixelated(
         self,
         h5_path: str,

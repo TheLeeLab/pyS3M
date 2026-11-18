@@ -190,7 +190,7 @@ class ResultsPanel(QWidget):
         self._unmixing_tab = _FigureTab("Run channel unmixing to see the spectral/spatial overlay.")
         self._tabs.addTab(self._unmixing_tab, "Unmixing")
 
-        self._nile_red_tab = _FigureTab("Run Nile Red fitting to see the wavelength map.")
+        self._nile_red_tab = _FigureTab("Run the Nile Red analysis to see the relative pixel 3 QE map.")
         self._tabs.addTab(self._nile_red_tab, "Nile Red")
 
         self._n_fovs = 1

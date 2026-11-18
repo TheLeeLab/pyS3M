@@ -47,13 +47,6 @@ _CURATED_FILTERS = [
     ("Dichroic R514",        "semrock-di03-r514-t1-25x36"),
 ]
 
-# Default-checked filters for Nile Red pixelated fitting — the exact optical
-# path used throughout the S. Aureus Nile Red notebooks
-# (notebooks/saureus/SAureus_PostAnalysis.ipynb / SAureus_ZWO_PostAnalysis.ipynb).
-NILE_RED_DEFAULT_FILTERS = {
-    "semrock-di03-r514-t1-25x36", "semrock-ff01-515-lp", "semrock-ff01-650-200",
-}
-
 # Fixed photon levels to sweep (rows in the PSF grid)
 _PHOTON_LEVELS = [200, 500, 1_000, 5_000]
 

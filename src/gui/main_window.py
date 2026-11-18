@@ -58,8 +58,8 @@ class MainWindow(QMainWindow):
         self._undrifted_locs = None                      # DataFrame, set once undrift succeeds
         self._sm_db = None
         self._sf_db = None
-        self._nile_red_db = None                          # per-loc DataFrame + wl_pixel columns
-        self._nile_red_grid = None                        # grid_info dict from fit_wavelengths_pixelated
+        self._nile_red_db = None                          # per-loc DataFrame + relative_pixel3_qe columns
+        self._nile_red_grid = None                        # grid_info dict from pixelate_relative_pixel3_qe
         self._nile_red_input_df = None                     # explicitly-loaded override for sf_db
 
         self._build_ui()
@@ -231,7 +231,7 @@ class MainWindow(QMainWindow):
     def _invalidate_nile_red(self):
         """Nile Red results are derived from sf_db — call whenever fitting,
         drift correction, or clustering are (re-)run or cleared, so a stale
-        wavelength map never lingers against data it no longer matches."""
+        relative pixel 3 QE map never lingers against data it no longer matches."""
         self._nile_red_db = None
         self._nile_red_grid = None
         self.nile_red_panel.set_clear_enabled(False)
@@ -1420,52 +1420,21 @@ class MainWindow(QMainWindow):
         return fig
 
     # ------------------------------------------------------------------
-    # Nile Red — pixelated wavelength fit (uses sf_db, post-clustering)
+    # Nile Red — pixelated relative pixel 3 QE (uses sf_db, post-clustering)
     # ------------------------------------------------------------------
 
-    def _on_run_nile_red(
-        self, filter_ids: list, wl_min: float, wl_max: float,
-        pixel_size_nm: float, min_locs: int,
-    ):
+    def _on_run_nile_red(self, pixel_size_nm: float, min_locs: int):
         if self._worker_running() or self.pipeline is None:
             return
         locs = self._nile_red_input_df if self._nile_red_input_df is not None else self._sf_db
         if locs is None or locs.empty:
             return  # button is state-gated to "clustered" (or a loaded file), but guard anyway
-        aggregate_id_column = "molecular_index" if "molecular_index" in locs.columns else None
 
         def _do():
-            import sys as _sys
-            _sys.path.insert(0, str(Path(__file__).parent.parent))
-            import tempfile
-            import os
-            from pyS3M.IOFunctions import IO_Functions
-            import pyS3M.SpectralFunctions as SpectralFunctions
-
-            fd, tmp_path = tempfile.mkstemp(suffix=".h5")
-            os.close(fd)
-            try:
-                IO_Functions().write_h5_database(
-                    locs, tmp_path, normalise_photons=False, verbose=False,
-                )
-                R_qe, G_qe, B_qe, wl = SpectralFunctions.Spectral_Funcs(
-                    camera=self.pipeline.camera
-                ).getpixelefficiency()
-                camera_parameters = {
-                    "pixel_QYs": np.vstack([B_qe, G_qe, R_qe]), "wavelength": wl,
-                }
-                df, grid_info = self.pipeline.nile_red.fit_wavelengths_pixelated(
-                    tmp_path, filter_ids, camera_parameters,
-                    pixel_size_nm=pixel_size_nm,
-                    wavelength_bounds=(wl_min, wl_max),
-                    min_localisations=min_locs,
-                    aggregate_id_column=aggregate_id_column,
-                    verbose=True,
-                    return_grid=True,
-                )
-            finally:
-                os.unlink(tmp_path)
-            fig = self._make_nile_red_figure(grid_info, wl_min, wl_max)
+            df, grid_info = self.pipeline.nile_red.pixelate_relative_pixel3_qe(
+                locs, pixel_size_nm=pixel_size_nm, min_localisations=min_locs,
+            )
+            fig = self._make_nile_red_figure(grid_info)
             return df, grid_info, fig
 
         worker = self._start_worker(_do)
@@ -1481,8 +1450,8 @@ class MainWindow(QMainWindow):
         self.nile_red_panel.set_clear_enabled(True)
         self.progress_widget.update(
             1.0,
-            f"Nile Red fit complete ({grid_info['n_pixels_fitted']} pixels fitted, "
-            f"{grid_info['n_pixels_skipped']} skipped)",
+            f"Nile Red analysis complete ({grid_info['n_pixels']} pixels with a value, "
+            f"{grid_info['n_pixels_skipped']} below the minimum localisations)",
         )
         if fig is not None:
             self.results_panel.set_nile_red_figure(fig)
@@ -1493,7 +1462,7 @@ class MainWindow(QMainWindow):
         self._nile_red_input_df = None
         self.nile_red_panel.set_clear_enabled(False)
         self.results_panel.clear_nile_red_figure()
-        self.log_widget.append("Cleared Nile Red results — ready to fit again.")
+        self.log_widget.append("Cleared Nile Red results — ready to run again.")
 
     def _on_load_nile_red_locs(self, h5_path: str):
         if self._aux_worker is not None and self._aux_worker.isRunning():
@@ -1524,26 +1493,20 @@ class MainWindow(QMainWindow):
     def _on_nile_red_locs_loaded(self, df: pd.DataFrame, h5_path: str):
         self._nile_red_input_df = df
         self.nile_red_panel.set_loaded(h5_path, len(df))
-        self.log_widget.append(f"Loaded {len(df):,} localisations from {h5_path} for Nile Red fitting.")
+        self.log_widget.append(f"Loaded {len(df):,} localisations from {h5_path} for Nile Red analysis.")
 
-    def _make_nile_red_figure(self, grid_info: dict, wl_min: float, wl_max: float) -> Figure:
-        """Left: histogram of the fitted per-pixel wavelengths. Right: the
-        pixelated wavelength map itself (grid_info['wl_grid']) rendered
-        directly as an image — the real spatial output of the pixelated fit,
-        and the right choice for performance too: imshow's cost is fixed by
-        the grid size (bounded by the field of view), not by how many
-        localisations fed into it, unlike a per-localisation scatter which
-        gets slower and heavier the denser the data (exactly the dense,
-        overlapping-coverage regime this panel targets).
+    def _make_nile_red_figure(self, grid_info: dict) -> Figure:
+        """Left: histogram of the grid pixels' relative pixel 3 QE. Right: the
+        pixelated map itself (grid_info['pixel3_grid']) rendered directly as an
+        image: imshow's cost is fixed by the grid size (bounded by the field of
+        view), not by how many localisations fed into it, unlike a
+        per-localisation scatter.
 
-        Colour range is the fitted values' own 1st-99th percentile, not the
-        full fit search range (wl_min/wl_max, e.g. 500-750 nm) — real fitted
-        wavelengths usually span a much narrower band, and stretching the
-        colour scale across the whole search range would wash out any real
-        spatial contrast. Unfit grid pixels (NaN) render as black — set via
-        a masked array + cmap.set_bad, not the default (transparent, reads
-        as white against this app's light background)."""
-        wl_grid = grid_info["wl_grid"]
+        Colour range is the values' own 1st-99th percentile, so real spatial
+        contrast isn't washed out. Empty grid pixels (NaN) render as black, set
+        via a masked array + cmap.set_bad (the default, transparent, reads as
+        white against this app's light background)."""
+        grid = grid_info["pixel3_grid"]
         pixel_size_nm = grid_info["pixel_size_nm"]
         x0, y0 = grid_info["origin_nm"]
         ny, nx = grid_info["grid_shape"]
@@ -1551,33 +1514,29 @@ class MainWindow(QMainWindow):
         fig = Figure(figsize=(9, 4.5), dpi=100, layout="constrained")
         ax_hist, ax_map = fig.subplots(1, 2)
 
-        valid = wl_grid[~np.isnan(wl_grid)]
-        vmin, vmax = (
-            tuple(np.percentile(valid, [1, 99])) if valid.size > 0 else (wl_min, wl_max)
-        )
+        valid = grid[~np.isnan(grid)]
+        vmin, vmax = tuple(np.percentile(valid, [1, 99])) if valid.size > 0 else (0.0, 1.0)
         if vmin == vmax:
-            vmin, vmax = wl_min, wl_max
+            vmin, vmax = vmin - 0.01, vmax + 0.01
 
-        ax_hist.hist(valid, bins=40, range=(vmin, vmax), color="tab:purple", alpha=0.8)
-        ax_hist.set_xlabel("Wavelength (nm)")
-        ax_hist.set_ylabel("Pixel count")
-        ax_hist.set_title(
-            f"Wavelength distribution\n"
-            f"({grid_info['n_pixels_fitted']} fitted, {grid_info['n_pixels_skipped']} skipped)"
+        ax_hist.hist(valid, bins=40, range=(vmin, vmax), color="firebrick", alpha=0.8)
+        ax_hist.set_xlabel("Relative pixel 3 QE")
+        ax_hist.set_ylabel(
+            f"Pixel count ({grid_info['n_pixels']} with a value, {grid_info['n_pixels_skipped']} skipped)"
         )
-        ax_hist.grid(True, alpha=0.3)
+        ax_hist.grid(True, ls="--", color="grey", alpha=0.5)
+        ax_hist.set_axisbelow(True)
 
         cmap = matplotlib.colormaps["nipy_spectral"].copy()
         cmap.set_bad(color="black")
         extent = (x0, x0 + nx * pixel_size_nm, y0, y0 + ny * pixel_size_nm)
         im = ax_map.imshow(
-            np.ma.masked_invalid(wl_grid), cmap=cmap, vmin=vmin, vmax=vmax,
+            np.ma.masked_invalid(grid), cmap=cmap, vmin=vmin, vmax=vmax,
             origin="lower", extent=extent, aspect="equal",
         )
-        fig.colorbar(im, ax=ax_map, label="Wavelength (nm)", fraction=0.046, pad=0.04)
+        fig.colorbar(im, ax=ax_map, label="Relative pixel 3 QE", fraction=0.046, pad=0.04)
         ax_map.set_xlabel("x (nm)")
         ax_map.set_ylabel("y (nm)")
-        ax_map.set_title("Pixelated wavelength map")
 
         return fig
 

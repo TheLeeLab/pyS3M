@@ -2,12 +2,10 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
-    QDoubleSpinBox, QSpinBox, QPushButton, QCheckBox, QLabel, QLineEdit,
+    QDoubleSpinBox, QSpinBox, QPushButton, QLabel, QLineEdit,
     QFileDialog,
 )
 from PyQt6.QtCore import pyqtSignal
-
-from pyS3M.gui.panels.simulation_panel import _CURATED_FILTERS, NILE_RED_DEFAULT_FILTERS
 
 # Project root is four levels up from this file (src/gui/panels/nile_red_panel.py),
 # same convention as fitting_panel.py's _PROJECT_ROOT.
@@ -16,20 +14,20 @@ _NILE_RED_EXAMPLE_DIR = _PROJECT_ROOT / "test_tiffs" / "nile_red_example"
 
 
 class NileRedPanel(QWidget):
-    """Controls for pixelated Nile Red wavelength fitting
-    (NileRed_Functions.fit_wavelengths_pixelated), run on the post-clustering
+    """Controls for the pixelated Nile Red analysis
+    (NileRed_Functions.pixelate_relative_pixel3_qe), run on the post-clustering
     per-localisation table (sf_db) by default — same "needs clustering to have
     produced real data first" gating as ChannelUnmixingPanel — or on an
     explicitly-loaded HDF5 file, which bypasses that gate entirely (useful for
     analysing a previously-saved localisation table without redoing fit+cluster
-    in the current session). Always uses the pixelated (spatial-grid) fit
-    rather than a plain per-localisation fit: it discretises localisations onto
-    a regular pixel grid, pools each grid cell's photoelectrons per colour
-    channel (far higher SNR than any single localisation), and fits one
-    wavelength per cell, producing a genuine spatial wavelength map."""
+    in the current session). Localisations are binned onto a regular spatial
+    grid, and each cell gets the relative pixel 3 QE of its summed
+    photoelectrons (pooling far exceeds any single localisation's SNR): a
+    spatial map of the dye's spectral response, with no spectral model and no
+    wavelength assigned."""
 
-    # filter_ids, wl_min, wl_max, pixel_size_nm, min_localisations
-    fit_requested = pyqtSignal(list, float, float, float, int)
+    # pixel_size_nm, min_localisations
+    fit_requested = pyqtSignal(float, int)
     clear_requested = pyqtSignal()
     load_locs_requested = pyqtSignal(str)  # path to .h5 file
 
@@ -37,7 +35,6 @@ class NileRedPanel(QWidget):
         super().__init__(parent)
         self._enabled_by_state = False
         self._has_loaded_file = False
-        self._filter_checks: list[tuple[QCheckBox, str]] = []
         self._build_ui()
 
     def _build_ui(self):
@@ -75,31 +72,8 @@ class NileRedPanel(QWidget):
 
         outer.addWidget(lgrp)
 
-        grp = QGroupBox("Nile Red — Pixelated Wavelength Fit")
+        grp = QGroupBox("Nile Red — Pixelated Relative Pixel 3 QE")
         form = QFormLayout(grp)
-
-        filter_box = QGroupBox("Filters")
-        filter_lay = QVBoxLayout(filter_box)
-        for label, filter_id in _CURATED_FILTERS:
-            cb = QCheckBox(label)
-            cb.setChecked(filter_id in NILE_RED_DEFAULT_FILTERS)
-            filter_lay.addWidget(cb)
-            self._filter_checks.append((cb, filter_id))
-        form.addRow(filter_box)
-
-        self._wl_min = QDoubleSpinBox()
-        self._wl_min.setRange(300.0, 1000.0)
-        self._wl_min.setDecimals(0)
-        self._wl_min.setValue(500.0)
-        self._wl_min.setSuffix(" nm")
-        form.addRow("Min λ:", self._wl_min)
-
-        self._wl_max = QDoubleSpinBox()
-        self._wl_max.setRange(300.0, 1000.0)
-        self._wl_max.setDecimals(0)
-        self._wl_max.setValue(750.0)
-        self._wl_max.setSuffix(" nm")
-        form.addRow("Max λ:", self._wl_max)
 
         self._pixel_size = QDoubleSpinBox()
         self._pixel_size.setRange(5.0, 2000.0)
@@ -115,8 +89,8 @@ class NileRedPanel(QWidget):
         self._min_locs.setRange(1, 1000)
         self._min_locs.setValue(3)
         self._min_locs.setToolTip(
-            "Minimum localisations per grid pixel to attempt a fit; pixels below this "
-            "fall back to their parent molecule's aggregate-level fit."
+            "Minimum localisations per grid pixel for it to get a value; pixels below "
+            "this are left empty."
         )
         form.addRow("Min localisations/pixel:", self._min_locs)
 
@@ -124,12 +98,12 @@ class NileRedPanel(QWidget):
         btn_lay = QHBoxLayout(btn_row)
         btn_lay.setContentsMargins(0, 0, 0, 0)
         btn_lay.setSpacing(6)
-        self._run_btn = QPushButton("Run Nile Red Fit")
+        self._run_btn = QPushButton("Run Nile Red Analysis")
         self._run_btn.setEnabled(False)
         self._run_btn.clicked.connect(self._on_run_clicked)
         self._clear_btn = QPushButton("Clear Results")
         self._clear_btn.setEnabled(False)
-        self._clear_btn.setToolTip("Discard the wavelength map so you can try again with different parameters")
+        self._clear_btn.setToolTip("Discard the relative pixel 3 QE map so you can try again with different parameters")
         self._clear_btn.clicked.connect(self._on_clear_clicked)
         btn_lay.addWidget(self._run_btn)
         btn_lay.addWidget(self._clear_btn)
@@ -155,11 +129,7 @@ class NileRedPanel(QWidget):
             self.load_locs_requested.emit(path)
 
     def _on_run_clicked(self):
-        filter_ids = [fid for cb, fid in self._filter_checks if cb.isChecked()]
         self.fit_requested.emit(
-            filter_ids,
-            self._wl_min.value(),
-            self._wl_max.value(),
             self._pixel_size.value(),
             self._min_locs.value(),
         )
@@ -176,7 +146,7 @@ class NileRedPanel(QWidget):
 
     def set_loaded(self, path: str, n_locs: int):
         """Called once a requested H5 file has been loaded successfully —
-        bypasses the "clustered" state gate so the loaded file can be fitted
+        bypasses the "clustered" state gate so the loaded file can be analysed
         regardless of what's happened in the current session."""
         self._has_loaded_file = True
         self._load_status.setText(f"Loaded {n_locs:,} localisations from {path}")
@@ -188,7 +158,7 @@ class NileRedPanel(QWidget):
 
     def set_busy(self, busy: bool):
         self._run_btn.setEnabled(not busy and (self._enabled_by_state or self._has_loaded_file))
-        self._run_btn.setText("Running…" if busy else "Run Nile Red Fit")
+        self._run_btn.setText("Running…" if busy else "Run Nile Red Analysis")
         if busy:
             self._clear_btn.setEnabled(False)
 
