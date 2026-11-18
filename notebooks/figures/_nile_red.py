@@ -230,37 +230,23 @@ def rebrighten(colour, grey, lo_pct=1.0, hi_pct=99.5, occupied_only=False):
 
 def per_pixel_table(df, camera_pixel_size_nm, pixel_size_nm=50.0, min_localisations=10,
                     aggregate_id_column="cluster_id"):
-    """One row per analysis pixel: relative pixel 3 QE, fitted wavelength and summed photoelectrons.
+    """One row per analysis pixel: relative pixel 3 QE and summed photoelectrons.
 
-    A pixel is (aggregate, ``pixel_ix``, ``pixel_iy``) on the grid of
-    ``NileRed_Functions.fit_wavelengths_pixelated`` (``pixel_ix`` alone is only the x column of the grid).
-    Only pixels with at least ``min_localisations`` (the others take their aggregate's value).
+    A pixel is (aggregate, ``ix``, ``iy``) on the grid of ``red_share_pixelated``. Only pixels with at least
+    ``min_localisations`` (the others take their aggregate's value and are left out).
 
     Args:
-        df: Localisations after ``fit_wavelengths_pixelated`` (``wl_pixel``, ``pixel_ix``, ``pixel_iy``) with
-            ``A_R``, ``A_G``, ``A_B``, ``photoelectrons``, ``xc``, ``yc`` and the aggregate column.
-        camera_pixel_size_nm: Camera pixel (sample-plane nm), as passed to the wavelength fit.
-        pixel_size_nm: Analysis pixel (sample-plane nm), as passed to the wavelength fit.
+        df: Localisations with ``A_R``, ``A_G``, ``A_B``, ``photoelectrons``, ``xc``, ``yc`` (camera px) and the
+            aggregate column.
+        camera_pixel_size_nm: Camera pixel (sample-plane nm).
+        pixel_size_nm: Analysis pixel (sample-plane nm).
 
     Returns:
         DataFrame: ``agg``, ``ix``, ``iy``, ``red_share``, ``red_share_err``, ``n_locs``, ``photoelectrons``,
-        ``log_photoelectrons``, ``wl_pixel``.
-
-    Raises:
-        ValueError: The wavelength fit used another grid (pixel or camera pixel size).
+        ``log_photoelectrons``.
     """
-    for axis, col in (("x", "pixel_ix"), ("y", "pixel_iy")):
-        nm = df[f"{axis}c"].to_numpy() * camera_pixel_size_nm
-        idx = np.floor((nm - np.floor(nm.min() / pixel_size_nm) * pixel_size_nm) / pixel_size_nm).astype(int)
-        if not np.array_equal(idx, df[col].to_numpy()):
-            raise ValueError(f"{col} is not the {pixel_size_nm:g} nm grid of a {camera_pixel_size_nm:g} nm camera "
-                             "pixel: fit the wavelengths with the same pixel_size_nm and camera_pixel_size")
     _, pixels = red_share_pixelated(df, pixel_size_nm=pixel_size_nm, camera_pixel_size_nm=camera_pixel_size_nm,
                                     min_localisations=min_localisations, aggregate_id_column=aggregate_id_column)
-    wl = (df.groupby([aggregate_id_column, "pixel_ix", "pixel_iy"], as_index=False)
-          .agg(wl_pixel=("wl_pixel", "first"))
-          .rename(columns={aggregate_id_column: "agg", "pixel_ix": "ix", "pixel_iy": "iy"}))
-    pixels = pixels.merge(wl, on=["agg", "ix", "iy"], how="left")
     pixels["log_photoelectrons"] = np.log10(pixels["photoelectrons"])
     return pixels
 
@@ -270,15 +256,15 @@ def _outward(lo, hi, step):
 
 
 def plot_per_pixel(pixels, xlims=None, ylim=None, n_sd=3.5):
-    """The SI per-pixel figure: relative pixel 3 QE (top) and wavelength (bottom) of each analysis pixel.
+    """The SI per-pixel figure: relative pixel 3 QE of each analysis pixel.
 
     Left: distribution (grey, density), mean (dashed red) +- SD (red band). Right: filled KDE against
-    log10 of the pixel's summed photoelectrons. 481.68 pt wide, 216 pt per row: the published panel's size.
+    log10 of the pixel's summed photoelectrons. 481.68 pt wide, 216 pt tall: one row of the published panel.
 
     Args:
         pixels: From ``per_pixel_table``.
-        xlims: {"red_share": (lo, hi), "wl_pixel": (lo, hi)}; default mean +- ``n_sd`` SD, rounded out to
-            0.01 / 1 nm. Values outside are left out of the histogram (the KDE uses all).
+        xlims: {"red_share": (lo, hi)}; default mean +- ``n_sd`` SD, rounded out to 0.01. Values outside are
+            left out of the histogram (the KDE uses all).
         ylim: log10 photoelectron range; default the 0.5-99.5th percentiles +- 0.25, rounded out to 0.5.
 
     Returns:
@@ -287,11 +273,12 @@ def plot_per_pixel(pixels, xlims=None, ylim=None, n_sd=3.5):
     import matplotlib.pyplot as plt
     import seaborn as sns
 
-    rows = [("red_share", PIXEL3_LABEL, 0.01), ("wl_pixel", "mean wavelength/nm", 1.0)]
+    rows = [("red_share", PIXEL3_LABEL, 0.01)]
     log_pe = pixels["log_photoelectrons"].to_numpy()
     if ylim is None:
         ylim = _outward(np.percentile(log_pe, 0.5) - 0.25, np.percentile(log_pe, 99.5) + 0.25, 0.5)
-    fig, axs = plt.subplots(2, 2, figsize=(481.68 / 72, 2 * 216 / 72))
+    fig, axs = plt.subplots(1, 2, figsize=(481.68 / 72, 216 / 72), squeeze=False)
+    fig.subplots_adjust(bottom=0.18, wspace=0.3)   # one row: room for the x labels
     stats = {}
     for (col, label, step), (ax_h, ax_k) in zip(rows, axs):
         v = pixels[col].to_numpy()
