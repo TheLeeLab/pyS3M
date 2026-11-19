@@ -302,7 +302,8 @@ def find_rulers(sites, min_events=30, max_on=0.2, max_sd_nm=40.0, link_nm=120.0)
     and ``e2e`` (end to end) are centre-to-centre distances (nm), ``e_*`` their uncertainties
     from the site-centre uncertainties. Returns (rulers, summary dict).
     """
-    good = sites[(sites.n >= min_events) & (sites.on <= max_on) & (sites.smaj <= max_sd_nm)]
+    few, often, broad = sites.n < min_events, sites.on > max_on, sites.smaj > max_sd_nm
+    good = sites[~(few | often | broad)]
     groups = DBSCAN(eps=link_nm, min_samples=1).fit_predict(good[["x", "y"]].to_numpy())
     sizes = np.bincount(groups)
     rows = []
@@ -328,7 +329,11 @@ def find_rulers(sites, min_events=30, max_on=0.2, max_sd_nm=40.0, link_nm=120.0)
         rows.append(dict(x=pts[1, 0], y=pts[1, 1], angle=angle, perp=perp, d1=d1, d2=d2, e2e=d3,
                          e_d1=e1, e_d2=e2, e_e2e=e3,
                          n_min=good.n.to_numpy()[sel].min()))
-    summary = dict(sites=len(sites), sites_kept=len(good),
+    # Sites dropped, each counted once, under the first cut it fails (in this order)
+    dropped = {f"< {min_events:g} events": int(few.sum()),
+               f"on > {100 * max_on:g}% of frames": int((~few & often).sum()),
+               f"SD > {max_sd_nm:g} nm": int((~few & ~often & broad).sum())}
+    summary = dict(sites=len(sites), sites_kept=len(good), sites_dropped=dropped,
                    group_sizes={int(k): int(v) for k, v in
                                 zip(*np.unique(sizes, return_counts=True))},
                    site_centre_err_nm=float(np.median(np.r_[good.ex, good.ey])),
@@ -356,6 +361,7 @@ def distance_stats(rulers, design_nm=80.0, tolerance_nm=5.0, n_boot=2000, seed=0
                     "bias / nm": med - design, "bias 95% CI low / nm": ci[0],
                     "bias 95% CI high / nm": ci[1], "relative bias / %": 100 * (med / design - 1),
                     "mean / nm": v.mean(), "SD / nm": v.std(ddof=1),
+                    "IQR low / nm": np.percentile(v, 25), "IQR high / nm": np.percentile(v, 75),
                     "MAD-based SD / nm": 1.4826 * np.median(abs(v - med)),
                     "RMSE / nm": np.sqrt(np.mean(err ** 2)),
                     f"within ±{tolerance_nm:g} nm / %": 100 * np.mean(abs(err) <= tolerance_nm),
@@ -367,7 +373,7 @@ def plot_distances(rulers, stats, design_nm=80.0, tolerance_nm=5.0, half_range_n
                    bin_nm=1.0, info=None):
     """Panels c) neighbour and d) end-to-end distance histograms (design value, ± tolerance band
     and median), e) cumulative fraction of distances within a given error of design, and f) the
-    statistics table. ``info``: (label, value) lines printed under the table."""
+    statistics table (with the interquartile range). ``info``: (label, value) lines printed under the table."""
     fig, axs = plt.subplots(2, 2, figsize=(167.8 * MM, 125 * MM),
                             layout="none",
                             gridspec_kw=dict(left=0.09, right=0.98, bottom=0.09, top=0.94,
@@ -414,6 +420,8 @@ def plot_distances(rulers, stats, design_nm=80.0, tolerance_nm=5.0, half_range_n
              row("median / nm", "median / nm", lambda x: f"{x:.1f}"),
              ["bias / nm [95% CI]"] + [ci[c] for c in stats.columns],
              row("relative bias / %", "relative bias / %", lambda x: f"{x:+.1f}"),
+             ["IQR / nm"] + [f"{stats[c]['IQR low / nm']:.1f}–{stats[c]['IQR high / nm']:.1f}"
+                             for c in stats.columns],
              row("SD / nm", "SD / nm", lambda x: f"{x:.1f}"),
              row("MAD-based SD / nm", "MAD-based SD / nm", lambda x: f"{x:.1f}"),
              row("RMSE / nm", "RMSE / nm", lambda x: f"{x:.1f}"),
@@ -424,8 +432,8 @@ def plot_distances(rulers, stats, design_nm=80.0, tolerance_nm=5.0, half_range_n
     table = ax_f.table(cellText=cells,
                        colLabels=[""] + [f"{c} ({stats[c]['design / nm']:g} nm)"
                                          for c in stats.columns],
-                       cellLoc="center", colWidths=[0.44, 0.28, 0.28],
-                       bbox=[0.0, 0.2 if info else 0.0, 1.0, 0.8 if info else 1.0])
+                       cellLoc="center", colWidths=[0.40, 0.30, 0.30],
+                       bbox=[0.0, 0.42 if info else 0.0, 1.0, 0.58 if info else 1.0])
     table.auto_set_font_size(False)
     table.set_fontsize(6)
     for (r, c), cell in table.get_celld().items():
@@ -434,7 +442,7 @@ def plot_distances(rulers, stats, design_nm=80.0, tolerance_nm=5.0, half_range_n
             cell.set_text_props(ha="left")
             cell.PAD = 0.03
     if info:
-        ax_f.text(0.0, 0.15, "\n".join(f"{label}: {value}" for label, value in info),
+        ax_f.text(0.0, 0.38, "\n".join(f"{label}: {value}" for label, value in info),
                   transform=ax_f.transAxes, fontsize=6, va="top", ha="left")
     for ax, letter in ((ax_c, "c)"), (ax_d, "d)"), (ax_e, "e)"), (ax_f, "f)")):
         ax.text(-0.16 if ax is not ax_f else -0.08, 1.04, letter, transform=ax.transAxes,
