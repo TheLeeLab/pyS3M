@@ -209,16 +209,23 @@ def plot_overview(locs, width, height, oversampling=2, grid_px=50, clim=(0.0, 99
 
 def plot_views(fov_img, zoom_img, fov, zoom, oversampling_fov, oversampling_zoom, pixel_nm,
                fov_bar_nm=1000, zoom_bar_nm=80, clim_fov=(0.0, 99.9), clim_zoom=(0.0, 99.9),
-               grid_px=None):
+               grid_px=None, fig=None, rect=None):
     """Panels a) field of view with the zoom box and b) the zoom-in, connected as in S76/S77.
 
     ``fov``/``zoom``: dicts x0, y0, size (camera px). ``clim_fov``/``clim_zoom``: (low, high)
     percentiles of each panel's own image setting its colour scale.
     ``grid_px``: draw a camera-pixel grid on panel a (for choosing the zoom; leave None for the
-    figure). Returns (fig, (ax_a, ax_b), {"fov": (vmin, vmax), "zoom": (vmin, vmax)} used).
+    figure). ``fig``, ``rect``: draw into an existing figure, in the rectangle (left, bottom,
+    right, top; figure fractions), e.g. the top of the assembled a)--f) figure; None makes a new
+    figure. Returns (fig, (ax_a, ax_b), {"fov": (vmin, vmax),
+    "zoom": (vmin, vmax)} used).
     """
-    fig, (ax_a, ax_b) = plt.subplots(1, 2, figsize=(167.8 * MM, 80 * MM),
-                                     gridspec_kw=dict(wspace=0.08))
+    if fig is None:
+        fig, (ax_a, ax_b) = plt.subplots(1, 2, figsize=(167.8 * MM, 80 * MM),
+                                         gridspec_kw=dict(wspace=0.08))
+    else:
+        gs = fig.add_gridspec(1, 2, **_in_rect(rect, 0.0, 0.0, 1.0, 1.0), wspace=0.04)
+        ax_a, ax_b = fig.add_subplot(gs[0]), fig.add_subplot(gs[1])
     used = {}
     for ax, img, os_, bar, clim, key in (
             (ax_a, fov_img, oversampling_fov, fov_bar_nm, clim_fov, "fov"),
@@ -248,6 +255,15 @@ def plot_views(fov_img, zoom_img, fov, zoom, oversampling_fov, oversampling_zoom
         ax.text(0.015, 0.985, letter, transform=ax.transAxes, color="white", fontsize=9,
                 fontweight="bold", va="top", ha="left")
     return fig, (ax_a, ax_b), used
+
+
+def _in_rect(rect, left, bottom, right, top):
+    """Gridspec margins (fractions of a panel block) placed in ``rect`` = (left, bottom, right,
+    top) of the figure; ``rect`` None is the whole figure."""
+    l0, b0, r0, t0 = rect if rect is not None else (0.0, 0.0, 1.0, 1.0)
+    w, h = r0 - l0, t0 - b0
+    return dict(left=l0 + left * w, right=l0 + right * w, bottom=b0 + bottom * h,
+                top=b0 + top * h)
 
 
 def _scalebar(ax, length_px, label, img_px, colour="white", fs=7):
@@ -370,17 +386,20 @@ def distance_stats(rulers, design_nm=80.0, tolerance_nm=5.0, n_boot=2000, seed=0
 
 
 def plot_distances(rulers, stats, design_nm=80.0, tolerance_nm=5.0, half_range_nm=25.0,
-                   bin_nm=1.0, info=None):
+                   bin_nm=1.0, info=None, fig=None, rect=None):
     """Panels c) neighbour and d) end-to-end distance histograms (design value, ± tolerance band
     and median), e) cumulative fraction of distances within a given error of design, and f) the
-    statistics table (with the interquartile range). ``info``: (label, value) lines printed under the table."""
-    fig, axs = plt.subplots(2, 2, figsize=(167.8 * MM, 125 * MM),
-                            layout="none",
-                            gridspec_kw=dict(left=0.09, right=0.98, bottom=0.09, top=0.94,
-                                             wspace=0.3, hspace=0.42))
+    statistics table (with the interquartile range). ``info``: (label, value) lines printed under the table.
+    ``fig``, ``rect``: draw into an existing figure, in the rectangle (left, bottom, right, top;
+    figure fractions), e.g. the bottom of the assembled a)--f) figure; None makes a new figure."""
+    if fig is None:
+        fig = plt.figure(figsize=(167.8 * MM, 125 * MM), layout="none")
+    gs = fig.add_gridspec(2, 2, **_in_rect(rect, 0.09, 0.09, 0.98, 0.94), wspace=0.3,
+                          hspace=0.42)
+    axs = np.array([[fig.add_subplot(gs[i, j]) for j in range(2)] for i in range(2)])
     (ax_c, ax_d), (ax_e, ax_f) = axs
     within = f"within ±{tolerance_nm:g} nm / %"
-    colours = {"neighbour": "tab:blue", "end-to-end": "tab:orange"}
+    colours = {"neighbour": "#00008b", "end-to-end": "#8b0000"}
     for ax, key, cols in ((ax_c, "neighbour", ["d1", "d2"]), (ax_d, "end-to-end", ["e2e"])):
         st = stats[key]
         design = st["design / nm"]
