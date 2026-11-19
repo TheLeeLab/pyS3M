@@ -39,7 +39,8 @@ def _whole_chunk(sr, path, items, bounds, cal, masks, smoothing):
     args = dict(smoothing.args)
     args[smoothing.data_arg] = pe
     sm = smoothing.smoothing_function(**args)
-    weights = 1.0 / (cal["read_noise"] ** 2 + np.maximum(pe, 0) / cal["gain_map"])
+    # first-pass weights of SI Note Puncta Fitting: 1 / (read_noise^2 + max(smoothed pe, 0) + 1), read noise in e-
+    weights = np.power((np.maximum(sm, 0) + 1) + np.square(cal["read_noise"])[None], -1).astype(np.float32)
     out = [[], [], [], [], [], []]
     for pid, f in items:
         xmin, xmax, ymin, ymax = bounds[pid]

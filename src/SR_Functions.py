@@ -336,7 +336,8 @@ class SuperRes_Functions:
         """Fitting inputs for each (punctum, frame) in ``items``, in that order, from the TIFF ``file``.
 
         Frames are read, converted to photoelectrons and smoothed ``frame_block`` at a time, and each ROI's
-        weights, 1 / (read_noise^2 + max(pe, 0) / gain), are computed from its own crop. The conversion is
+        first-pass weights, 1 / (read_noise^2 + max(smoothed pe, 0) + 1) (``IOFunctions.generate_weights``, as
+        ``_build_roi`` and the other fitting paths), are computed from its own crop. The conversion is
         per pixel and the smoothing acts within each frame (``gaussian_filter_stack`` does not smooth along
         time), so every value is the one a whole chunk at once would give; peak memory is one block of frames
         instead of a chunk of photoelectron, smoothed and weight stacks.
@@ -377,8 +378,12 @@ class SuperRes_Functions:
                     xmin, xmax, ymin, ymax = b
                     roi = pe[j, ymin:ymax, xmin:xmax]
                     puncta[k] = roi.copy()
-                    smoothed[k] = sm[j, ymin:ymax, xmin:xmax].copy()
-                    weights[k] = 1.0 / (crop(read_noise, b) ** 2 + np.maximum(roi, 0) / crop(gain_map, b))
+                    sm_roi = sm[j, ymin:ymax, xmin:xmax]
+                    smoothed[k] = sm_roi.copy()
+                    # Same first-pass weights as every other fitting path (smoothed pe, + 1, read noise in
+                    # e-). Until 2026-11-19 these used the raw pe divided by the gain a second time, no + 1.
+                    rn_roi = np.broadcast_to(np.asarray(crop(read_noise, b), dtype=np.float32), sm_roi.shape)
+                    weights[k] = self.io.generate_weights(sm_roi, read_noise=rn_roi, dtype="float32")
             del pe, sm
         readnoise_frame = np.broadcast_to(np.asarray(read_noise, dtype=np.float32), frame_shape)
         bounds = [puncta_bounds[pid] for pid, _ in items]
