@@ -2382,7 +2382,10 @@ class MultiC_Sim_Funcs_Refactored:
 
         Args:
             pe_batch: (n_bootstrap, H, W) int32 photoelectrons.
-            rn: Read-noise RMS in the same units as the camera model variance (ADU).
+            rn: Read-noise RMS in photoelectrons (e-). It is added to the ADU image as
+                N(0, rn * gain), so after the conversion to photoelectrons, (ADU - offset) / gain,
+                the noise is rn e- RMS -- the read noise the fit's weights and gate assume. (Until
+                2026-11-19 rn was added in ADU, giving rn / gain e- in the photoelectron image.)
             gain: (H, W) gain map.
             offset: (H, W) offset map.
             smoothing_function: Smoothing wrapper applied to the full 3-D stack.
@@ -2391,9 +2394,10 @@ class MultiC_Sim_Funcs_Refactored:
             adu_batch: (n_bootstrap, H, W) ADU images (uint8/uint16/float32).
             smoothed_batch: (n_bootstrap, H, W) smoothed ADU images.
         """
-        # Vectorised: loc = gain * pe + offset; add N(0, rn) read noise
-        loc = gain[None].astype(np.float64) * pe_batch + offset[None].astype(np.float64)
-        noise = np.random.normal(0.0, rn, pe_batch.shape)
+        # Vectorised: loc = gain * pe + offset; add N(0, rn * gain) read noise (rn in e-, noise in ADU)
+        gain64 = gain[None].astype(np.float64)
+        loc = gain64 * pe_batch + offset[None].astype(np.float64)
+        noise = np.random.normal(0.0, 1.0, pe_batch.shape) * (rn * gain64)
         adu_batch = np.clip(loc + noise, 0.0, None)
 
         adu_batch = adu_batch.astype(np.float32)
@@ -2431,7 +2435,7 @@ class MultiC_Sim_Funcs_Refactored:
         Args:
             camera_parameters: Full camera calibration dict.  ``variance`` and
                 ``readnoise`` are overridden per (peak_qy, rn) combination.
-            read_noise_space: 1-D array of read-noise RMS values (same units as variance).
+            read_noise_space: 1-D array of read-noise RMS values in photoelectrons (e-).
             peak_qy_space: 1-D array of peak pixel QY values in (0, 1].
             starting_flag_fn: callable(dye, peak_qy, rn) -> str flag prefix.  Defaults
                 to the convention used in Figure1_maximum_readnoise.ipynb.
@@ -2625,7 +2629,7 @@ class MultiC_Sim_Funcs_Refactored:
 
                     # Build camera_params for this rn (fitting needs readnoise for weights)
                     cam_params_rn_dict = dict(_base_cam_dict)
-                    cam_params_rn_dict["variance"] = np.full(gain.shape, rn ** 2)
+                    cam_params_rn_dict["variance"] = np.square(rn * gain)   # ADU^2: rn is in e-
                     cam_params_rn_dict["readnoise"] = rn
                     camera_params_rn = CameraParameters.validate_and_create(cam_params_rn_dict)
 

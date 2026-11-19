@@ -253,6 +253,23 @@ class TestApplyReadNoiseBatch:
             f"Expected mean≈{expected_mean}, got {measured_mean:.2f}"
 
 
+    def test_noise_in_photoelectrons(self):
+        """rn is in e-: after (ADU - offset) / gain the noise is rn e- RMS, whatever the gain."""
+        H, W = 12, 12
+        n_bs = 50000
+        pe = np.full((n_bs, H, W), 100, dtype=np.int32)
+        gain = np.full((H, W), 0.4144)
+        offset = np.full((H, W), 32.35)
+        rn = 3.0
+        sf = self._make_smoothing()
+
+        adu, _ = self.msf._apply_read_noise_batch(pe, rn, gain, offset, sf)
+        pe_back = (adu[:, H // 2, W // 2].astype(float) - 32.35) / 0.4144
+        measured_std = pe_back.std()
+        assert abs(measured_std - rn) / rn < 0.05, \
+            f"Expected {rn} e- RMS, measured {measured_std:.3f}"
+
+
 class TestPoissonThinning:
     """Verify that Binomial(K_max, p) gives correct mean for QY thinning."""
 
