@@ -225,7 +225,7 @@ def plot_views(fov_img, zoom_img, fov, zoom, oversampling_fov, oversampling_zoom
                                          gridspec_kw=dict(wspace=0.08))
     else:
         gs = fig.add_gridspec(1, 2, **_in_rect(rect, 0.0, 0.0, 1.0, 1.0), wspace=0.04)
-        ax_a, ax_b = fig.add_subplot(gs[0]), fig.add_subplot(gs[1])
+        ax_a, ax_b = _fixed_axes(fig, gs[0]), _fixed_axes(fig, gs[1])
     used = {}
     for ax, img, os_, bar, clim, key in (
             (ax_a, fov_img, oversampling_fov, fov_bar_nm, clim_fov, "fov"),
@@ -264,6 +264,12 @@ def _in_rect(rect, left, bottom, right, top):
     w, h = r0 - l0, t0 - b0
     return dict(left=l0 + left * w, right=l0 + right * w, bottom=b0 + bottom * h,
                 top=b0 + top * h)
+
+
+def _fixed_axes(fig, spec):
+    """Axes at the position of gridspec cell ``spec``, placed with ``add_axes`` so a layout engine
+    (constrained layout, which the inline backend can switch on when saving) does not move it."""
+    return fig.add_axes(spec.get_position(fig))
 
 
 def _scalebar(ax, length_px, label, img_px, colour="white", fs=7):
@@ -396,7 +402,7 @@ def plot_distances(rulers, stats, design_nm=80.0, tolerance_nm=5.0, half_range_n
         fig = plt.figure(figsize=(167.8 * MM, 125 * MM), layout="none")
     gs = fig.add_gridspec(2, 2, **_in_rect(rect, 0.09, 0.09, 0.98, 0.94), wspace=0.3,
                           hspace=0.42)
-    axs = np.array([[fig.add_subplot(gs[i, j]) for j in range(2)] for i in range(2)])
+    axs = np.array([[_fixed_axes(fig, gs[i, j]) for j in range(2)] for i in range(2)])
     (ax_c, ax_d), (ax_e, ax_f) = axs
     within = f"within ±{tolerance_nm:g} nm / %"
     colours = {"neighbour": "#00008b", "end-to-end": "#8b0000"}
