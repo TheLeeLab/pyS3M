@@ -322,7 +322,9 @@ def find_rulers(sites, min_events=30, max_on=0.2, max_sd_nm=40.0, link_nm=120.0)
     axis; ``angle`` is the angle at the middle site (180 deg = a straight line) and ``perp`` the
     distance of the middle site from the line through the end sites. ``d1``, ``d2`` (neighbours)
     and ``e2e`` (end to end) are centre-to-centre distances (nm), ``e_*`` their uncertainties
-    from the site-centre uncertainties. Returns (rulers, summary dict).
+    from the site-centre uncertainties; ``group`` links a ruler to its sites. Returns
+    (rulers, summary dict); ``summary["site_table"]`` is every site with its ``status`` (kept, or
+    the cut that dropped it), ``group`` (-1 if dropped) and ``group_size``.
     """
     few, often, broad = sites.n < min_events, sites.on > max_on, sites.smaj > max_sd_nm
     good = sites[~(few | often | broad)]
@@ -348,18 +350,25 @@ def find_rulers(sites, min_events=30, max_on=0.2, max_sd_nm=40.0, link_nm=120.0)
             return r, np.sqrt((((d / r) * err[a]) ** 2).sum() + (((d / r) * err[b]) ** 2).sum())
 
         (d1, e1), (d2, e2), (d3, e3) = dist(0, 1), dist(1, 2), dist(0, 2)
-        rows.append(dict(x=pts[1, 0], y=pts[1, 1], angle=angle, perp=perp, d1=d1, d2=d2, e2e=d3,
+        rows.append(dict(group=int(g), x=pts[1, 0], y=pts[1, 1], angle=angle, perp=perp, d1=d1, d2=d2, e2e=d3,
                          e_d1=e1, e_d2=e2, e_e2e=e3,
                          n_min=good.n.to_numpy()[sel].min()))
     # Sites dropped, each counted once, under the first cut it fails (in this order)
     dropped = {f"< {min_events:g} events": int(few.sum()),
                f"on > {100 * max_on:g}% of frames": int((~few & often).sum()),
                f"SD > {max_sd_nm:g} nm": int((~few & ~often & broad).sum())}
+    site_table = sites.copy()
+    site_table["status"] = np.select([few, often, broad], list(dropped), "kept")
+    site_table["group"] = -1
+    site_table.loc[good.index, "group"] = groups
+    site_table["group_size"] = 0
+    site_table.loc[good.index, "group_size"] = sizes[groups]
     summary = dict(sites=len(sites), sites_kept=len(good), sites_dropped=dropped,
                    group_sizes={int(k): int(v) for k, v in
                                 zip(*np.unique(sizes, return_counts=True))},
                    site_centre_err_nm=float(np.median(np.r_[good.ex, good.ey])),
-                   site_sd_nm=float(np.median(np.r_[good.smaj, good.smin])))
+                   site_sd_nm=float(np.median(np.r_[good.smaj, good.smin])),
+                   site_table=site_table)
     return pd.DataFrame(rows), summary
 
 
