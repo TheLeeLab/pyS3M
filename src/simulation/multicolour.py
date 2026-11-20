@@ -2291,8 +2291,8 @@ class MultiC_Sim_Funcs_Refactored:
             dye_pixel_efficiency: Per-channel QE fractions; shape (n_bootstrap, n_channels)
                 for stochastic mode or (n_channels,) for deterministic mode.
             n_photons: Dict mapping dye key to photon count array (n_bootstrap,).
-            x0y0: Position dict as used by gen_camera_image_stack — the size-2 axis is
-                ordered (y, x): index 0 is row/y, index 1 is column/x.
+            x0y0: Position dict as used by gen_camera_image_stack (nm) — the size-2 axis is
+                ordered (x, y): index 0 is column/x, index 1 is row/y.
             config: SimulationConfig (NA, pixel_size, background parameters, PSF model).
             emission_spectra: Dict mapping dye key to its filtered emission spectrum (dipole PSF).
 
