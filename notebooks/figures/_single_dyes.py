@@ -235,7 +235,7 @@ def ternary_panel(shown, limits, side_mm, step, size, alpha, labels=True, legend
     for axis, set_label, pixel in labelled:
         colour = PIXEL_AXIS_COLOURS[pixel]
         if labels:
-            set_label(f"{pixel} relative QE", color=colour, fontsize=8)
+            set_label(f"relative {pixel} QE", color=colour, fontsize=8)
         axis.set_label_position("tick1")
         axis.set_tick_params(colors=colour, labelsize=7, width=0.75)
     # mpltern names each side after the corner opposite it: tside is the bottom edge, lside the

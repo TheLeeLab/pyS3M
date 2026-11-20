@@ -165,9 +165,9 @@ def _draw_ternary(ax, df, column, blue_scale=BLUE_SCALE, size=2, alpha_scale=150
             ax.scatter(sub["A_R"], sub["A_G"], blue_scale * sub["A_B"], color=colour, s=size,
                        alpha=min(1.0, alpha_scale / len(sub)), linewidths=0, rasterized=True)
     ticks = np.round(np.arange(0, 1.01, 0.2), 1)
-    axes = [(ax.taxis, ax.set_tlabel, "pixel 3", "pixel 3 relative QE"),
-            (ax.laxis, ax.set_llabel, "pixel 2", "pixel 2 relative QE"),
-            (ax.raxis, ax.set_rlabel, "pixel 1", f"{blue_scale} × pixel 1 relative QE")]
+    axes = [(ax.taxis, ax.set_tlabel, "pixel 3", "relative pixel 3 QE"),
+            (ax.laxis, ax.set_llabel, "pixel 2", "relative pixel 2 QE"),
+            (ax.raxis, ax.set_rlabel, "pixel 1", f"{blue_scale} × relative pixel 1 QE")]
     for axis, set_label, pixel, label in axes:
         colour = PIXEL_AXIS_COLOURS[pixel]
         axis.set_ticks(ticks)

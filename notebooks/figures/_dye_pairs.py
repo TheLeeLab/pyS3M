@@ -389,7 +389,7 @@ EXAMPLE_TEXT_LEFT = {"ATTO520_Rho6G": True, "ATTO565_ATTO633": False,   # the em
                      "ATTO565_ATTO594": True, "ATTO647N_QD800": False}
 EXAMPLE_PIXEL = {"ATTO520_Rho6G": "A_G", "ATTO565_ATTO633": "A_R",   # the pixel that separates
                  "ATTO565_ATTO594": "A_R", "ATTO647N_QD800": "A_R"}   # the pair (as published)
-PIXEL_LABEL = {"A_R": "pixel 3 relative QE", "A_G": "pixel 2 relative QE"}
+PIXEL_LABEL = {"A_R": "relative pixel 3 QE", "A_G": "relative pixel 2 QE"}
 PIXEL_HIST_COLOUR = {"A_R": "#c0504d", "A_G": "#4f9a3a"}
 COMPONENT_COLOURS = ("#4a5bc4", "#b04aa8")   # dye 1 (lower A_R), dye 2
 
